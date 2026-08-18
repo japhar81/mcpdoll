@@ -1,0 +1,83 @@
+// Copyright 2026 The MCPDoll Authors.
+
+syntax = "proto3";
+
+package mcpdoll.snapshot.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mcpdoll/snapshot/v1/snapshot.proto";
+
+option go_package = "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb";
+
+// SnapshotDistribution streams signed snapshots to data-plane instances.
+//
+// The stream is the only channel from control plane to data plane. There is no
+// push endpoint on the data plane and no request path that reaches back into the
+// control plane during serving: a data plane whose control plane is down keeps
+// serving its current snapshot indefinitely.
+service SnapshotDistribution {
+  // Subscribe returns the current snapshot immediately, then every subsequent
+  // one as it is published. The data plane reconnects with backoff on stream
+  // failure and keeps serving throughout.
+  rpc Subscribe(SubscribeRequest) returns (stream SnapshotEvent);
+
+  // Fetch retrieves one snapshot by version. Used for local rollback and by the
+  // CLI to inspect what is deployed.
+  rpc Fetch(FetchRequest) returns (SignedSnapshot);
+
+  // ReportStatus lets an instance tell the control plane what it is serving, so
+  // the console can show snapshot version and age per instance and an operator
+  // can see a stalled rollout.
+  rpc ReportStatus(InstanceStatus) returns (ReportStatusResponse);
+}
+
+message SubscribeRequest {
+  string org_id = 1;
+  // Version the instance already has. The server sends the current snapshot
+  // only if it is newer, so a reconnect does not force a redundant swap.
+  int64 known_version = 2;
+  string instance_id = 3;
+}
+
+message SnapshotEvent {
+  oneof event {
+    SignedSnapshot snapshot = 1;
+    // Sent when the subscriber is already current, so the stream is
+    // demonstrably alive rather than merely idle.
+    Heartbeat heartbeat = 2;
+    // Sent when the control plane wants instances to fall back to an earlier
+    // version — an operator-initiated rollback.
+    RollbackDirective rollback = 3;
+  }
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+  int64 current_version = 2;
+}
+
+message RollbackDirective {
+  int64 target_version = 1;
+  string reason = 2;
+  string ordered_by = 3;
+}
+
+message FetchRequest {
+  string org_id = 1;
+  // Zero means "the current snapshot".
+  int64 version = 2;
+}
+
+message InstanceStatus {
+  string instance_id = 1;
+  string org_id = 2;
+  int64 serving_version = 3;
+  google.protobuf.Timestamp serving_since = 4;
+  // Set when the instance rejected the most recent snapshot, with the reason,
+  // so a signature or validation failure surfaces in the console rather than
+  // only in one instance's logs.
+  string last_reject_reason = 5;
+  int64 last_reject_version = 6;
+}
+
+message ReportStatusResponse {}

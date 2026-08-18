@@ -1,0 +1,168 @@
+// Copyright 2026 The MCPDoll Authors.
+
+syntax = "proto3";
+
+package mcpdoll.plugin.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/mcpdoll/mcpdoll/internal/proto/pluginpb";
+
+// PluginHost is the contract an out-of-process gRPC plugin implements.
+//
+// The channel is bidirectional streaming rather than unary-per-invocation
+// because the hot path cannot afford a connection setup per hook, and because a
+// plugin like the LLM guard benefits from keeping model connections and caches
+// warm across requests. Correlation is explicit (`invocation_id`) so the host
+// can have many invocations outstanding on one stream.
+service PluginHost {
+  // Invoke carries hook invocations to the plugin and verdicts back. The host
+  // opens one stream per plugin instance and multiplexes over it.
+  rpc Invoke(stream HostMessage) returns (stream PluginMessage);
+
+  // Health is polled by the host. A plugin that fails it is backed off and
+  // restarted; its verdicts are skipped per the manifest's failure policy in
+  // the meantime.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Describe lets the host verify at load time that the plugin's declared
+  // hooks and scopes match the manifest it was registered with. A mismatch is a
+  // load failure: the manifest is the enforced contract, so the two must agree
+  // before any traffic reaches the plugin.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+}
+
+message HostMessage {
+  oneof message {
+    Invocation invocation = 1;
+    // Cancellation, when the hook budget expires or the client disconnects.
+    Cancel cancel = 2;
+    Shutdown shutdown = 3;
+  }
+}
+
+message PluginMessage {
+  oneof message {
+    Verdict verdict = 1;
+    // Emitted mid-invocation for the request-trace waterfall. Advisory: the
+    // host may drop these under load without affecting the verdict.
+    Progress progress = 2;
+  }
+}
+
+message Invocation {
+  // Correlates the verdict with this invocation.
+  string invocation_id = 1;
+
+  // Hook name, e.g. "ON_TOOL_RESULT".
+  string hook = 2;
+
+  // W3C trace context, so the plugin's own spans join the request's trace.
+  map<string, string> trace_context = 3;
+
+  // Deadline the host will enforce. The plugin should return a partial or
+  // abstaining verdict before this rather than be cancelled, because a
+  // cancellation is recorded as a skip and loses whatever it had computed.
+  google.protobuf.Timestamp deadline = 4;
+
+  // The request context the plugin is allowed to see, restricted to the
+  // manifest's declared `reads` scopes. Canonical JSON.
+  string context_json = 5;
+
+  // Whether this invocation is shadow-only. Passed so a plugin can cheapen its
+  // work when its verdict will not be acted on — the guard, for instance, can
+  // skip escalation to the larger model in shadow mode.
+  bool shadow = 6;
+}
+
+message Cancel {
+  string invocation_id = 1;
+  string reason = 2;
+}
+
+message Shutdown {
+  // Grace period before the host closes the stream.
+  int32 grace_ms = 1;
+}
+
+message Progress {
+  string invocation_id = 1;
+  string message = 2;
+}
+
+// Decision is the verdict model. Exactly these five: adding a sixth changes
+// what the pipeline can express and requires an ADR.
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  // Proceed unchanged.
+  DECISION_ALLOW = 1;
+  // Refuse the request.
+  DECISION_DENY = 2;
+  // Proceed with the supplied RFC 6902 patch applied.
+  DECISION_MUTATE = 3;
+  // Proceed unchanged, but attach metadata for the audit trail and the console.
+  DECISION_ANNOTATE = 4;
+  // Cannot decide without client input. Becomes an MRTR `input_required`
+  // result; the retry re-enters this plugin with the response.
+  DECISION_DEFER = 5;
+}
+
+message Verdict {
+  string invocation_id = 1;
+  Decision decision = 2;
+
+  // Human-readable reason. Surfaced in the audit trail and, for a deny, in the
+  // model-legible error the client receives.
+  string reason = 3;
+
+  // 0..1. Below the plugin's own threshold the host treats the verdict as
+  // abstaining, which keeps a low-confidence guess from silently denying.
+  double confidence = 4;
+
+  // RFC 6902 patch, canonical JSON array. Only valid for DECISION_MUTATE, and
+  // only within the manifest's declared `writes` scopes.
+  string patch_json = 5;
+
+  // Annotations for DECISION_ANNOTATE, canonical JSON object.
+  string annotations_json = 6;
+
+  // How long this verdict may be cached, keyed by the host's cache key. Zero
+  // means do not cache.
+  int32 ttl_ms = 7;
+
+  // For DECISION_DEFER: the input the plugin needs, as an MCP InputRequest map
+  // in canonical JSON.
+  string input_requests_json = 8;
+
+  // For DECISION_DEFER: the plugin's own opaque state, which the gateway wraps
+  // in its own signed envelope before it reaches the client. The plugin never
+  // sees the outer envelope.
+  string plugin_state = 9;
+
+  // Provenance the audit record must carry. For the guard this is the pinned
+  // model, prompt and policy versions — without them an audit entry cannot
+  // answer "what decided this, and would it decide the same today".
+  map<string, string> provenance = 10;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  string detail = 2;
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  string name = 1;
+  string version = 2;
+  repeated string hooks = 3;
+  repeated string reads = 4;
+  repeated string writes = 5;
+  bool identity_dependent = 6;
+  // Provenance the plugin will stamp on every verdict, declared up front so the
+  // host can reject an unpinned model at load time rather than discovering it
+  // in an audit record later.
+  map<string, string> provenance = 7;
+}

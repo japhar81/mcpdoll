@@ -1,0 +1,456 @@
+// Copyright 2026 The MCPDoll Authors.
+
+syntax = "proto3";
+
+package mcpdoll.snapshot.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb";
+
+// SignedSnapshot is the artifact the control plane publishes and the data plane
+// verifies before it will serve anything from it.
+//
+// `snapshot_bytes` holds a serialized Snapshot, and the signature covers those
+// exact octets. The data plane verifies the bytes it received and only then
+// parses them; it never re-serializes a Snapshot and re-checks. That ordering
+// matters: protobuf does not guarantee byte-identical serialization across
+// languages or library versions, so a scheme that signed a re-serialization
+// would break on a library upgrade. Signing the transmitted octets makes the
+// question moot.
+message SignedSnapshot {
+  // Serialized Snapshot message.
+  bytes snapshot_bytes = 1;
+
+  // Which key signed it, so a rotation can overlap rather than requiring a
+  // lockstep restart of every data-plane instance.
+  string key_id = 2;
+
+  // Ed25519 signature over SIGNING_CONTEXT || snapshot_bytes. The domain
+  // separation prefix stops a signature minted for some other MCPDoll artifact
+  // from verifying here.
+  bytes signature = 3;
+
+  // Signature algorithm. Only "ed25519" is accepted today; the field exists so
+  // an unknown algorithm is an explicit rejection rather than a silent
+  // misinterpretation of the signature bytes.
+  string algorithm = 4;
+}
+
+// Snapshot is the complete, self-contained serving configuration for one
+// organization at one point in time.
+//
+// It is self-contained by design: the data plane must be able to serve
+// correctly with the control plane unreachable, so a snapshot may not reference
+// anything it does not carry. The snapshotter enforces that at build time.
+message Snapshot {
+  // Monotonic, gapless per organization. The data plane refuses to activate a
+  // snapshot older than the one it is serving, which is what stops a replayed
+  // or misrouted older snapshot from silently rolling back policy.
+  int64 version = 1;
+
+  // Identifier of the build that produced this snapshot.
+  string id = 2;
+
+  google.protobuf.Timestamp built_at = 3;
+
+  string org_id = 4;
+
+  // Digest of the registry state this was resolved from, so a snapshot can be
+  // traced back to the exact admitted definitions it contains.
+  string registry_digest = 5;
+
+  repeated Namespace namespaces = 6;
+  repeated Server servers = 7;
+  repeated ToolDefinition tools = 8;
+  repeated Bundle bundles = 9;
+  repeated Audience audiences = 10;
+  repeated Policy policies = 11;
+  repeated PluginManifest plugins = 12;
+
+  CatalogDefaults catalog = 13;
+}
+
+// CatalogDefaults are the org-wide list-result settings. Per-bundle and
+// per-policy values may only narrow these, never widen them.
+message CatalogDefaults {
+  // Ceiling on the ttlMs the edge advertises.
+  int32 ttl_ms = 1;
+  // Shortened TTL used when a catalog is served from last-known-good because a
+  // backend is unreachable, so clients re-ask sooner.
+  int32 degraded_ttl_ms = 2;
+}
+
+// Namespace binds a short prefix to an owning team.
+message Namespace {
+  string id = 1;
+  string name = 2;
+
+  // The prefix every tool in this namespace is exposed under, e.g. "crm".
+  // Deterministically assigned at registration and immutable: changing it
+  // renames every tool, which invalidates every client's prompt cache and
+  // breaks any agent that hardcoded a name.
+  string prefix = 3;
+
+  string owning_team_id = 4;
+  string project_id = 5;
+
+  // IdP group that owns this namespace. Publishing into it requires membership.
+  string owner_idp_group = 6;
+}
+
+// EffectClass describes what invoking a tool does to the world. It drives the
+// guard's concurrency decision, idempotency requirements, and per-class plugin
+// failure policy — so it is part of the admitted definition, not a runtime
+// guess.
+enum EffectClass {
+  EFFECT_CLASS_UNSPECIFIED = 0;
+  // No observable side effect. Safe to run speculatively in parallel with a
+  // guard check, and safe to retry.
+  EFFECT_CLASS_READ = 1;
+  // Creates or modifies state. Requires an idempotency key; the guard must
+  // clear it before dispatch, not alongside.
+  EFFECT_CLASS_WRITE = 2;
+  // Irreversible. Same as write, plus stricter default policy.
+  EFFECT_CLASS_DESTRUCTIVE = 3;
+}
+
+// ServingMode controls what the gateway does when a backend's live tool list
+// disagrees with what was admitted.
+enum ServingMode {
+  SERVING_MODE_UNSPECIFIED = 0;
+  // Serve only admitted definitions; any divergence is drift, and the
+  // divergent definition is never served.
+  SERVING_MODE_STRICT = 1;
+  // Serve admitted definitions and record the divergence, without quarantine.
+  // For backends still stabilising their catalog.
+  SERVING_MODE_ADVISORY = 2;
+}
+
+// Server is one registered MCP backend.
+message Server {
+  string id = 1;
+  string name = 2;
+  string namespace_id = 3;
+  string version_id = 4;
+
+  // Endpoint URL. Only http/https streamable transports are supported in the
+  // data plane; a stdio backend is wrapped by a sidecar.
+  string endpoint = 5;
+
+  // Protocol version to pin for this backend, or empty to negotiate. Pinning
+  // exists because a backend that silently upgrades can change result shapes
+  // under a catalog we already admitted.
+  string pinned_protocol_version = 6;
+
+  ServingMode serving_mode = 7;
+
+  // Operational metadata carried from the server.json `x-mcpdoll` extensions.
+  string criticality = 8;          // "low" | "normal" | "high" | "critical"
+  string data_classification = 9;  // "public" | "internal" | "confidential" | "restricted"
+  repeated string compliance_scope = 10; // e.g. ["sox", "pci"]
+  string owning_team_id = 11;
+  string project_id = 12;
+
+  TokenExchange token_exchange = 13;
+  HealthPolicy health = 14;
+
+  // Optional tool the prober may invoke as a canary, to distinguish "the
+  // catalog is reachable" from "invocations actually work".
+  string canary_tool = 15;
+}
+
+// TokenExchange configures how an inbound principal becomes a credential the
+// backend accepts.
+//
+// There is deliberately no passthrough option. Forwarding the caller's token to
+// a backend would make every backend a confused deputy holding a credential
+// scoped far wider than the one tool it needs.
+message TokenExchange {
+  // RFC 8693 token endpoint.
+  string token_endpoint = 1;
+  // Audience to request for this backend.
+  string audience = 2;
+  // Scopes to request.
+  repeated string scopes = 3;
+  // Reference to the client credential in the secret store — never the secret
+  // itself, so a snapshot is safe to store and inspect.
+  string client_credential_ref = 4;
+  // Header the exchanged token is placed in. Defaults to "Authorization".
+  string header = 5;
+  // Claim-to-header mappings applied in addition, for backends that need
+  // tenant or user context out of band.
+  map<string, string> claim_headers = 6;
+}
+
+message HealthPolicy {
+  int32 probe_interval_ms = 1;
+  int32 probe_timeout_ms = 2;
+  // How long a tool from an unreachable backend stays listed, failing its calls
+  // fast. Removing it instead would invalidate every client's prompt cache.
+  int32 grace_window_ms = 3;
+  int32 eject_after_failures = 4;
+}
+
+// ToolDefinition is an admitted tool, exactly as it will be served.
+//
+// The gateway serves these, never what a live backend currently reports. A
+// backend that changes its catalog produces a drift event; it does not change
+// what clients see until the change is admitted.
+message ToolDefinition {
+  // Content address of the canonical form. This is the definition's identity.
+  string digest = 1;
+  // Digest with prose stripped, so drift can distinguish a reworded
+  // description from a changed schema by comparing digests.
+  string semantic_digest = 2;
+
+  string server_id = 3;
+  string namespace_id = 4;
+
+  // Name as the backend publishes it.
+  string name = 5;
+  // Name as clients see it: "<prefix>.<name>". Assigned at admission, never
+  // computed at runtime, so a collision is a publish-time rejection rather
+  // than a silent runtime rename.
+  string qualified_name = 6;
+
+  string title = 7;
+  string description = 8;
+
+  // JSON Schema documents, canonicalized with `$defs` resolved.
+  string input_schema_json = 9;
+  string output_schema_json = 10;
+
+  // Tool annotations as canonical JSON.
+  string annotations_json = 11;
+
+  EffectClass effect_class = 12;
+
+  // Estimated tokens the serialized definition costs a model, schema included.
+  // Budget enforcement uses this; the console's bundle composer displays it.
+  int32 token_estimate = 13;
+
+  // Whether the tool requires an idempotency key. Derived from effect class at
+  // admission, stored explicitly so the runtime does not re-derive it.
+  bool requires_idempotency_key = 14;
+}
+
+// Bundle is a curated set of tools presented as one catalog.
+message Bundle {
+  string id = 1;
+  string name = 2;
+  string project_id = 3;
+
+  // Determines the leading component of the stable catalog ordering. Lower
+  // sorts first.
+  int32 priority = 4;
+
+  repeated BundleEntry entries = 5;
+
+  // Ceiling on the summed token_estimate of the bundle's tools. Exceeded
+  // bundles fail the snapshot build rather than silently shipping a catalog
+  // that will not fit a context window.
+  int32 token_budget = 6;
+
+  // Optional TTL override, which may only lower the org default.
+  int32 ttl_ms = 7;
+
+  // Cross-project grants that let this bundle include another project's
+  // namespace. Explicit, recorded, and expiring.
+  repeated Grant grants = 8;
+}
+
+// BundleEntry includes either a whole namespace or an explicit tool list.
+message BundleEntry {
+  string namespace_id = 1;
+  // When empty, every admitted tool in the namespace is included. When set,
+  // only these qualified names — which is how a bundle takes three tools from a
+  // twenty-tool backend.
+  repeated string qualified_names = 2;
+  // Qualified names to exclude, applied after the include set.
+  repeated string exclude_qualified_names = 3;
+}
+
+message Grant {
+  string id = 1;
+  string from_project_id = 2;
+  string to_project_id = 3;
+  string namespace_id = 4;
+  string granted_by = 5;
+  google.protobuf.Timestamp granted_at = 6;
+  // Grants expire. An unbounded cross-project grant is indistinguishable from
+  // a permanent policy exception nobody remembers making.
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+// Audience is one MCP endpoint's identity: which bundles it serves, under which
+// policies, to which principals.
+message Audience {
+  string id = 1;
+  // URL slug the endpoint is served at: /mcp/<slug>.
+  string slug = 2;
+  string name = 3;
+  string project_id = 4;
+
+  // Bundles in the order they contribute to the catalog.
+  repeated string bundle_ids = 5;
+  repeated string policy_ids = 6;
+
+  // IdP groups whose members may use this audience. Empty means any
+  // authenticated principal, which is only appropriate for an audience whose
+  // bundles are themselves public.
+  repeated string allowed_idp_groups = 7;
+
+  RateLimits rate_limits = 8;
+}
+
+message RateLimits {
+  int32 requests_per_minute = 1;
+  int32 concurrent_requests = 2;
+  // Token budget per minute across catalog and result content.
+  int64 tokens_per_minute = 3;
+}
+
+// Policy is a compiled authorization and shaping rule set.
+//
+// Policies are authored in the control plane and compiled here so the data
+// plane never parses policy source or consults a database to evaluate one.
+message Policy {
+  string id = 1;
+  string name = 2;
+  int32 priority = 3;
+  repeated PolicyRule rules = 4;
+}
+
+message PolicyRule {
+  // Match conditions. An empty field matches anything.
+  repeated string effect_classes = 1;      // effect class names
+  repeated string qualified_name_globs = 2;
+  repeated string namespace_ids = 3;
+  repeated string required_idp_groups = 4;
+  repeated string data_classifications = 5;
+
+  // Decision when the rule matches.
+  PolicyDecision decision = 6;
+  string reason = 7;
+
+  // Optional TTL narrowing applied to list results this rule touches.
+  int32 max_ttl_ms = 8;
+
+  // Whether matching this rule makes the catalog view identity-specific, and
+  // therefore un-shareable between principals.
+  bool identity_specific = 9;
+}
+
+enum PolicyDecision {
+  POLICY_DECISION_UNSPECIFIED = 0;
+  POLICY_DECISION_ALLOW = 1;
+  POLICY_DECISION_DENY = 2;
+  // Hide from the catalog without failing an explicit call differently from a
+  // deny — used for tools a principal should not know exist.
+  POLICY_DECISION_HIDE = 3;
+  // Require human confirmation via MRTR before dispatch.
+  POLICY_DECISION_CONFIRM = 4;
+}
+
+// Hook is the fixed set of pipeline extension points. Seven, deliberately:
+// see docs/adr/0007-seven-hooks.md.
+enum Hook {
+  HOOK_UNSPECIFIED = 0;
+  HOOK_ON_REQUEST = 1;
+  HOOK_ON_IDENTITY = 2;
+  HOOK_ON_CATALOG = 3;
+  HOOK_ON_TOOL_CALL = 4;
+  HOOK_ON_TOOL_RESULT = 5;
+  HOOK_ON_RESPONSE = 6;
+  HOOK_ON_AUDIT = 7;
+}
+
+enum PluginRuntime {
+  PLUGIN_RUNTIME_UNSPECIFIED = 0;
+  // WebAssembly, executed in-process under a fuel limit. The default: no
+  // network, no filesystem, bounded CPU.
+  PLUGIN_RUNTIME_WASM = 1;
+  // Out-of-process gRPC, for plugins that must reach the network (the LLM
+  // guard) or carry a runtime the WASM host cannot host.
+  PLUGIN_RUNTIME_GRPC = 2;
+}
+
+enum RolloutState {
+  ROLLOUT_STATE_UNSPECIFIED = 0;
+  // Runs, records its verdict, and is never acted on. Every plugin starts here.
+  ROLLOUT_STATE_SHADOW = 1;
+  // Enforced for a percentage of requests, recorded for the rest.
+  ROLLOUT_STATE_CANARY = 2;
+  // Enforced for every request.
+  ROLLOUT_STATE_ENFORCE = 3;
+}
+
+// FailureMode is what the pipeline does when a plugin errors, times out, or is
+// skipped by an open circuit.
+enum FailureMode {
+  FAILURE_MODE_UNSPECIFIED = 0;
+  // Continue without the plugin's verdict. Appropriate for an enrichment
+  // plugin, and for anything on a read path where availability outranks the
+  // check.
+  FAILURE_MODE_OPEN = 1;
+  // Deny the request. Appropriate for an authorization plugin on a
+  // destructive tool, where a missing check is not a safe default.
+  FAILURE_MODE_CLOSED = 2;
+}
+
+message PluginManifest {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  PluginRuntime runtime = 4;
+
+  // Hooks this plugin participates in.
+  repeated Hook hooks = 5;
+
+  // Lower runs first within a hook. Two mutating plugins may not share a
+  // priority at the same hook; the snapshot build rejects that rather than
+  // leaving the order to map iteration.
+  int32 priority = 6;
+
+  // Per-invocation deadline. Zero means the pipeline default.
+  int32 budget_ms = 7;
+
+  // Declared scopes. A plugin may read only what it declares and may patch
+  // only within `writes`; a patch outside that scope is rejected at runtime,
+  // so the manifest is an enforced contract rather than documentation.
+  repeated string reads = 8;
+  repeated string writes = 9;
+
+  // Failure mode per effect class, keyed by EffectClass name. A plugin is
+  // usually fail-open on reads and fail-closed on destructive calls, and that
+  // asymmetry has to be expressed per class rather than per plugin.
+  map<string, FailureMode> failure_policy = 10;
+
+  // Whether this plugin's output depends on who is asking. If true, any catalog
+  // it touches becomes cacheScope: private, because a response shaped for one
+  // principal must never be served to another.
+  bool identity_dependent = 11;
+
+  RolloutState rollout = 12;
+  // Percentage 0..100, meaningful only for ROLLOUT_STATE_CANARY.
+  int32 canary_percent = 13;
+
+  // Artifact location and digest. The digest is verified before load, so a
+  // swapped artifact fails closed.
+  string artifact_ref = 14;
+  string artifact_digest = 15;
+
+  // WASM fuel limit — bounded CPU rather than a wall-clock timeout, so a busy
+  // host does not turn a compute limit into a flaky one.
+  uint64 fuel_limit = 16;
+
+  // gRPC endpoint, for PLUGIN_RUNTIME_GRPC.
+  string endpoint = 17;
+
+  // Opaque plugin configuration as canonical JSON.
+  string config_json = 18;
+
+  // Restrict this plugin to specific audiences. Empty means every audience.
+  repeated string audience_ids = 19;
+}

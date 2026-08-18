@@ -70,7 +70,7 @@ test-e2e:
 generate: generate-go generate-ts
 
 generate-go:
-	$(GO) generate ./...
+	./proto/generate.sh
 
 generate-ts:
 	cd web && npm run generate
