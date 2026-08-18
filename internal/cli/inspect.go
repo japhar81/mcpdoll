@@ -411,3 +411,134 @@ func newSnapshotCurrentCmd(env *Env) *cobra.Command {
 		"snapshot file (default: the profile's snapshot_path, or ./snapshot.pb)")
 	return cmd
 }
+
+// -------------------------------------------------------- gateway backends ---
+
+func newGatewayBackendsCmd(env *Env) *cobra.Command {
+	var showDrift bool
+	cmd := &cobra.Command{
+		Use:   "backends",
+		Short: "Report what the gateway's prober knows about each backend",
+		Long: "The gateway serves admitted definitions and never live backend output, so a\n" +
+			"backend changing its catalog is a detectable event rather than a silent\n" +
+			"change to what clients see. This is what the detector found.\n\n" +
+			"Read the DRIFT and BLOCKED columns together: drift on a strict backend costs\n" +
+			"tool calls, drift on an advisory one costs nothing but is still worth fixing.",
+		Annotations: map[string]string{annotationOperation: "listBackends"},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+			defer cancel()
+
+			url := strings.TrimRight(env.adminURL, "/") + "/admin/backends"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
+			if token := env.Token(); token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return unavailableError(fmt.Errorf(
+					"cannot reach the data plane's admin listener at %s: %w\n\n"+
+						"Backend health is served on the admin port, not the MCP one. "+
+						"Set --admin-url or the profile's admin_url.", env.adminURL, err))
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return unavailableError(fmt.Errorf("%s returned %d", url, resp.StatusCode))
+			}
+			var report backendReport
+			if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+				return unavailableError(fmt.Errorf("%s returned an unreadable body: %w", url, err))
+			}
+			report.showDrift = showDrift
+
+			if err := env.Emit(report); err != nil {
+				return err
+			}
+			// Non-zero when something is refusing calls, so a deploy gate can
+			// branch on it without parsing the table.
+			if report.Summary.BlockedTools > 0 {
+				return validationError(fmt.Errorf(
+					"%d tool(s) are refused because their backend drifted",
+					report.Summary.BlockedTools))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&showDrift, "drift", false,
+		"list every drifted tool rather than counting them")
+	return cmd
+}
+
+type backendReport struct {
+	Summary  api.BackendHealthSummary `json:"summary" yaml:"summary"`
+	Backends []api.BackendHealth      `json:"backends" yaml:"backends"`
+
+	showDrift bool
+}
+
+func (r backendReport) Table() Table {
+	if r.showDrift {
+		rows := [][]string{}
+		for _, b := range r.Backends {
+			for _, d := range b.Drift {
+				name := d.QualifiedName
+				if name == "" {
+					// An added tool has no qualified name, and printing a blank
+					// cell reads as a bug rather than as the deliberate refusal
+					// to invent one.
+					name = d.Name + " (unadmitted)"
+				}
+				rows = append(rows, []string{b.ServerName, name, d.Kind, d.Detail})
+			}
+		}
+		return Table{
+			Columns: []string{"BACKEND", "TOOL", "KIND", "WHAT CHANGED"},
+			Rows:    rows,
+			Notes: []string{
+				"semantic and removed drift block calls on a strict backend; " +
+					"cosmetic and added never do",
+			},
+		}
+	}
+
+	rows := make([][]string, 0, len(r.Backends))
+	for _, b := range r.Backends {
+		blocked := 0
+		for _, d := range b.Drift {
+			if (d.Kind == "semantic" || d.Kind == "removed") && b.ServingMode == "strict" {
+				blocked++
+			}
+		}
+		latency := "—"
+		if b.LatencyEWMAMs > 0 {
+			latency = strconv.FormatInt(b.LatencyEWMAMs, 10) + "ms"
+		}
+		rows = append(rows, []string{
+			b.ServerName, b.State, b.ServingMode,
+			strconv.Itoa(len(b.Drift)), strconv.Itoa(blocked),
+			latency, b.NegotiatedVersion,
+		})
+	}
+
+	notes := []string{
+		fmt.Sprintf("%d backend(s): %d healthy, %d degraded, %d unavailable, %d drifted, %d unknown",
+			r.Summary.Total, r.Summary.Healthy, r.Summary.Degraded,
+			r.Summary.Unavailable, r.Summary.Drifted, r.Summary.Unknown),
+	}
+	if r.Summary.BlockedTools > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"%d tool(s) are refused. Publish a snapshot built from the backends' "+
+				"current catalogs, or roll the backends back.", r.Summary.BlockedTools))
+	}
+	notes = append(notes, "use --drift to see exactly what changed")
+
+	return Table{
+		Columns: []string{"BACKEND", "STATE", "MODE", "DRIFT", "BLOCKED", "LATENCY", "PROTOCOL"},
+		Rows:    rows,
+		Notes:   notes,
+	}
+}

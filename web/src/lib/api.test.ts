@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getRegistry, listPlugins, setToken, validateRegistry } from "./api.ts";
+import {
+  ApiError,
+  getRegistry,
+  listPlugins,
+  setToken,
+  validateRegistry,
+} from "./api.ts";
 
 /** Installs a fetch stub and returns the recorded calls. */
 function stubFetch(handler: (url: string, init: RequestInit) => Response) {
@@ -29,7 +35,9 @@ describe("the token", () => {
     setToken("s3cret");
     await getRegistry();
 
-    expect(calls[0]!.init.headers).toMatchObject({ Authorization: "Bearer s3cret" });
+    expect(calls[0]!.init.headers).toMatchObject({
+      Authorization: "Bearer s3cret",
+    });
   });
 
   it("is omitted entirely when unset, rather than sent empty", async () => {
@@ -49,7 +57,10 @@ describe("errors", () => {
         {
           code: "validation_failed",
           message: "the registry document is not valid",
-          problems: ["catalog.ttl must be positive", "audience references unknown bundle"],
+          problems: [
+            "catalog.ttl must be positive",
+            "audience references unknown bundle",
+          ],
         },
         422,
       ),
@@ -77,7 +88,9 @@ describe("errors", () => {
   it("survive a non-JSON body", async () => {
     // A proxy's HTML error page is a real thing to receive, and it must not
     // turn into a parse exception with no status in it.
-    stubFetch(() => new Response("<html>502 Bad Gateway</html>", { status: 502 }));
+    stubFetch(
+      () => new Response("<html>502 Bad Gateway</html>", { status: 502 }),
+    );
 
     const err = (await getRegistry().catch((e: unknown) => e)) as ApiError;
     expect(err.status).toBe(502);

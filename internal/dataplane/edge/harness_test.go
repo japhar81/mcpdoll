@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/fixtures"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/health"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	mcpadapter "github.com/mcpdoll/mcpdoll/internal/mcp"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
@@ -42,6 +44,7 @@ type harness struct {
 
 	Store    *snapshot.Store
 	Pool     *backends.Pool
+	Prober   *health.Prober
 	Edge     *edge.Edge
 	Signer   *snapshot.Signer
 	Verifier *snapshot.Verifier
@@ -71,6 +74,12 @@ type harnessOptions struct {
 	// NoDefaultSubject makes the dev identity resolver refuse an unidentified
 	// request instead of defaulting to a subject.
 	NoDefaultSubject bool
+	// WithProber installs a health prober and wires its registry in as the
+	// edge's drift guard, so a drifted tool is actually refused.
+	WithProber bool
+	// AdvisoryWarehouse marks the warehouse backend advisory rather than
+	// strict, which is the difference between recording drift and acting on it.
+	AdvisoryWarehouse bool
 }
 
 func newHarness(t *testing.T, opts harnessOptions) *harness {
@@ -132,6 +141,20 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		Identity: identity,
 		Pipeline: opts.Pipeline,
 		Logger:   logger,
+	}
+	if opts.WithProber {
+		proberLog := logger
+		if proberLog == nil {
+			proberLog = slog.New(slog.NewTextHandler(io.Discard, nil))
+		}
+		h.Prober = health.New(health.Options{
+			Pool:        h.Pool,
+			Snapshot:    h.Store,
+			GraceWindow: time.Minute,
+			Timeout:     5 * time.Second,
+			Logger:      proberLog,
+		})
+		edgeOpts.DriftGuard = h.Prober.Registry()
 	}
 	if opts.WithStateSigner {
 		key, err := edge.GenerateStateKey()
@@ -235,6 +258,9 @@ func (h *harness) Publish(opts harnessOptions) {
 			Id: spec.srvID, Name: spec.srvName, NamespaceId: spec.nsID,
 			Endpoint:    spec.endpoint,
 			ServingMode: snapshotpb.ServingMode_SERVING_MODE_STRICT,
+		}
+		if opts.AdvisoryWarehouse && spec.srvID == "srv_whs" {
+			server.ServingMode = snapshotpb.ServingMode_SERVING_MODE_ADVISORY
 		}
 		if opts.TokenSource != nil {
 			// The pool only exchanges when the server declares an exchange; a

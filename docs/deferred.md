@@ -199,6 +199,23 @@ first commit: spans across client → edge → pipeline → plugin → backend, 
 metric set, and trace-correlated logs. So there is data to display; there is
 nothing yet to display it in beyond Grafana's ad-hoc explore.
 
+### Health probing: built; ejection and the LLM guard's inputs are not
+
+The prober runs, classifies drift against the admitted digests, and blocks
+drifted tools on a strict backend. What it does not do:
+
+- **Eject a backend after N consecutive invocation failures.**
+  `health.eject_after_failures` is configured and unused. Circuit breaking on
+  the *call* path exists (`backends.Breaker`), which covers most of the same
+  ground; ejection would additionally stop probing a backend that is clearly
+  gone.
+- **Feed drift into an alert.** Drift is logged on transition and served on the
+  admin listener. Nothing pages.
+- **Probe with a canary tool.** `Server.canary_tool` is carried in the snapshot
+  and displayed in the console; the prober uses `tools/list` for every backend
+  rather than calling the canary. Listing proves the session works, which is
+  weaker than proving a tool works.
+
 ### Audit trail persistence
 
 `pipeline.Trace` records everything the console's request-trace waterfall needs —

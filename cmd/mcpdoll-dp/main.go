@@ -22,6 +22,7 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/health"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/pipeline"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/plugins"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
@@ -184,6 +185,20 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// arrives at a hook whose plugins are still being compiled.
 	store.Observe(func(view *snapshot.View) { hosts.Sync(ctx, view) })
 
+	// The prober is what turns "the gateway serves admitted definitions" from a
+	// property nobody can observe into one somebody is checking. Its registry
+	// is the edge's drift guard, so a strict backend that redeploys a changed
+	// schema stops having its tools called.
+	prober := health.New(health.Options{
+		Pool:        pool,
+		Snapshot:    store,
+		Interval:    cfg.Health.ProbeInterval,
+		Timeout:     cfg.Health.ProbeTimeout,
+		GraceWindow: cfg.Health.GraceWindow,
+		EWMAAlpha:   cfg.Health.EWMAAlpha,
+		Logger:      log,
+	})
+
 	dp, err := edge.New(edge.Options{
 		Store:       store,
 		Pool:        pool,
@@ -194,6 +209,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Pipeline:    wiring.NewEdgePipeline(engine, log),
 		GraceWindow: cfg.Health.GraceWindow,
 		StateSigner: stateSigner,
+		DriftGuard:  prober.Registry(),
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errStartup, err)
@@ -219,7 +235,30 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		// bounding is the pipeline budget's and the caller's context's job.
 	}
 
-	errs := make(chan error, 2)
+	// The admin listener is separate from the tool endpoint, on its own port.
+	// What it serves — every backend, its endpoint, its condition — is an
+	// inventory of the systems behind the gateway, and an agent that can call a
+	// tool has no business reading it. Bind it to an internal interface.
+	adminMux := http.NewServeMux()
+	adminMux.Handle("GET /admin/backends", prober.Registry().Handler(log))
+	adminMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	admin := &http.Server{
+		Addr:              cfg.DataPlane.AdminAddr,
+		Handler:           adminMux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errs := make(chan error, 3)
+
+	go func() {
+		log.InfoContext(ctx, "admin listening", "addr", cfg.DataPlane.AdminAddr)
+		if err := admin.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("admin server: %w", err)
+		}
+	}()
 
 	go func() {
 		log.InfoContext(ctx, "data plane listening",
@@ -237,6 +276,12 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		}
 	}()
 
+	// After the listener, deliberately. The first sweep makes a round trip to
+	// every backend, and holding readiness open for that would make a gateway
+	// with one slow backend look broken at startup — when in fact it is ready
+	// to serve from a snapshot it already holds.
+	go prober.Run(ctx)
+
 	select {
 	case <-ctx.Done():
 		log.Info("shutting down")
@@ -244,10 +289,12 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		// Still drain: an in-flight tool call should finish rather than be cut
 		// off because a different subsystem failed.
 		shutdown(srv, log)
+		shutdown(admin, log)
 		return err
 	}
 
 	shutdown(srv, log)
+	shutdown(admin, log)
 	return nil
 }
 

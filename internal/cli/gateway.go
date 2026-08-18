@@ -37,6 +37,7 @@ func newGatewayCmd(env *Env) *cobra.Command {
 		newGatewayCatalogCmd(env),
 		newGatewayCallCmd(env),
 		newGatewayAudiencesCmd(env),
+		newGatewayBackendsCmd(env),
 	)
 	return cmd
 }

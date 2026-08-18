@@ -31,6 +31,10 @@ type Config struct {
 	SnapshotPath string
 	// GatewayURL is the data plane the gateway operations inspect.
 	GatewayURL string
+	// AdminURL is the data plane's admin listener, where backend health lives.
+	// Separate from GatewayURL because it is a separate port serving a
+	// different trust level.
+	AdminURL string
 
 	// SigningKeyPath and SigningKeyID let this control plane build snapshots.
 	// Both empty is a legitimate deployment: a control plane that only reads is
@@ -141,6 +145,7 @@ func (s *Server) routes() {
 		r.Post("/keys:generate", s.handleGenerateSigningKey)
 
 		r.Get("/gateway/status", s.handleGatewayStatus)
+		r.Get("/gateway/backends", s.handleListBackends)
 		r.Get("/gateway/audiences", s.handleListAudiences)
 		r.Get("/gateway/audiences/{slug}/catalog", s.handleAudienceCatalog)
 		r.Post("/gateway/audiences/{slug}/tools/{toolName}:call", s.handleCallTool)
@@ -320,6 +325,7 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) inspectorClient(r *http.Request) *inspector.Client {
 	return &inspector.Client{
 		GatewayURL: s.cfg.GatewayURL,
+		AdminURL:   s.cfg.AdminURL,
 		// The data-plane credential is the caller's own, forwarded deliberately
 		// rather than swapped for a service identity: an operator inspecting
 		// the gateway should reach exactly what their own token reaches.
@@ -346,6 +352,19 @@ func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.log, http.StatusOK, status)
+}
+
+func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
+	report, err := s.inspectorClient(r).Backends(r.Context())
+	if err != nil {
+		if errors.Is(err, inspector.ErrNoAdminURL) {
+			writeError(w, s.log, http.StatusNotFound, CodeNotFound, err.Error())
+			return
+		}
+		s.writeInspectorError(w, err)
+		return
+	}
+	writeJSON(w, s.log, http.StatusOK, report)
 }
 
 func (s *Server) handleListAudiences(w http.ResponseWriter, r *http.Request) {

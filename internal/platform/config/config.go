@@ -93,6 +93,10 @@ type ControlPlane struct {
 	RegistryPath string `yaml:"registry_path"`
 	// GatewayURL is the data plane the gateway inspection operations reach.
 	GatewayURL string `yaml:"gateway_url"`
+	// AdminURL is the data plane's admin listener, which serves backend health.
+	// A separate port from GatewayURL on purpose: the report is an inventory of
+	// the systems behind the gateway.
+	AdminURL string `yaml:"admin_url"`
 	// APIToken is the bearer credential the API requires. Empty is a startup
 	// error unless --allow-anonymous is passed: an API that can mint signing
 	// keys must not become reachable by leaving a line out of a config file.

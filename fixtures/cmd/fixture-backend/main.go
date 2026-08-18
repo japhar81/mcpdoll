@@ -30,7 +30,9 @@ func main() {
 		// needing a control API.
 		latency   = flag.Duration("latency", 0, "misbehaving: delay added to every call")
 		failEvery = flag.Int("fail-every", 0, "misbehaving: fail every Nth call (0 disables)")
-		drifted   = flag.Bool("drifted", false, "misbehaving: start with a drifted tool description")
+		drifted   = flag.String("drift", "",
+			"misbehaving: start drifted — \"cosmetic\" (description only) or "+
+				"\"semantic\" (input schema)")
 	)
 	flag.Parse()
 
@@ -47,8 +49,16 @@ func main() {
 		if *failEvery > 0 {
 			control.FailEvery(*failEvery)
 		}
-		if *drifted {
-			control.Drift()
+		switch *drifted {
+		case "":
+		case "cosmetic":
+			control.DriftAs(fixtures.DriftCosmetic)
+		case "semantic":
+			control.DriftAs(fixtures.DriftSemantic)
+		default:
+			fmt.Fprintf(os.Stderr,
+				"unknown -drift %q: use cosmetic or semantic\n", *drifted)
+			os.Exit(2)
 		}
 	}
 

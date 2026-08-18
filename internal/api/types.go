@@ -469,3 +469,68 @@ type SigningKey struct {
 	// trusted_signing_keys list.
 	TrustEntry string `json:"trust_entry" yaml:"trust_entry"`
 }
+
+// ------------------------------------------------------- backend health -----
+
+// BackendHealthReport is what the gateway's prober knows.
+//
+// These types mirror internal/dataplane/health rather than reusing it, because
+// the wire shape is a contract and the prober's internals are not. The prober
+// is free to add a field without that becoming a published API — and this
+// package must not drag the data plane's dependencies into the CLI.
+type BackendHealthReport struct {
+	Summary  BackendHealthSummary `json:"summary" yaml:"summary"`
+	Backends []BackendHealth      `json:"backends" yaml:"backends"`
+}
+
+// BackendHealthSummary counts backends by state.
+type BackendHealthSummary struct {
+	Total       int `json:"total" yaml:"total"`
+	Healthy     int `json:"healthy" yaml:"healthy"`
+	Degraded    int `json:"degraded" yaml:"degraded"`
+	Unavailable int `json:"unavailable" yaml:"unavailable"`
+	Drifted     int `json:"drifted" yaml:"drifted"`
+	Unknown     int `json:"unknown" yaml:"unknown"`
+	// BlockedTools is what a strict backend's drift actually costs. Always zero
+	// in an all-advisory deployment, however far its backends have moved.
+	BlockedTools int `json:"blocked_tools" yaml:"blocked_tools"`
+}
+
+// BackendHealth is one backend's observed condition.
+type BackendHealth struct {
+	ServerID   string `json:"server_id" yaml:"server_id"`
+	ServerName string `json:"server_name" yaml:"server_name"`
+	Endpoint   string `json:"endpoint" yaml:"endpoint"`
+	// State is unknown, healthy, degraded, unavailable, or drifted.
+	State string `json:"state" yaml:"state"`
+	// ServingMode decides what the drift costs: strict refuses, advisory
+	// serves and records.
+	ServingMode string `json:"serving_mode" yaml:"serving_mode"`
+
+	LastProbe   string `json:"last_probe" yaml:"last_probe"`
+	LastSuccess string `json:"last_success,omitempty" yaml:"last_success,omitempty"`
+
+	ConsecutiveFailures int   `json:"consecutive_failures" yaml:"consecutive_failures"`
+	LatencyEWMAMs       int64 `json:"latency_ewma_ms" yaml:"latency_ewma_ms"`
+
+	NegotiatedVersion string `json:"negotiated_version,omitempty" yaml:"negotiated_version,omitempty"`
+	Error             string `json:"error,omitempty" yaml:"error,omitempty"`
+
+	ToolsAdmitted int         `json:"tools_admitted" yaml:"tools_admitted"`
+	ToolsObserved int         `json:"tools_observed" yaml:"tools_observed"`
+	Drift         []ToolDrift `json:"drift,omitempty" yaml:"drift,omitempty"`
+}
+
+// ToolDrift is one tool's difference from what was admitted.
+type ToolDrift struct {
+	Name string `json:"name" yaml:"name"`
+	// QualifiedName is absent for an added tool, which has none — assigning one
+	// is admission's job.
+	QualifiedName string `json:"qualified_name,omitempty" yaml:"qualified_name,omitempty"`
+	// Kind is cosmetic, semantic, removed, or added.
+	Kind string `json:"kind" yaml:"kind"`
+
+	AdmittedDigest string `json:"admitted_digest,omitempty" yaml:"admitted_digest,omitempty"`
+	ObservedDigest string `json:"observed_digest,omitempty" yaml:"observed_digest,omitempty"`
+	Detail         string `json:"detail" yaml:"detail"`
+}

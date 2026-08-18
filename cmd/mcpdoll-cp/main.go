@@ -107,6 +107,7 @@ func run() int {
 		RegistryPath:   registry,
 		SnapshotPath:   cfg.DataPlane.SnapshotPath,
 		GatewayURL:     cfg.ControlPlane.GatewayURL,
+		AdminURL:       cfg.ControlPlane.AdminURL,
 		SigningKeyPath: cfg.ControlPlane.SigningKeyPath,
 		SigningKeyID:   cfg.ControlPlane.SigningKeyID,
 		KeyDir:         cfg.ControlPlane.KeyDir,

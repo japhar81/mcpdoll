@@ -21,6 +21,7 @@ export const ROUTE_BINDINGS: RouteBinding[] = [
   { path: "/snapshots/verify", operation: "verifySnapshot" },
   { path: "/snapshots/keys", operation: "generateSigningKey" },
   { path: "/gateway", operation: "getGatewayStatus" },
+  { path: "/gateway/backends", operation: "listBackends" },
   { path: "/gateway/audiences", operation: "listAudiences" },
   { path: "/gateway/audiences/:slug/catalog", operation: "getAudienceCatalog" },
   { path: "/gateway/audiences/:slug/playground", operation: "callTool" },

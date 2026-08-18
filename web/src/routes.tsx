@@ -25,6 +25,7 @@ import { SnapshotBuildScreen } from "./screens/SnapshotBuildScreen.tsx";
 import { SnapshotVerifyScreen } from "./screens/SnapshotVerifyScreen.tsx";
 import { KeysScreen } from "./screens/KeysScreen.tsx";
 import { GatewayScreen } from "./screens/GatewayScreen.tsx";
+import { BackendsScreen } from "./screens/BackendsScreen.tsx";
 import { AudiencesScreen } from "./screens/AudiencesScreen.tsx";
 import { CatalogScreen } from "./screens/CatalogScreen.tsx";
 import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
@@ -124,6 +125,13 @@ export const ROUTES: RouteDef[] = [
     operation: "getGatewayStatus",
     component: GatewayScreen,
     nav: "Status",
+    section: "Gateway",
+  },
+  {
+    path: "/gateway/backends",
+    operation: "listBackends",
+    component: BackendsScreen,
+    nav: "Backend health",
     section: "Gateway",
   },
   {

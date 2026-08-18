@@ -72,6 +72,33 @@ func (e *Edge) toolHandler(
 		span.SetAttributes(observability.AttrPrincipal.String(principal.Subject))
 		principal.Audience = av.Audience.Slug
 
+		// ---- drift block -------------------------------------------------
+		// A strict backend whose definition has changed since admission must
+		// not have this tool called: the arguments were shaped against a schema
+		// the backend no longer implements.
+		//
+		// Checked before the pipeline rather than after. Running seven hooks to
+		// produce a decision that will not be honoured wastes the request
+		// budget and writes an audit entry describing a call that never had a
+		// chance — and the tool is unfit to serve regardless of what any plugin
+		// would have said.
+		if e.opts.DriftGuard != nil {
+			if reason, blocked := e.opts.DriftGuard.Blocked(tool.Def.QualifiedName); blocked {
+				outcome = "drift_blocked"
+				span.SetAttributes(observability.AttrOutcome.String(outcome))
+				e.log.WarnContext(ctx, "refused a call to a drifted tool",
+					logging.FieldToolName, tool.Def.QualifiedName,
+					logging.FieldBackend, tool.Server.Name,
+					logging.FieldPrincipal, principal.Subject,
+					"reason", reason)
+				e.opts.Metrics.ToolErrors.Add(ctx, 1, metricAttrs(
+					observability.AttrToolName.String(tool.Def.QualifiedName),
+					observability.AttrErrorKind.String(outcome),
+				))
+				return driftBlockedResult(tool, reason), nil
+			}
+		}
+
 		var arguments any = req.Params.Arguments
 
 		// ---- MRTR retry: unwrap the gateway's requestState envelope --------
@@ -275,6 +302,34 @@ func deniedResult(tool *snapshot.Tool, reason string) *mcp.CallToolResult {
 				"tool":    tool.Def.QualifiedName,
 			},
 		},
+	}
+}
+
+// driftBlockedResult refuses a tool whose backend definition has changed.
+//
+// A tool error rather than a protocol error, like every other refusal here: the
+// model should read the reason and choose differently rather than conclude the
+// gateway is broken. `retryable: false` is the important field — retrying will
+// not help until somebody publishes, and without it a model will try again.
+func driftBlockedResult(tool *snapshot.Tool, reason string) *mcp.CallToolResult {
+	detail := map[string]any{
+		"outcome":   "drift_blocked",
+		"tool":      tool.Def.QualifiedName,
+		"backend":   tool.Server.Name,
+		"retryable": false,
+		"reason":    reason,
+	}
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			&mcp.TextContent{
+				Text: fmt.Sprintf(
+					"%s cannot be called: %s. This is a configuration state, not a "+
+						"transient failure — retrying will not help.",
+					tool.Def.QualifiedName, reason),
+			},
+		},
+		Meta: map[string]any{"mcpdoll": detail},
 	}
 }
 

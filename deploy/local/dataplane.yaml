@@ -27,6 +27,7 @@ controlplane:
   listen_addr: ":3001"
   registry_path: deploy/local/registry.yaml
   gateway_url: http://localhost:8080
+  admin_url: http://localhost:8081
   signing_key_path: deploy/local/dev.key
   signing_key_id: dev
   key_dir: deploy/local

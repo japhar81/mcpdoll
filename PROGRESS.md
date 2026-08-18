@@ -229,16 +229,14 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
 1. **Control plane persistence + admission.** Postgres schema, `sqlc`, the
    registry API, then the admission stages and human approval. The snapshotter is
    already the piece admission would feed.
-2. **Prober + drift + health state machine.** Inputs exist (`mcp.Discover`,
-   `mcp.DigestTools`, the drifting fixture); the loop does not.
-3. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+2. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-4. **Grafana dashboards as code.** The instrumentation is complete; there is
+3. **Grafana dashboards as code.** The instrumentation is complete; there is
    nothing yet to display it in.
 
 ## The tri-surface law
 
-`make parity` is green: **16 operations, 16 CLI commands, 16 console routes.**
+`make parity` is green: **17 operations, 17 CLI commands, 17 console routes.**
 
 It checks three real artifacts, never a hand-maintained list — the spec, the
 built binary's `__commands --json`, and a route manifest generated from the

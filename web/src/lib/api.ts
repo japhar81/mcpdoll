@@ -10,6 +10,7 @@
  */
 import type {
   AudienceList,
+  BackendHealthReport,
   BuildReport,
   CallResult,
   Catalog,
@@ -169,6 +170,9 @@ export const generateSigningKey = (keyId: string) =>
 
 export const getGatewayStatus = () =>
   request<GatewayStatus>("GET", "/api/v1/gateway/status");
+
+export const listBackends = () =>
+  request<BackendHealthReport>("GET", "/api/v1/gateway/backends");
 
 export const listAudiences = () =>
   request<AudienceList>("GET", "/api/v1/gateway/audiences");

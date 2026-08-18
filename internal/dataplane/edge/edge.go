@@ -65,6 +65,12 @@ type Options struct {
 	// GraceWindow is how long a tool from an unreachable backend stays listed.
 	GraceWindow time.Duration
 
+	// DriftGuard, when set, is consulted before every tool call and may refuse
+	// one whose backend definition has changed since admission. Optional: a
+	// gateway with no prober serves whatever the snapshot admitted, which is
+	// the behaviour without this and remains correct — just blind.
+	DriftGuard DriftGuard
+
 	// StateSigner signs MRTR requestState envelopes. Required only if a
 	// backend or plugin can ask for client input; without it such a call is
 	// refused rather than served with an unsigned state a client could forge.
@@ -451,4 +457,17 @@ func recordSpanError(span trace.Span, err error) {
 
 func metricAttrs(kv ...attribute.KeyValue) metric.MeasurementOption {
 	return metric.WithAttributes(kv...)
+}
+
+// DriftGuard reports tools that must not be served.
+//
+// An interface, not the health registry itself, so the edge does not depend on
+// the prober: a data plane can run without one, and the edge's tests do not
+// need a probe loop to exercise a refusal.
+type DriftGuard interface {
+	// Blocked reports whether a qualified tool must be refused, and why.
+	//
+	// The reason is returned alongside the answer because it ends up in an
+	// error a model reads, and a refusal without a cause produces a retry loop.
+	Blocked(qualifiedName string) (reason string, blocked bool)
 }

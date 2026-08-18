@@ -40,6 +40,13 @@ var ErrUnavailable = errors.New("data plane unavailable")
 // blob that is not an object.
 var ErrInvalidRequest = errors.New("invalid request")
 
+// ErrNoAdminURL marks a control plane with no data-plane admin address
+// configured. A distinct error rather than a timeout against the wrong port,
+// because the fix is a config line and nothing about a timeout says so.
+var ErrNoAdminURL = errors.New(
+	"no data-plane admin URL is configured (controlplane.admin_url); backend " +
+		"health is served on the data plane's admin listener, not its MCP port")
+
 // ErrForbidden marks a data plane that answered, and said no.
 //
 // Kept distinct from ErrUnavailable because they send an operator to different
@@ -61,8 +68,12 @@ const DefaultTimeout = 60 * time.Second
 
 // Client inspects one data plane.
 type Client struct {
-	// GatewayURL is the data plane's base URL.
+	// GatewayURL is the data plane's base URL — the one agents connect to.
 	GatewayURL string
+	// AdminURL is the data plane's admin listener, which is a different port
+	// on purpose: it serves an inventory of the backends behind the gateway,
+	// and an agent that can call a tool has no business reading it.
+	AdminURL string
 	// Token is presented to the data plane as a bearer credential. It is the
 	// *inspecting operator's* token, never a token belonging to the principal
 	// being impersonated.
@@ -430,4 +441,46 @@ func resultText(res *sdk.CallToolResult) string {
 		}
 	}
 	return b.String()
+}
+
+// Backends reports what the data plane's prober knows.
+//
+// It reads the data plane's **admin** listener, not its MCP endpoint. That
+// separation is deliberate on the serving side — the report names every backend
+// and its address — and it means a control plane configured with only a gateway
+// URL cannot fetch this, which [ErrNoAdminURL] says plainly rather than timing
+// out against the wrong port.
+func (c *Client) Backends(ctx context.Context) (api.BackendHealthReport, error) {
+	var out api.BackendHealthReport
+
+	if strings.TrimSpace(c.AdminURL) == "" {
+		return out, ErrNoAdminURL
+	}
+
+	url := strings.TrimRight(c.AdminURL, "/") + "/admin/backends"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return out, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return out, fmt.Errorf("%w: cannot reach the data plane's admin listener at %s: %v",
+			ErrUnavailable, c.AdminURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("%w: %s returned %d", ErrUnavailable, url, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, fmt.Errorf("%w: %s returned an unreadable body: %v", ErrUnavailable, url, err)
+	}
+	if out.Backends == nil {
+		out.Backends = []api.BackendHealth{}
+	}
+	return out, nil
 }

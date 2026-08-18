@@ -34,6 +34,7 @@ type Env struct {
 
 	// Resolved during load and read by commands.
 	gatewayURL   string
+	adminURL     string
 	tokenRef     string
 	snapshotPath string
 }
@@ -50,6 +51,10 @@ type Profile struct {
 	APIURL string `yaml:"api_url"`
 	// GatewayURL is the data plane, for the inspector commands.
 	GatewayURL string `yaml:"gateway_url"`
+	// AdminURL is the data plane's admin listener, which serves backend health
+	// on a separate port because that report is an inventory of what is behind
+	// the gateway.
+	AdminURL string `yaml:"admin_url"`
 	// SnapshotPath is the file the local data plane serves, so that
 	// `mcpdoll snapshot current` has somewhere to look.
 	SnapshotPath string `yaml:"snapshot_path"`
@@ -122,6 +127,7 @@ func (e *Env) load(cmd *cobra.Command) error {
 		e.Project = firstNonEmpty(os.Getenv("MCPDOLL_PROJECT"), profile.Project)
 	}
 	e.gatewayURL = firstNonEmpty(os.Getenv("MCPDOLL_GATEWAY_URL"), profile.GatewayURL, "http://localhost:8080")
+	e.adminURL = firstNonEmpty(os.Getenv("MCPDOLL_ADMIN_URL"), profile.AdminURL, "http://localhost:8081")
 	e.snapshotPath = firstNonEmpty(os.Getenv("MCPDOLL_SNAPSHOT_PATH"), profile.SnapshotPath, "snapshot.pb")
 	e.tokenRef = profile.TokenRef
 

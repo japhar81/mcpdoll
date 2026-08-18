@@ -316,6 +316,31 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/GatewayStatus" }
 
+  /api/v1/gateway/backends:
+    get:
+      operationId: listBackends
+      summary: What the gateway's prober knows about each backend
+      description: |
+        Every backend's condition, and how far each has drifted from what was
+        admitted. Drift is the interesting column: the gateway serves admitted
+        definitions and never live backend output, which makes a backend
+        changing its catalog a detectable event rather than a silent change to
+        what clients see — but only because something looks.
+
+        `blocked_tools` is what a strict backend's drift actually costs. In
+        advisory mode it is always zero however far the backend has moved.
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll gateway backends
+        ui: /gateway/backends
+      responses:
+        "200":
+          description: Backend conditions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackendHealthReport" }
+        "502": { $ref: "#/components/responses/Unavailable" }
+
   /api/v1/gateway/audiences:
     get:
       operationId: listAudiences
@@ -416,6 +441,15 @@ components:
   responses:
     NotFound:
       description: The resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Unavailable:
+      description: |
+        The data plane could not be reached. Distinct from a 403, which means
+        it answered and refused — reporting an authorization decision as an
+        outage sends the reader to the wrong system.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -923,6 +957,99 @@ components:
             registered:
               type: array
               items: { $ref: "#/components/schemas/Audience" }
+
+    BackendHealthReport:
+      type: object
+      required: [summary, backends]
+      properties:
+        summary: { $ref: "#/components/schemas/BackendHealthSummary" }
+        backends:
+          type: array
+          items: { $ref: "#/components/schemas/BackendHealth" }
+
+    BackendHealthSummary:
+      type: object
+      required: [total, healthy, degraded, unavailable, drifted, unknown, blocked_tools]
+      properties:
+        total: { type: integer }
+        healthy: { type: integer }
+        degraded: { type: integer }
+        unavailable: { type: integer }
+        drifted: { type: integer }
+        unknown: { type: integer }
+        blocked_tools:
+          type: integer
+          description: |
+            Tools refused because of drift. Zero in an all-advisory deployment
+            however far its backends have moved.
+
+    BackendHealth:
+      type: object
+      required: [server_id, server_name, endpoint, state, serving_mode, last_probe, consecutive_failures, latency_ewma_ms, tools_admitted, tools_observed]
+      properties:
+        server_id: { type: string }
+        server_name: { type: string }
+        endpoint: { type: string }
+        state:
+          type: string
+          enum: [unknown, healthy, degraded, unavailable, drifted]
+          description: |
+            `unknown` is distinct from `healthy` on purpose: a gateway that has
+            just started knows nothing about its backends, and reporting that
+            as health would make the first minute after a deploy look better
+            than it is. `degraded` means probes are failing but the grace
+            window has not elapsed, so tools stay listed and their calls fail
+            fast.
+        serving_mode:
+          type: string
+          enum: [strict, advisory]
+          description: |
+            Carried alongside the drift because the same drift means different
+            things under each: strict refuses, advisory serves and records.
+        last_probe: { type: string, format: date-time }
+        last_success: { type: string, format: date-time }
+        consecutive_failures: { type: integer }
+        latency_ewma_ms:
+          type: integer
+          format: int64
+          description: |
+            Smoothed probe latency. A single slow probe is noise; a rising
+            average is a backend going bad before it starts failing.
+        negotiated_version: { type: string }
+        error: { type: string }
+        tools_admitted: { type: integer }
+        tools_observed: { type: integer }
+        drift:
+          type: array
+          items: { $ref: "#/components/schemas/ToolDrift" }
+
+    ToolDrift:
+      type: object
+      required: [name, kind, detail]
+      properties:
+        name:
+          type: string
+          description: The name the backend publishes.
+        qualified_name:
+          type: string
+          description: |
+            The name clients see. Absent for an added tool, which has none —
+            assigning one is admission's job, and doing it at runtime would be
+            exactly the auto-naming the design forbids.
+        kind:
+          type: string
+          enum: [cosmetic, semantic, removed, added]
+          description: |
+            `cosmetic` is a changed description: the digest differs, the
+            semantic digest does not, and the tool stays servable. `semantic`
+            is a changed schema or annotation — the tool no longer does what
+            was admitted. `removed` and `semantic` are the two that block under
+            strict mode.
+        admitted_digest: { type: string }
+        observed_digest: { type: string }
+        detail:
+          type: string
+          description: What changed, so a reader need not diff two digests by eye.
 
     Catalog:
       type: object

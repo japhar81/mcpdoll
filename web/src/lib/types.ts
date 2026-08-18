@@ -246,6 +246,50 @@ export interface SigningKey {
   trust_entry: string;
 }
 
+export interface ToolDrift {
+  name: string;
+  /** Absent for an added tool — assigning a qualified name is admission's job. */
+  qualified_name?: string;
+  kind: "cosmetic" | "semantic" | "removed" | "added";
+  admitted_digest?: string;
+  observed_digest?: string;
+  detail: string;
+}
+
+export interface BackendHealth {
+  server_id: string;
+  server_name: string;
+  endpoint: string;
+  /** unknown is distinct from healthy: it means nobody has looked yet. */
+  state: "unknown" | "healthy" | "degraded" | "unavailable" | "drifted";
+  serving_mode: string;
+  last_probe: string;
+  last_success?: string;
+  consecutive_failures: number;
+  latency_ewma_ms: number;
+  negotiated_version?: string;
+  error?: string;
+  tools_admitted: number;
+  tools_observed: number;
+  drift?: ToolDrift[];
+}
+
+export interface BackendHealthSummary {
+  total: number;
+  healthy: number;
+  degraded: number;
+  unavailable: number;
+  drifted: number;
+  unknown: number;
+  /** Always zero in an all-advisory deployment, however far backends moved. */
+  blocked_tools: number;
+}
+
+export interface BackendHealthReport {
+  summary: BackendHealthSummary;
+  backends: BackendHealth[];
+}
+
 export interface ApiErrorBody {
   code: string;
   message: string;
