@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 )
 
 // The MCP `_meta` keys that carry W3C trace context.
@@ -95,11 +94,4 @@ func InjectIntoMeta(ctx context.Context, meta map[string]any) {
 		return
 	}
 	otel.GetTextMapPropagator().Inject(ctx, metaCarrier{meta: meta})
-}
-
-// Propagator returns the configured global propagator. Exposed so a component
-// can propagate over a non-HTTP transport (the plugin gRPC channel) without
-// importing the OTel packages itself.
-func Propagator() propagation.TextMapPropagator {
-	return otel.GetTextMapPropagator()
 }

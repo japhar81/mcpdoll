@@ -61,6 +61,7 @@ const (
 	AttrTeam            = attribute.Key("mcpdoll.team")
 	AttrPrincipal       = attribute.Key("mcpdoll.principal")
 	AttrCacheResult     = attribute.Key("mcpdoll.cache.result")
+	AttrErrorKind       = attribute.Key("mcpdoll.error_kind")
 )
 
 // Provider holds the configured telemetry pipeline.
