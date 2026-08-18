@@ -53,16 +53,12 @@ test-cover:
 test-conformance:
 	$(GO) test ./internal/dataplane/edge/... -count=1 -run Conformance -v
 
-## test-all: everything, including the suites that need Docker and a browser
-test-all: test test-conformance test-web test-e2e
+## test-all: everything, including the suites that need Docker
+test-all: test test-conformance test-web
 
-## test-web: console unit tests
+## test-web: console typecheck and unit tests
 test-web:
-	cd web && npm test --silent
-
-## test-e2e: Playwright against the running stack
-test-e2e:
-	cd web && npx playwright test
+	cd web && npm run typecheck && npm test --silent
 
 # ------------------------------------------------------------- generate ----
 
@@ -72,8 +68,10 @@ generate: generate-go generate-ts
 generate-go:
 	./proto/generate.sh
 
+# The console's route manifest is generated from its router, so it cannot
+# describe a route that does not exist. See tools/paritycheck.
 generate-ts:
-	cd web && npm run generate
+	cd web && npm run routes
 
 ## verify-generated: fail if generated code is stale (CI gate)
 verify-generated: generate
@@ -85,8 +83,15 @@ verify-generated: generate
 
 # --------------------------------------------------------------- parity ----
 
+## console: build the console into web/dist
+console:
+	cd web && npm run build
+
 ## parity: enforce the tri-surface law — every operation has a CLI cmd + UI route
-parity: $(BIN)/mcpdoll
+#
+# Depends on generate-ts so the manifest is never checked stale: a route added
+# without regenerating would otherwise pass here and 404 in the browser.
+parity: $(BIN)/mcpdoll generate-ts
 	$(GO) run ./tools/paritycheck \
 	  -openapi api/openapi.yaml \
 	  -cli-bin $(BIN)/mcpdoll \
@@ -94,9 +99,10 @@ parity: $(BIN)/mcpdoll
 
 # ----------------------------------------------------------------- lint ----
 
-## lint: vet + formatting check
+## lint: vet + formatting check + console typecheck
 lint: fmt-check
 	$(GO) vet ./...
+	cd web && npm run typecheck
 
 ## fmt: rewrite Go sources with gofmt
 fmt:

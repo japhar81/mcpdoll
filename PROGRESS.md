@@ -226,19 +226,39 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
 
 ## Next, in priority order
 
-1. **`api/openapi.yaml`, `tools/paritycheck`, and the console.** The tri-surface
-   law is the brief's first law and is the largest outstanding gap. The CLI
-   already carries `mcpdoll.operation` annotations and the `__commands` dump the
-   parity tool will read, so the CLI half is ready.
-2. **Control plane persistence + admission.** Postgres schema, `sqlc`, the
+1. **Control plane persistence + admission.** Postgres schema, `sqlc`, the
    registry API, then the admission stages and human approval. The snapshotter is
    already the piece admission would feed.
-3. **Prober + drift + health state machine.** Inputs exist (`mcp.Discover`,
+2. **Prober + drift + health state machine.** Inputs exist (`mcp.Discover`,
    `mcp.DigestTools`, the drifting fixture); the loop does not.
-4. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+3. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-5. **Grafana dashboards as code.** The instrumentation is complete; there is
+4. **Grafana dashboards as code.** The instrumentation is complete; there is
    nothing yet to display it in.
+
+## The tri-surface law
+
+`make parity` is green: **16 operations, 16 CLI commands, 16 console routes.**
+
+It checks three real artifacts, never a hand-maintained list — the spec, the
+built binary's `__commands --json`, and a route manifest generated from the
+console's router. On the commit that introduced it, it found a CLI command
+bound to an `operationId` the spec did not define, and a walker bug that
+silently cost `registry servers` its binding.
+
+Two further checks stop the surfaces agreeing only nominally:
+
+- `internal/cli/parity_test.go` asserts `require.JSONEq` between
+  `mcpdoll <cmd> --output json` and the corresponding endpoint, for five
+  operations. They marshal the same structs, so this is true by construction —
+  the test exists to keep it that way.
+- `internal/api/schema_test.go` holds every spec schema against the Go struct
+  that produces it: field names must match exactly, every schema needs a type
+  and every type a schema, a `required` field may not be `omitempty`, and every
+  `$ref` must resolve. It found **sixteen** drifted schemas when first written.
+
+The gap that remains is the TypeScript half — `web/src/lib/types.ts` is
+hand-written and nothing checks it. Recorded in `docs/deferred.md`.
 
 ## Decisions of record
 

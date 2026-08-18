@@ -89,6 +89,7 @@ check_port_free() {
 if command -v lsof >/dev/null 2>&1; then
   check_port_free 8080 "data plane"
   check_port_free 3001 "control plane"
+  check_port_free 5173 "console"
   for port in 9101 9102 9103 9104 9105; do
     check_port_free "${port}" "fixture backend"
   done
@@ -224,6 +225,23 @@ wait_http http://localhost:3001/healthz mcpdoll-cp "${CP_PID}" \
   || die "the control plane failed to start"
 echo
 
+# ---------------------------------------------------------------- console ----
+
+# The console is optional: everything above is usable from the CLI, and a
+# missing node_modules should slow nobody down who is working on the Go side.
+if [ -d web/node_modules ]; then
+  info "starting the console on :5173"
+  ( cd web && npm run dev -- --port 5173 ) > "${LOG_DIR}/console.log" 2>&1 &
+  CONSOLE_PID=$!
+  record_pid "${CONSOLE_PID}"
+  wait_http http://localhost:5173/ console "${CONSOLE_PID}" \
+    || warn "the console did not start; see ${LOG_DIR}/console.log"
+  echo
+else
+  warn "web/node_modules is absent — skipping the console. Run 'cd web && npm install'."
+  CONSOLE_PID=""
+fi
+
 # ------------------------------------------------------------------ ready ----
 
 cat <<BANNER
@@ -232,6 +250,7 @@ MCPDoll is up.
 
   Data plane      http://localhost:8080
   Control plane   http://localhost:3001   (token: ${MCPDOLL_CP_TOKEN})
+  Console         http://localhost:5173
   Audiences       /mcp/support-agents  /mcp/platform-agents  /mcp/threat-research
   Grafana         http://localhost:3300   (folder: MCPDoll)
   Logs            ${LOG_DIR}/

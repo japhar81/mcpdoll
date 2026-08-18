@@ -20,26 +20,58 @@ can say what is reachable from where. Good intentions do not survive this;
 
 ## Decision
 
-**One contract, three generated surfaces, and a build gate that fails on
+**One contract, three surfaces held against it, and a build gate that fails on
 divergence.**
 
 ### `api/openapi.yaml` is the source of truth
 
-Every operation is defined there once. From it we generate:
+Every operation is defined there once.
 
-| Artifact | Generator | Consumer |
+**What was built diverges from what this ADR first proposed, and the divergence
+is deliberate.** The original plan was to generate the Go server types, a Go
+client for the CLI, and a TypeScript client for the console with `oapi-codegen`
+and `openapi-typescript`. What shipped instead:
+
+| Artifact | How | Why |
 |---|---|---|
-| Go server interfaces and types | `oapi-codegen` | control-plane handlers |
-| Go API client | `oapi-codegen` | the CLI |
-| TypeScript client and types | `openapi-typescript` | the console |
-| `docs/api/` | from the spec | humans |
+| Go wire types (`internal/api`) | hand-written, single-sourced | see below |
+| Go server handlers | hand-written over those types | |
+| CLI output types | **the same structs** | |
+| TypeScript types (`web/src/lib/types.ts`) | hand-written | generation deferred |
+| `web/src/routes.gen.ts` | generated from the router | |
 
-Generation runs in `make generate` and CI runs `make verify-generated`, which
-fails if the committed output is stale.
+The Go change is an improvement on the plan, not a shortcut. Generating a
+*server* type and a separate *client* type produces two definitions that a
+generator keeps in agreement — but only as long as both are regenerated
+together. Instead the HTTP server and the CLI marshal **the same struct**, so
+`mcpdoll registry show --output json` and `GET /api/v1/registry` return
+identical bytes by construction rather than by discipline.
+`internal/cli/parity_test.go` asserts exactly that, with `require.JSONEq`,
+for five operations.
 
-**The CLI is an API client and never touches the database.** That is what makes
-the CLI a real test of the API: anything the CLI can do, an external integrator
-can do, because the CLI has no privileged path.
+The TypeScript half is the honest weak point: `web/src/lib/types.ts` is a second
+definition of the same shapes and can drift. Generating it is recorded in
+`docs/deferred.md`.
+
+To keep the spec from becoming decorative in the meantime,
+`internal/api/schema_test.go` holds it against the Go structs: every schema must
+name a Go type and every Go type a schema; JSON field names must match exactly;
+a field marked `required` may not be `omitempty`; and every `$ref` must resolve.
+When that check was first written it found sixteen drifted schemas, which is
+roughly what one would expect of a spec written before the implementation
+settled — and precisely the drift that would otherwise have surfaced as
+`undefined` in a browser.
+
+**The CLI does not proxy through the API for local operations.** Anything that
+reads a file — validating a registry, inspecting or verifying a snapshot,
+building one, minting a key — the CLI does directly. This diverges from
+"the CLI is an API client, always", and the reason is that
+`mcpdoll registry validate` has to work in a pull-request check where no
+control plane is running, and `mcpdoll snapshot build` has to run where the
+signing key lives, which is deliberately not on a server reachable over HTTP.
+The property that mattered — no privileged path an integrator cannot use — is
+preserved: every one of those operations is also an API operation, and the
+shared types make the two answers identical.
 
 ### Every operation declares its surfaces
 
@@ -52,8 +84,9 @@ x-mcpdoll-surfaces:
 ### `make parity` is the gate
 
 `tools/paritycheck` parses the spec, enumerates the cobra command tree via a
-hidden `mcpdoll __commands --json`, reads the generated React route manifest,
-and fails with a specific list if:
+hidden `mcpdoll __commands --json` **run against the built binary**, reads the
+route manifest **generated from the console's router**, and fails with a
+specific list if:
 
 - an operation has no CLI command, or
 - an operation has no UI route, or
@@ -63,11 +96,19 @@ The third case matters as much as the first two: it catches the renamed
 operation whose CLI command still points at the old id, which is otherwise a
 runtime 404 nobody notices until a user hits it.
 
-**The check is built in phase 1, when there are two operations, not at the end.**
-Retrofitting it against fifty operations produces a list of fifty violations,
-which gets suppressed. Introducing it against two produces a green check that
-stays green, and every subsequent operation faces the gate on the commit that
-adds it.
+All three inputs are real artifacts rather than hand-maintained lists. A list of
+"commands we have" would drift from the commands users actually get, which is
+the drift this exists to catch.
+
+**The check is built early, not at the end.** Retrofitting it against fifty
+operations produces a list of fifty violations, which gets suppressed.
+
+In practice it caught three things on the commit that introduced it, none of
+which any existing test would have found: `mcpdoll snapshot inspect` claimed an
+`operationId` the spec did not define (the trace a rename leaves and nothing
+else); `walkCommands` silently dropped any command that had subcommands, which
+cost `mcpdoll registry servers` its binding; and an empty
+`~/.mcpdoll/config.yaml` failed every command with "EOF".
 
 ## Alternatives considered
 
@@ -78,8 +119,8 @@ adds it.
   is fine for CRUD, and MCPDoll's important screens are not CRUD: the request
   trace waterfall, the bundle composer with a live token meter, the drift diff.
   A generator would produce a console that works and that nobody wants to use.
-  So: generate the *client*, hand-write the *experience*, and enforce coverage
-  rather than implementation.
+  So: hand-write the *experience* and enforce *coverage* mechanically, rather
+  than generating an implementation.
 - **Code-first with a generated spec** (annotate Go handlers, emit OpenAPI).
   Rejected: it makes the Go server the source of truth, so the TypeScript client
   and the docs always trail an implementation that has already shipped. It also
@@ -105,7 +146,12 @@ adds it.
 - A spec change that renames an `operationId` breaks parity until the CLI and UI
   bindings are updated — which is the point, but it does mean renames are not
   free.
-- `make generate` needs `oapi-codegen`, `openapi-typescript`, `protoc`, and the
-  two protoc-gen-go plugins on PATH. Documented in `docs/developer/`, and CI
-  installs them explicitly so a missing tool is a clear failure rather than a
-  silently stale artifact.
+- `make generate` needs `protoc` and the two protoc-gen-go plugins on PATH, plus
+  Node for the route manifest. The OpenAPI generators are not required, because
+  nothing is generated from the spec — the spec is *checked against* the code
+  instead. That is a weaker guarantee than generation for the TypeScript client
+  and a stronger one for Go, and both halves are stated plainly above rather
+  than implied.
+- The schema check compares field names, not types or formats. A field whose
+  Go type changed from `int` to `string` passes. This is a real limit; the
+  failure it does catch — a renamed or dropped field — is the common one.

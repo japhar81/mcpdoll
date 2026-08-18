@@ -273,13 +273,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/GenerateKeyRequest" }
+            schema: { $ref: "#/components/schemas/GenerateSigningKeyRequest" }
       responses:
         "200":
           description: The generated key
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/GeneratedKey" }
+              schema: { $ref: "#/components/schemas/SigningKey" }
 
   /api/v1/plugins:
     get:
@@ -394,7 +394,7 @@ paths:
           description: The tool result, including a tool-level error
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/CallToolResult" }
+              schema: { $ref: "#/components/schemas/CallResult" }
         "404": { $ref: "#/components/responses/NotFound" }
 
 components:
@@ -421,26 +421,48 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    # Every schema here is checked against the Go struct that produces it, by
+    # internal/api/schema_test.go. A field renamed on one side and not the other
+    # fails the build rather than reaching a client as `undefined`.
+
     Error:
       type: object
-      required: [error]
+      required: [code, message]
       properties:
-        error:
+        code:
           type: string
-          description: A single-sentence summary
+          description: |
+            Stable machine-readable token. Clients switch on this; the message
+            is for humans and may be reworded.
+          enum:
+            - invalid_request
+            - not_found
+            - forbidden
+            - validation_failed
+            - upstream_unavailable
+            - internal_error
+        message:
+          type: string
+          description: One sentence, written for whoever has to fix the problem.
         problems:
           type: array
-          description: |
-            Every problem found, not just the first. An operator fixing a
-            registry one error per run is a bad afternoon.
           items: { type: string }
+          description: |
+            Every distinct failure. Validation returns all of them at once: a
+            document with six errors should take one round trip to fix.
 
     Health:
       type: object
       required: [status, version]
       properties:
-        status: { type: string, enum: [ok] }
+        status: { type: string }
         version: { type: string }
+        registry_path:
+          type: string
+          description: |
+            The document this control plane is serving. Unexpected output is
+            nearly always the wrong file rather than the wrong logic.
+        snapshot_path: { type: string }
 
     HookList:
       type: object
@@ -448,29 +470,202 @@ components:
       properties:
         hooks:
           type: array
-          description: The seven hooks, in execution order
           items: { type: string }
+          description: The seven hooks, in execution order. The set is closed.
 
     Registry:
       type: object
+      description: |
+        A registry document with defaults resolved. Not the on-disk YAML: an
+        unset `serving_mode` reads as `strict` here because that is what the
+        engine will do, and rule bodies are summarised to counts.
       required: [org, version, namespaces, servers, bundles, audiences]
       properties:
         org: { type: string }
-        version:
-          type: integer
-          format: int64
-          description: Increases on every publish; the data plane refuses a stale one
-        namespaces: { type: array, items: { $ref: "#/components/schemas/Namespace" } }
-        servers: { type: array, items: { $ref: "#/components/schemas/Server" } }
-        bundles: { type: array, items: { $ref: "#/components/schemas/Bundle" } }
-        audiences: { type: array, items: { $ref: "#/components/schemas/Audience" } }
-        policies: { type: array, items: { $ref: "#/components/schemas/Policy" } }
-        plugins: { type: array, items: { $ref: "#/components/schemas/Plugin" } }
+        version: { type: integer, format: int64 }
+        namespaces:
+          type: array
+          items: { $ref: "#/components/schemas/Namespace" }
+        servers:
+          type: array
+          items: { $ref: "#/components/schemas/Server" }
+        bundles:
+          type: array
+          items: { $ref: "#/components/schemas/Bundle" }
+        audiences:
+          type: array
+          items: { $ref: "#/components/schemas/Audience" }
+        policies:
+          type: array
+          items: { $ref: "#/components/schemas/Policy" }
+        plugins:
+          type: array
+          items: { $ref: "#/components/schemas/Plugin" }
+
+    Namespace:
+      type: object
+      required: [id, name, prefix]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix:
+          type: string
+          description: |
+            What every tool in this namespace is served under, and why two
+            namespaces cannot share one.
+        owner_idp_group: { type: string }
+        team: { type: string }
+        project: { type: string }
+
+    Server:
+      type: object
+      required: [id, name, namespace, endpoint, serving_mode, default_effect_class]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        namespace: { type: string }
+        endpoint: { type: string }
+        serving_mode:
+          type: string
+          enum: [strict, advisory]
+          description: |
+            Resolved, never empty. `strict` refuses to serve a definition that
+            has drifted from what was admitted; `advisory` serves it and
+            records the drift.
+        criticality: { type: string }
+        data_classification: { type: string }
+        compliance_scope:
+          type: array
+          items: { type: string }
+        default_effect_class:
+          type: string
+          enum: [read, write, destructive]
+        canary_tool:
+          type: string
+          description: |
+            Probed to decide whether this backend is healthy, rather than
+            trusting a transport-level ping.
+        tool_overrides:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Tools whose effect class the registry states explicitly. Everything
+            else inherits `default_effect_class`.
+        excluded_tools:
+          type: array
+          items: { type: string }
+          description: |
+            Withheld from every audience. Kept separate from `tool_overrides`
+            because an exclusion is not an override with a blank class — the
+            tool does not reach the snapshot at all.
+
+    Bundle:
+      type: object
+      required: [id, name, priority, namespaces]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        priority: { type: integer, format: int32 }
+        token_budget: { type: integer, format: int32 }
+        namespaces:
+          type: array
+          items: { type: string }
+
+    Audience:
+      type: object
+      required: [id, slug, bundles]
+      properties:
+        id: { type: string }
+        slug:
+          type: string
+          description: The path segment this audience is published at, `/mcp/{slug}`.
+        name: { type: string }
+        bundles:
+          type: array
+          items: { type: string }
+        policies:
+          type: array
+          items: { type: string }
+        allowed_idp_groups:
+          type: array
+          items: { type: string }
+          description: Absent means any authenticated principal may connect.
+
+    Policy:
+      type: object
+      description: |
+        A named rule set, summarised. Rule bodies are not returned: the console
+        renders them from the registry document.
+      required: [id, name, priority, rule_count]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        priority: { type: integer, format: int32 }
+        rule_count: { type: integer }
+
+    Plugin:
+      type: object
+      required: [id, name, runtime, hooks, priority, rollout]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        version: { type: string }
+        runtime:
+          type: string
+          enum: [wasm, grpc]
+        hooks:
+          type: array
+          items: { type: string }
+        priority: { type: integer, format: int32 }
+        rollout:
+          type: string
+          enum: [shadow, canary, enforce]
+          description: |
+            Resolved, never empty. An unset rollout means `shadow`; reporting
+            an empty value would make an inert plugin indistinguishable from an
+            enforcing one.
+        canary_percent: { type: integer, format: int32 }
+        reads:
+          type: array
+          items: { type: string }
+        writes:
+          type: array
+          items: { type: string }
+          description: |
+            The only paths this plugin may patch. A patch touching anything
+            else is rejected whole, not partially applied.
+        identity_dependent:
+          type: boolean
+          description: |
+            Forces `cacheScope: private` at `on_catalog`. A catalog shaped by
+            who is asking must never be cached publicly.
+        artifact_digest:
+          type: string
+          description: |
+            Checked before load. A mismatch refuses the plugin, which is what
+            makes a swapped artifact fail closed.
+
+    ServerList:
+      type: object
+      required: [servers]
+      properties:
+        servers:
+          type: array
+          items: { $ref: "#/components/schemas/Server" }
+
+    PluginList:
+      type: object
+      required: [plugins]
+      properties:
+        plugins:
+          type: array
+          items: { $ref: "#/components/schemas/Plugin" }
 
     RegistrySummary:
       type: object
-      required: [valid, org, version]
+      required: [valid, org, version, namespaces, servers, bundles, audiences, policies, plugins]
       properties:
+        file: { type: string }
         valid: { type: boolean }
         org: { type: string }
         version: { type: integer, format: int64 }
@@ -483,139 +678,25 @@ components:
 
     ValidateRegistryRequest:
       type: object
-      required: [document]
+      required: [content]
       properties:
-        document:
-          type: string
-          description: The registry document, as YAML
-
-    Namespace:
-      type: object
-      required: [id, name, prefix]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        prefix:
+        content:
           type: string
           description: |
-            Immutable. Changing it renames every tool in the namespace, which
-            invalidates every client's prompt cache.
-        owner_idp_group: { type: string }
-        team: { type: string }
-        project: { type: string }
-
-    Server:
-      type: object
-      required: [id, name, namespace, endpoint]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        namespace: { type: string }
-        endpoint: { type: string, format: uri }
-        serving_mode: { type: string, enum: [strict, advisory] }
-        criticality: { type: string }
-        data_classification: { type: string }
-        compliance_scope: { type: array, items: { type: string } }
-        default_effect_class: { type: string, enum: [read, write, destructive] }
-        canary_tool: { type: string }
-        tools:
-          type: array
-          items: { $ref: "#/components/schemas/RegisteredTool" }
-
-    RegisteredTool:
-      type: object
-      required: [name, effect_class]
-      properties:
-        name: { type: string }
-        effect_class: { type: string, enum: [read, write, destructive] }
-        excluded: { type: boolean }
-
-    Bundle:
-      type: object
-      required: [id, name, priority]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        priority:
-          type: integer
-          description: |
-            The leading component of the stable catalog ordering. Reordering
-            bundles invalidates clients' prompt caches on purpose.
-        token_budget: { type: integer }
-        project: { type: string }
-
-    Audience:
-      type: object
-      required: [id, slug]
-      properties:
-        id: { type: string }
-        slug: { type: string }
-        name: { type: string }
-        project: { type: string }
-        bundles: { type: array, items: { type: string } }
-        policies: { type: array, items: { type: string } }
-        allowed_idp_groups: { type: array, items: { type: string } }
-
-    Policy:
-      type: object
-      required: [id, name]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        priority: { type: integer }
-        rule_count: { type: integer }
-
-    Plugin:
-      type: object
-      required: [id, name, runtime, hooks, rollout]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        version: { type: string }
-        runtime: { type: string, enum: [wasm, grpc] }
-        hooks: { type: array, items: { type: string } }
-        priority: { type: integer }
-        budget_ms: { type: integer }
-        reads: { type: array, items: { type: string } }
-        writes:
-          type: array
-          description: |
-            An enforced contract. A patch outside these scopes is rejected.
-          items: { type: string }
-        rollout:
-          type: string
-          enum: [shadow, canary, enforce]
-          description: |
-            Every plugin starts in shadow: one whose verdicts nobody has
-            observed must not be acting on traffic.
-        canary_percent: { type: integer }
-        identity_dependent:
-          type: boolean
-          description: |
-            At ON_CATALOG this forces `cacheScope: private`, because a view
-            shaped for one principal must not be served to another.
-        artifact_digest: { type: string }
-        loaded:
-          type: boolean
-          description: Whether the data plane could load it
-        load_error: { type: string }
-
-    PluginList:
-      type: object
-      required: [plugins]
-      properties:
-        plugins: { type: array, items: { $ref: "#/components/schemas/Plugin" } }
-
-    ServerList:
-      type: object
-      required: [servers]
-      properties:
-        servers: { type: array, items: { $ref: "#/components/schemas/Server" } }
+            The registry document as YAML. Validation runs against what the
+            caller sends rather than what is on the server's disk, which is
+            what makes this usable as a pull-request check.
 
     Snapshot:
       type: object
-      required: [version, org, servable]
+      required: [version, snapshot_id, org, built_at, age, key_id, algorithm, registry_digest, servable, audiences]
       properties:
+        source:
+          type: string
+          description: |
+            Where these bytes came from — a file path, or `uploaded`. Two
+            snapshots that differ only in origin are otherwise
+            indistinguishable, and that is exactly when it matters.
         version: { type: integer, format: int64 }
         snapshot_id: { type: string }
         org: { type: string }
@@ -624,73 +705,124 @@ components:
         key_id: { type: string }
         algorithm: { type: string }
         registry_digest: { type: string }
-        servable: { type: boolean }
+        servable:
+          type: boolean
+          description: |
+            Whether this snapshot would actually activate. A correctly signed
+            snapshot with a dangling reference is refused by every data-plane
+            instance, so signature validity alone is not the question anybody
+            wants answered.
+        unservable_reason: { type: string }
         audiences:
           type: array
           items: { $ref: "#/components/schemas/AudienceSummary" }
         tools:
           type: array
-          items: { $ref: "#/components/schemas/SnapshotTool" }
+          items: { $ref: "#/components/schemas/ToolSummary" }
 
     AudienceSummary:
       type: object
-      required: [slug, tools, ttl_ms, cache_scope]
+      required: [slug, name, tools, ttl_ms, cache_scope, token_estimate]
       properties:
         slug: { type: string }
         name: { type: string }
         tools: { type: integer }
         ttl_ms: { type: integer }
-        cache_scope: { type: string, enum: [public, private] }
+        cache_scope:
+          type: string
+          enum: [public, private]
+          description: |
+            A catalog that has been filtered for a principal must never come
+            back `public`.
         token_estimate: { type: integer }
 
-    SnapshotTool:
+    ToolSummary:
       type: object
-      required: [qualified_name, effect_class, digest]
+      required: [qualified_name, backend, effect_class, token_estimate, digest]
       properties:
         qualified_name: { type: string }
         backend: { type: string }
-        effect_class: { type: string, enum: [read, write, destructive] }
+        effect_class:
+          type: string
+          enum: [read, write, destructive]
         token_estimate: { type: integer }
-        digest:
-          type: string
-          description: The content address; this is the definition's identity
-        semantic_digest:
-          type: string
-          description: |
-            The digest with prose stripped. Equal semantic digests plus
-            differing full digests means "only the wording changed".
+        digest: { type: string }
 
-    AudienceList:
+    InspectSnapshotRequest:
       type: object
-      required: [audiences]
+      required: [content]
       properties:
-        audiences: { type: array, items: { $ref: "#/components/schemas/AudienceSummary" } }
+        content:
+          type: string
+          format: byte
+          description: |
+            The signed snapshot, base64-encoded. The bytes travel in the
+            request rather than a path travelling in it: a server that opens
+            whatever file a caller names is an arbitrary file read.
+        tools:
+          type: boolean
+          description: List every tool rather than summarising by audience.
+
+    VerifySnapshotRequest:
+      type: object
+      required: [content, trusted_keys]
+      properties:
+        content: { type: string, format: byte }
+        trusted_keys:
+          type: array
+          items: { type: string }
+          description: |
+            `keyID:base64PublicKey` entries, supplied by the caller rather than
+            taken from server config — so this answers "would *that* data plane
+            accept it?" for any data plane, not only the local one.
+
+    VerifyReport:
+      type: object
+      required: [valid, version, key_id, audiences, tools]
+      properties:
+        source: { type: string }
+        valid: { type: boolean }
+        version: { type: integer, format: int64 }
+        key_id: { type: string }
+        audiences:
+          type: array
+          items: { type: string }
+        tools: { type: integer }
 
     BuildSnapshotRequest:
       type: object
+      description: |
+        The registry and the signing key come from the server's configuration,
+        not from this body. A caller who could name either could publish
+        arbitrary configuration signed by the control plane's key.
       properties:
-        registry_path: { type: string }
-        key_path: { type: string }
-        key_id: { type: string }
-        out_path: { type: string }
         allow_unreachable:
           type: boolean
           description: |
-            Build even if a backend cannot be reached, omitting its tools. Off
-            by default: silently dropping a backend's tools invalidates clients'
-            prompt caches.
-        dry_run: { type: boolean }
+            Build even if a backend is down, omitting its tools. Tools from a
+            merely temporarily-down backend would vanish from every catalog and
+            invalidate clients' prompt caches, so this is for publishing around
+            a decommissioned backend, not around an outage.
+        dry_run:
+          type: boolean
+          description: Validate and report without writing the snapshot file.
+        discover_timeout_ms: { type: integer }
+        concurrency: { type: integer }
 
     BuildReport:
       type: object
-      required: [version, snapshot_id, tools]
+      required: [version, snapshot_id, org, registry_digest, key_id, public_key, namespaces, servers, tools, bundles, audiences, plugins, backends, dry_run]
       properties:
         version: { type: integer, format: int64 }
         snapshot_id: { type: string }
         org: { type: string }
         registry_digest: { type: string }
         key_id: { type: string }
-        public_key: { type: string }
+        public_key:
+          type: string
+          description: |
+            The trust entry a data plane needs in order to accept what was just
+            built.
         namespaces: { type: integer }
         servers: { type: integer }
         tools: { type: integer }
@@ -700,13 +832,21 @@ components:
         backends:
           type: array
           items: { $ref: "#/components/schemas/BackendReport" }
-        warnings: { type: array, items: { type: string } }
+        warnings:
+          type: array
+          items: { type: string }
         output: { type: string }
         dry_run: { type: boolean }
 
     BackendReport:
       type: object
-      required: [server_name, endpoint]
+      description: |
+        What discovery found at one backend. There is no `reachable` field and
+        no error field: a backend that could not be reached fails the build
+        unless `allow_unreachable` was set, in which case it appears in
+        `warnings`. A per-backend error here would suggest a snapshot can be
+        partly successful, and it cannot.
+      required: [server_id, server_name, endpoint, tool_count, admitted, observed_at]
       properties:
         server_id: { type: string }
         server_name: { type: string }
@@ -714,92 +854,102 @@ components:
         negotiated_version:
           type: string
           description: |
-            Recorded per backend. A downgrade is normal but worth seeing: some
-            capabilities are unavailable below 2026-07-28.
-        admitted: { type: array, items: { type: string } }
-        excluded: { type: array, items: { type: string } }
-
-    InspectSnapshotRequest:
-      type: object
-      required: [path]
-      properties:
-        path: { type: string }
-        tools:
-          type: boolean
-          description: List every tool rather than summarising by audience
-
-    VerifySnapshotRequest:
-      type: object
-      required: [path, trusted_keys]
-      properties:
-        path: { type: string }
-        trusted_keys:
+            The MCP version this backend actually agreed to — how a legacy
+            backend becomes visible without anyone declaring it legacy.
+        tool_count: { type: integer }
+        admitted:
           type: array
-          description: Trusted signing keys as `keyID:base64PublicKey`
           items: { type: string }
+        excluded:
+          type: array
+          items: { type: string }
+        observed_at: { type: string, format: date-time }
 
-    VerifyReport:
+    GenerateSigningKeyRequest:
       type: object
-      required: [valid, version]
+      required: [key_id]
       properties:
-        file: { type: string }
-        valid: { type: boolean }
-        version: { type: integer, format: int64 }
-        key_id: { type: string }
-        tools: { type: integer }
-        audiences: { type: array, items: { type: string } }
+        key_id:
+          type: string
+          description: |
+            Recorded in every snapshot this key signs, and how a verifier
+            selects the right public key during a rotation. Letters, digits,
+            hyphen, underscore — it becomes a filename.
 
-    GenerateKeyRequest:
+    SigningKey:
       type: object
-      properties:
-        directory: { type: string }
-        key_id: { type: string }
-
-    GeneratedKey:
-      type: object
-      required: [key_id, public_key, trust_entry]
+      description: |
+        The public half only. The private key is written to the control plane's
+        key directory and never returned: whoever holds it can publish
+        configuration to every data-plane instance, and an HTTP response lands
+        in browser memory, a proxy log, and whatever the client does next.
+      required: [key_id, directory, public_key, trust_entry]
       properties:
         key_id: { type: string }
         directory: { type: string }
         public_key: { type: string }
         trust_entry:
           type: string
-          description: The value to add to `dataplane.trusted_signing_keys`
+          description: |
+            The exact line to paste into a data plane's `trusted_signing_keys`.
 
     GatewayStatus:
       type: object
-      required: [gateway_url, ready]
+      required: [gateway_url, status, ready, snapshot_version, audiences]
       properties:
         gateway_url: { type: string }
         status: { type: string }
         ready: { type: boolean }
-        snapshot_version: { type: integer, format: int64 }
+        snapshot_version:
+          type: integer
+          format: int64
+          description: |
+            What is being served. Two instances reporting different versions is
+            the signal that a rollout is mid-flight.
         audiences: { type: integer }
+
+    AudienceList:
+      allOf:
+        - $ref: "#/components/schemas/GatewayStatus"
+        - type: object
+          description: |
+            The live count comes from the data plane, which reports a number
+            rather than names: enumerating endpoints to an unauthenticated
+            caller would tell an attacker which ones exist. The names below
+            come from the registry, and are what the *next* snapshot will
+            publish.
+          required: [registered]
+          properties:
+            registered:
+              type: array
+              items: { $ref: "#/components/schemas/Audience" }
 
     Catalog:
       type: object
-      required: [audience, tools, ttl_ms, cache_scope]
+      description: |
+        The tool list one identity receives. Produced by making the same
+        request the agent makes, rather than by re-deriving policy — which is
+        how people get this answer wrong.
+      required: [audience, protocol_version, server_name, ttl_ms, cache_scope, tools]
       properties:
         audience: { type: string }
         subject: { type: string }
-        groups: { type: array, items: { type: string } }
+        groups:
+          type: array
+          items: { type: string }
         protocol_version: { type: string }
         server_name: { type: string }
         ttl_ms: { type: integer }
         cache_scope:
           type: string
           enum: [public, private]
-          description: |
-            `private` whenever the catalog can differ between principals. A
-            filtered catalog served as public would let a shared cache hand one
-            principal's view to another.
         tools:
           type: array
           items: { $ref: "#/components/schemas/CatalogTool" }
 
     CatalogTool:
       type: object
-      required: [name]
+      required: [name, namespace]
       properties:
         name: { type: string }
         namespace: { type: string }
@@ -810,33 +960,52 @@ components:
       type: object
       properties:
         subject: { type: string }
-        groups: { type: array, items: { type: string } }
-        arguments: { type: object, additionalProperties: true }
-        request_state:
-          type: string
-          description: The opaque state from a previous `input_required` result
-        input_responses:
+        groups:
+          type: array
+          items: { type: string }
+        arguments:
           type: object
           additionalProperties: true
-          description: Answers to a previous result's input requests
+        request_state:
+          type: string
+          description: |
+            Continues a deferred call — the signed envelope the gateway issued,
+            echoed back unchanged.
+        responses:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Answers the gateway's input requests, keyed by request id. Each
+            value is `accept`, `decline`, `cancel`, or `text:<value>`.
 
-    CallToolResult:
+    CallResult:
       type: object
-      required: [tool, is_error]
+      required: [tool, audience, is_error, needs_input, duration_ms, text]
       properties:
         tool: { type: string }
         audience: { type: string }
         is_error:
           type: boolean
           description: |
-            A tool-level error, not a transport failure. A policy denial and a
-            backend outage both arrive this way so the model can act on them.
-        needs_input: { type: boolean }
+            A tool that returned an error is still a successful inspection —
+            the operator asked what happens, and this is what happens. The HTTP
+            status stays 200.
+        needs_input:
+          type: boolean
+          description: |
+            An MRTR deferral. The call did not fail; it is waiting for a human.
         duration_ms: { type: integer, format: int64 }
         text: { type: string }
         gateway_detail:
-          type: object
-          additionalProperties: true
-          description: The gateway's structured detail — outcome, backend, retry_after
-        input_requests: { type: array, items: { type: string } }
-        request_state: { type: string }
+          description: |
+            The gateway's own `_meta` annotation — which plugin mutated the
+            result, which hook denied it. Shaped by the pipeline rather than by
+            this API, so it is returned as-is.
+        input_requests:
+          type: array
+          items: { type: string }
+        request_state:
+          type: string
+          description: |
+            The signed envelope to send back with the answers. Unforgeable, not
+            secret: a client can decode it and see what it binds.

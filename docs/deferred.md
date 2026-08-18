@@ -80,16 +80,39 @@ Consequence: a publish today is programmatic, not reviewed. The gateway serves
 admitted definitions (ADR 0006) but "admitted" currently means "built into the
 snapshot" rather than "approved by a human who is not the publisher".
 
-### The console
+### The console: built, but read-and-inspect only
 
-**Not built.** ADR 0001 records the design language extracted from RAGdoll in
-enough detail to build against — tokens, component classes, nav structure,
-React Flow node chrome — but no `web/` code exists.
+`make parity` passes: all sixteen operations reach the API, the CLI, and the
+console. The tri-surface law is satisfied *for the operations that exist*.
 
-Consequence: the tri-surface law is **not** currently satisfied, and
-`make parity` cannot pass because there is no route manifest to check. The parity
-tool itself is not built either. This is the largest single gap against the brief
-and is stated plainly rather than buried.
+What the console does not have, because the underlying capability does not
+exist either (see the entries above and below):
+
+- **No approval or publish workflow.** There is nothing to approve until
+  admission and human sign-off exist.
+- **No request-trace waterfall.** The trace data is produced; nothing stores it.
+- **No React Flow bundle composer or drift diff.** ADR 0001 records the design
+  language for these in detail; none of it is built. `reactflow` is not even a
+  dependency yet.
+- **No live events.** Every screen polls or refetches on demand. RAGdoll's SSE
+  bus is not ported.
+- **No login.** The API token is typed into the sidebar and kept in
+  `localStorage`. A real deployment needs a session from the identity provider,
+  which does not exist either.
+
+### TypeScript types generated from the spec
+
+`web/src/lib/types.ts` is hand-written, so it is a second definition of shapes
+that `internal/api` also defines, and it can drift. The Go side is protected —
+`internal/api/schema_test.go` holds every struct against the spec's schemas by
+field name — but nothing checks the TypeScript.
+
+Missing: `openapi-typescript` in `make generate`, plus a `verify-generated` gate.
+The work is small; it was not done because the schema check bought most of the
+same protection for the half where the drift would be silent.
+
+Consequence: a field renamed in the spec and in Go will typecheck fine in the
+console and render `undefined` at runtime.
 
 ### The gRPC plugin host and the LLM guard
 
@@ -188,11 +211,19 @@ plugs in, and the trace type is already the shape the waterfall would render.
 
 ### Playwright e2e and `testcontainers-go` integration tests
 
-Neither exists. The e2e suite needs the console; the testcontainers suite needs
-the Postgres schema. The in-process integration coverage that does exist is
-substantial and real (the edge suite runs the full data plane over HTTP against
-five live fixture backends) but it is not the same as a containerized
-control-plane→snapshot→data-plane→backend path.
+Neither exists, and `make test-e2e` was removed rather than left pointing at a
+Playwright config that is not there.
+
+The console's own tests (`web/src/lib/*.test.ts`, vitest) cover the API client's
+error handling and the pure helpers — the parts where a bug is silent. The
+screens themselves have been driven by hand through a browser against the live
+stack, including the full MRTR confirmation round trip, but that is a person
+checking rather than a suite.
+
+The testcontainers suite needs the Postgres schema. The in-process integration
+coverage that does exist is substantial and real (the edge suite runs the full
+data plane over HTTP against five live fixture backends) but it is not the same
+as a containerized control-plane→snapshot→data-plane→backend path.
 
 ---
 
