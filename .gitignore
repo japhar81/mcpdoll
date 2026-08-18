@@ -1,0 +1,34 @@
+# Build output
+/bin/
+/dist/
+*.wasm.gz
+
+# Go
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Node / web
+node_modules/
+web/dist/
+.vite/
+playwright-report/
+test-results/
+blob-report/
+
+# Local environment
+.env
+.env.local
+*.local.yaml
+
+# Signing keys — never commit private material. `make dev` generates a
+# throwaway keypair under deploy/local/.
+deploy/local/*.key
+deploy/local/*.pem
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
