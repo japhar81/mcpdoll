@@ -1,0 +1,179 @@
+# MCPDoll CI.
+#
+# The three laws from the brief, made mechanical:
+#
+#   1. Tri-surface — the `parity` job fails if any operation is missing a CLI
+#      command or a console route. This is the law that does not survive good
+#      intentions, so it is a gate rather than a warning.
+#   2. Working at every commit — `build` and `test` run on every push, not only
+#      on the default branch.
+#   3. No stubs — the `no-stubs` job greps for the markers the brief forbids.
+#      A grep is crude; it is also the only thing that catches a `TODO` added at
+#      2am, and it costs three seconds.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref. The default branch is
+# excluded: its history is what a bisect reads, so every commit there gets a
+# real result rather than a cancellation.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  GO_VERSION: "1.26"
+  NODE_VERSION: "22"
+
+jobs:
+  build:
+    name: build and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          # `gofmt -l` prints offenders and exits 0, so the emptiness is the
+          # assertion. Generated protobuf output is excluded because it is not
+          # ours to reformat.
+          out=$(gofmt -l $(find . -name '*.go' -not -path './internal/proto/*'))
+          if [ -n "$out" ]; then
+            echo "These files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - run: go build ./...
+      - run: go vet ./...
+
+  test:
+    name: go tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # -count=1 defeats the test cache. A cached pass tells you nothing about
+      # the commit that just landed.
+      - run: go test ./... -count=1
+
+  race:
+    name: go tests (race)
+    runs-on: ubuntu-latest
+    # The plugin suites compile real WASM modules and run them through wazero,
+    # which is slow under race instrumentation — ~4 minutes of the total on its
+    # own. Generous, but not unbounded: a hung job should fail, not idle.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The data plane swaps snapshots under live traffic and runs plugins
+      # concurrently. A race here is a production incident, not a flake.
+      - run: go test ./... -count=1 -race
+
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx vite build
+
+  parity:
+    name: tri-surface law
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # `make parity` regenerates the route manifest first, so a route added
+      # without regenerating cannot pass here and 404 in the browser.
+      - run: make parity
+
+      - name: the route manifest is committed and current
+        run: |
+          if ! git diff --exit-code -- web/src/routes.gen.ts; then
+            echo ""
+            echo "web/src/routes.gen.ts is stale. Run 'make generate-ts' and commit it."
+            exit 1
+          fi
+
+  no-stubs:
+    name: no stubs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: forbidden markers
+        run: |
+          # Deliberately narrow. It looks for the markers the brief forbids in
+          # source we own — not in docs, which discuss them, and not in
+          # generated code.
+          #
+          # `docs/deferred.md` is where unfinished work is recorded. An honest
+          # entry there is the intended alternative to a TODO in the tree.
+          # The markers must be *comment* markers. A bare `XXX` also appears in
+          # legitimate places — a test case describing the `\uXXXX` escape
+          # format, a hex placeholder — and a check with false positives is one
+          # people learn to override.
+          patterns='//[[:space:]]*(TODO|FIXME|XXX)\b|panic\("not implemented|panic\("unimplemented|t\.Skip\('
+          hits=$(grep -rnE "$patterns" \
+            --include='*.go' --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules \
+            . | grep -v '^./internal/proto/' || true)
+          if [ -n "$hits" ]; then
+            echo "Forbidden markers found. Record unfinished work in docs/deferred.md instead:"
+            echo "$hits"
+            exit 1
+          fi
+
+      - name: commented-out code blocks
+        run: |
+          # The brief says prefer deleting to disabling. A skipped test is
+          # covered above; this catches the other half.
+          hits=$(grep -rn 'nolint\|//nolint\|eslint-disable' \
+            --include='*.go' --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules . || true)
+          if [ -n "$hits" ]; then
+            echo "Lint suppressions found. Fix the finding rather than silencing it:"
+            echo "$hits"
+            exit 1
+          fi
