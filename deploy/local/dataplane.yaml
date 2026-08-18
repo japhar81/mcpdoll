@@ -23,6 +23,18 @@ dataplane:
   snapshot_path: deploy/local/snapshot.pb
   snapshot_history: 5
 
+controlplane:
+  listen_addr: ":3001"
+  registry_path: deploy/local/registry.yaml
+  gateway_url: http://localhost:8080
+  signing_key_path: deploy/local/dev.key
+  signing_key_id: dev
+  key_dir: deploy/local
+  # The console's dev server. Named explicitly — this API mints signing keys,
+  # so no wildcard origin is acceptable even locally.
+  allowed_origins:
+    - http://localhost:5173
+
 pipeline:
   total_budget: 250ms
   hook_budget: 50ms

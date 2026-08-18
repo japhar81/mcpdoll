@@ -541,9 +541,24 @@ func (s *Spec) Validate() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("registry: %d problem(s):\n  - %s", len(errs), strings.Join(errs, "\n  - "))
+		return &ValidationError{Problems: errs}
 	}
 	return nil
+}
+
+// ValidationError carries every problem as a separate string.
+//
+// The formatted message is what a terminal shows; the slice is what an API
+// returns and a console renders as a list. Keeping both means neither caller
+// has to parse the other's format — and a validation message can be reworded
+// without breaking a client that was splitting on "\n  - ".
+type ValidationError struct {
+	Problems []string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("registry: %d problem(s):\n  - %s",
+		len(e.Problems), strings.Join(e.Problems, "\n  - "))
 }
 
 func validatePrefix(prefix string) error {

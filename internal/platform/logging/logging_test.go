@@ -122,12 +122,20 @@ func TestIsSensitiveKey(t *testing.T) {
 		"password", "passwd", "api_key", "apiKey", "x-api-key",
 		"private_key", "privateKey", "cookie", "set-cookie",
 		"session_id", "backend_authorization", "credential",
+		// Whole-key matches: too short to be safe as substrings.
+		"auth", "key", "sig", "pw",
 	}
 	for _, k := range sensitive {
 		require.True(t, IsSensitiveKey(k), "%q should be sensitive", k)
 	}
 
 	safe := []string{
+		// These all contain "auth" or "key" and none of them is a credential.
+		// `authenticated=false` in particular is the field that tells an
+		// operator their control-plane API is open; redacting it would hide
+		// exactly the thing the redactor exists to protect.
+		"authenticated", "authority", "author", "auth_method", "keyspace",
+		"key_id", "keys_rotated", "signing_key_id",
 		"tool_name", "backend", "duration_ms", "namespace", "verdict",
 		"snapshot_version", "principal", "audience", "hook", "plugin",
 	}

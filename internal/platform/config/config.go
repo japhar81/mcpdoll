@@ -82,6 +82,24 @@ type ControlPlane struct {
 	ListenAddr     string `yaml:"listen_addr"`
 	SnapshotAddr   string `yaml:"snapshot_addr"`
 	SigningKeyPath string `yaml:"signing_key_path"`
+	// SigningKeyID is recorded in every snapshot this control plane signs, and
+	// is how a verifier selects the right public key during a rotation.
+	SigningKeyID string `yaml:"signing_key_id"`
+	// KeyDir is where generateSigningKey writes new keypairs. Empty means the
+	// control plane will not mint keys, which is a reasonable posture for
+	// anything but a development stack.
+	KeyDir string `yaml:"key_dir"`
+	// RegistryPath is the document the API serves.
+	RegistryPath string `yaml:"registry_path"`
+	// GatewayURL is the data plane the gateway inspection operations reach.
+	GatewayURL string `yaml:"gateway_url"`
+	// APIToken is the bearer credential the API requires. Empty is a startup
+	// error unless --allow-anonymous is passed: an API that can mint signing
+	// keys must not become reachable by leaving a line out of a config file.
+	APIToken string `yaml:"api_token"`
+	// AllowedOrigins are the browser origins permitted to call the API. No
+	// wildcard is accepted; the console's origin is named explicitly.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type SnapshotConfig struct {

@@ -50,9 +50,20 @@ func EffectClassName(ec snapshotpb.EffectClass) string {
 	return "unspecified"
 }
 
+// The two enums that default. Named because the default has to be applied
+// again wherever a document is *displayed* — showing an operator an empty
+// serving_mode when the engine will use strict is how a config review misses
+// something.
+const (
+	// ServingModeStrict is what an unset serving_mode means.
+	ServingModeStrict = "strict"
+	// RolloutShadow is what an unset rollout means.
+	RolloutShadow = "shadow"
+)
+
 var servingModes = map[string]snapshotpb.ServingMode{
-	"strict":   snapshotpb.ServingMode_SERVING_MODE_STRICT,
-	"advisory": snapshotpb.ServingMode_SERVING_MODE_ADVISORY,
+	ServingModeStrict: snapshotpb.ServingMode_SERVING_MODE_STRICT,
+	"advisory":        snapshotpb.ServingMode_SERVING_MODE_ADVISORY,
 }
 
 // parseServingMode defaults to strict when unset.
@@ -137,9 +148,9 @@ func RuntimeName(r snapshotpb.PluginRuntime) string {
 }
 
 var rollouts = map[string]snapshotpb.RolloutState{
-	"shadow":  snapshotpb.RolloutState_ROLLOUT_STATE_SHADOW,
-	"canary":  snapshotpb.RolloutState_ROLLOUT_STATE_CANARY,
-	"enforce": snapshotpb.RolloutState_ROLLOUT_STATE_ENFORCE,
+	RolloutShadow: snapshotpb.RolloutState_ROLLOUT_STATE_SHADOW,
+	"canary":      snapshotpb.RolloutState_ROLLOUT_STATE_CANARY,
+	"enforce":     snapshotpb.RolloutState_ROLLOUT_STATE_ENFORCE,
 }
 
 // parseRollout defaults to shadow when unset.

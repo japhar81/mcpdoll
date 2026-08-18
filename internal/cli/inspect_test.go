@@ -46,8 +46,8 @@ func TestRegistryShowSurfacesExclusionsSeparatelyFromOverrides(t *testing.T) {
 
 	// An excluded tool is not an override with an empty effect class: conflating
 	// them would show "" as a classification and read as unclassified.
-	require.Equal(t, []string{"delete_customer"}, view.Servers[0].Excluded)
-	require.Equal(t, map[string]string{"update_customer": "write"}, view.Servers[0].Overrides)
+	require.Equal(t, []string{"delete_customer"}, view.Servers[0].ExcludedTools)
+	require.Equal(t, map[string]string{"update_customer": "write"}, view.Servers[0].ToolOverrides)
 }
 
 func TestRegistryServersShowReportsMissingServerAsNotFound(t *testing.T) {

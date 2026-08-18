@@ -134,8 +134,21 @@ const redactedPlaceholder = "[REDACTED]"
 var sensitiveKeys = []string{
 	"authorization", "token", "secret", "password", "passwd", "credential",
 	"apikey", "privatekey", "cookie", "sessionid", "bearer", "signature",
-	"assertion", "refresh", "auth",
+	"assertion", "refresh",
 }
+
+// exactSensitiveKeys match only as a whole normalized key.
+//
+// "auth" cannot be a substring rule: it would redact `authenticated`,
+// `authority`, `author`, and `auth_method` — all useful, none secret. That is
+// not a cosmetic problem. `authenticated=false` is precisely the field that
+// tells an operator their API is open, and a redaction control that hides it
+// has made the system less safe rather than more.
+//
+// A credential that genuinely arrives under a key like `auth_token` is caught
+// by "token"; one under a bare `auth` is caught by the value-shape scanner,
+// which does not depend on the key at all.
+var exactSensitiveKeys = []string{"auth", "key", "sig", "pw"}
 
 // keySeparators are stripped before matching an attribute name.
 var keySeparators = strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
@@ -225,6 +238,11 @@ func IsSensitiveKey(key string) bool {
 	normalized := keySeparators.Replace(strings.ToLower(key))
 	for _, s := range sensitiveKeys {
 		if strings.Contains(normalized, s) {
+			return true
+		}
+	}
+	for _, s := range exactSensitiveKeys {
+		if normalized == s {
 			return true
 		}
 	}

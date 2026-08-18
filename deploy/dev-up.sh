@@ -88,6 +88,7 @@ check_port_free() {
 
 if command -v lsof >/dev/null 2>&1; then
   check_port_free 8080 "data plane"
+  check_port_free 3001 "control plane"
   for port in 9101 9102 9103 9104 9105; do
     check_port_free "${port}" "fixture backend"
   done
@@ -101,6 +102,7 @@ info "building binaries"
 mkdir -p bin
 go build -o bin/mcpdoll ./cmd/mcpdoll
 go build -o bin/mcpdoll-dp ./cmd/mcpdoll-dp
+go build -o bin/mcpdoll-cp ./cmd/mcpdoll-cp
 go build -o bin/fixture-backend ./fixtures/cmd/fixture-backend
 
 # ------------------------------------------------------- observability -------
@@ -207,6 +209,21 @@ wait_http http://localhost:8080/readyz mcpdoll-dp "${DP_PID}" \
   || die "the data plane failed to start"
 echo
 
+# ---------------------------------------------------------- control plane ----
+
+info "starting the control plane on :3001"
+# A fixed development token rather than --allow-anonymous. Anonymous mode exists
+# and works, but running the dev stack the way production runs means the console
+# exercises the auth path every day rather than discovering it at deploy time.
+export MCPDOLL_CP_TOKEN="${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}"
+./bin/mcpdoll-cp -config "${LOCAL_DIR}/dataplane.yaml" \
+  > "${LOG_DIR}/mcpdoll-cp.log" 2>&1 &
+CP_PID=$!
+record_pid "${CP_PID}"
+wait_http http://localhost:3001/healthz mcpdoll-cp "${CP_PID}" \
+  || die "the control plane failed to start"
+echo
+
 # ------------------------------------------------------------------ ready ----
 
 cat <<BANNER
@@ -214,6 +231,7 @@ cat <<BANNER
 MCPDoll is up.
 
   Data plane      http://localhost:8080
+  Control plane   http://localhost:3001   (token: ${MCPDOLL_CP_TOKEN})
   Audiences       /mcp/support-agents  /mcp/platform-agents  /mcp/threat-research
   Grafana         http://localhost:3300   (folder: MCPDoll)
   Logs            ${LOG_DIR}/
@@ -246,6 +264,10 @@ Try it:
 
   # What is actually in the snapshot
   ./bin/mcpdoll snapshot inspect ${LOCAL_DIR}/snapshot.pb --tools
+
+  # The same answers over the API the console uses
+  curl -s -H "Authorization: Bearer ${MCPDOLL_CP_TOKEN}" \\
+      http://localhost:3001/api/v1/registry | jq .
 
 Republish after editing ${LOCAL_DIR}/registry.yaml (bump \`version\` first):
 
