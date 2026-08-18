@@ -169,10 +169,15 @@ func New(opts Options) (*Edge, error) {
 	// Rebuild on activation rather than checking for a new snapshot per
 	// request: building a server per audience costs real work, and a request
 	// should never pay for a configuration change.
+	//
+	// Registered as the preparer, not an observer, so a snapshot the edge cannot
+	// serve is refused instead of committed.
+	opts.Store.SetPreparer(e.rebuild)
 	if current := opts.Store.Current(); current != nil {
-		e.rebuild(current)
+		if err := e.rebuild(current); err != nil {
+			return nil, fmt.Errorf("edge: the snapshot already in the store cannot be served: %w", err)
+		}
 	}
-	opts.Store.Observe(e.rebuild)
 
 	return e, nil
 }
@@ -181,15 +186,24 @@ func New(opts Options) (*Edge, error) {
 func (e *Edge) Handler() http.Handler { return e.router }
 
 // rebuild constructs a fresh MCP server per audience from a snapshot view.
-func (e *Edge) rebuild(view *snapshot.View) {
+//
+// Registered as the store's *preparer*, so it runs before the swap and its
+// failure refuses the snapshot. That ordering is the point: constructing the
+// servers is where a malformed definition is actually discovered, and
+// discovering it after the commit would mean a bad publish had already taken
+// effect on every instance.
+//
+// Everything is built into a new map first and installed with a single
+// assignment, so a partially-built set is never visible to a request.
+func (e *Edge) rebuild(view *snapshot.View) error {
 	next := make(map[string]*audienceServer, len(view.AudienceSlugs()))
 	for _, slug := range view.AudienceSlugs() {
 		av := view.Audience(slug)
-		next[slug] = &audienceServer{
-			slug:   slug,
-			view:   av,
-			server: e.buildServer(view, av),
+		server, err := e.buildServer(view, av)
+		if err != nil {
+			return fmt.Errorf("audience %q: %w", slug, err)
 		}
+		next[slug] = &audienceServer{slug: slug, view: av, server: server}
 	}
 
 	e.opts.Pool.Sync(view.Servers())
@@ -206,11 +220,24 @@ func (e *Edge) rebuild(view *snapshot.View) {
 		logging.FieldSnapshot, view.Version,
 		"audiences", len(next),
 		"backends", len(view.Servers()))
+	return nil
 }
 
 // buildServer registers every tool in an audience's catalog on a new MCP server.
-func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{
+//
+// The SDK's AddTool *panics* on a tool it considers malformed. A panic here would
+// take the whole gateway down over one bad definition, so it is recovered and
+// converted into a refused activation. Defensive rather than expected: the view
+// builder already rejects the definitions we know of, and this catches the ones a
+// future SDK version decides it dislikes.
+func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) (srv *mcp.Server, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("building the MCP server panicked: %v", r)
+		}
+	}()
+
+	srv = mcp.NewServer(&mcp.Implementation{
 		Name:    GatewayName,
 		Title:   GatewayTitle,
 		Version: GatewayVersion,
@@ -233,7 +260,7 @@ func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) *mcp.
 	// the SDK from the registered set and there is no handler of ours to wrap.
 	srv.AddReceivingMiddleware(e.catalogMiddleware(view, av))
 
-	return srv
+	return srv, nil
 }
 
 // audienceInstructions is the `instructions` string clients receive. It names

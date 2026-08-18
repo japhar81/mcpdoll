@@ -1,0 +1,206 @@
+# MCPDoll local development registry.
+#
+# This is the reviewable source a snapshot is built from: `mcpdoll snapshot build`
+# discovers each backend below, canonicalizes what it publishes, and resolves the
+# bundles and audiences into a signed artifact.
+#
+# Bump `version` on every publish. The data plane refuses a snapshot no newer than
+# the one it is serving, which is what stops a replayed older document rolling
+# policy backwards.
+org: org_local
+version: 1
+
+catalog:
+  ttl: 5m
+  degraded_ttl: 30s
+
+namespaces:
+  - id: ns_crm
+    name: crm
+    prefix: crm
+    owner_idp_group: eng-crm
+    team: team_revenue
+    project: prj_go_to_market
+
+  - id: ns_hr
+    name: hr
+    prefix: hr
+    owner_idp_group: eng-people
+    team: team_people
+    project: prj_internal
+
+  - id: ns_warehouse
+    name: warehouse
+    prefix: whs
+    owner_idp_group: eng-logistics
+    team: team_ops
+    project: prj_supply_chain
+
+  - id: ns_deploy
+    name: deploy
+    prefix: dep
+    owner_idp_group: eng-platform
+    team: team_platform
+    project: prj_internal
+
+  # The hostile backend is registered but deliberately not bundled into the
+  # default audience. It exists so `make dev` has something to demonstrate
+  # admission review and the LLM guard against.
+  - id: ns_websearch
+    name: websearch
+    prefix: web
+    owner_idp_group: eng-platform
+    team: team_platform
+    project: prj_internal
+
+servers:
+  - id: srv_crm
+    name: crm-prod
+    namespace: ns_crm
+    endpoint: http://localhost:9101
+    serving_mode: strict
+    criticality: high
+    data_classification: confidential
+    default_effect_class: read
+    canary_tool: lookup_customer
+    tools:
+      update_customer:
+        effect_class: write
+
+  - id: srv_hr
+    name: hr-legacy
+    namespace: ns_hr
+    endpoint: http://localhost:9102
+    serving_mode: strict
+    criticality: normal
+    data_classification: confidential
+    # This backend speaks only 2025-11-25; the gateway negotiates down per
+    # backend while still serving 2026-07-28 to its own clients.
+    default_effect_class: read
+
+  - id: srv_warehouse
+    name: warehouse-flaky
+    namespace: ns_warehouse
+    endpoint: http://localhost:9103
+    # Advisory rather than strict: this backend is still stabilising its catalog,
+    # so divergence is recorded instead of quarantining it. Clients still only
+    # ever see admitted definitions.
+    serving_mode: advisory
+    criticality: normal
+    data_classification: internal
+    default_effect_class: read
+    canary_tool: check_stock
+    tools:
+      reserve_stock:
+        effect_class: write
+
+  - id: srv_deploy
+    name: deploy-confirming
+    namespace: ns_deploy
+    endpoint: http://localhost:9105
+    serving_mode: strict
+    criticality: critical
+    data_classification: internal
+    compliance_scope: [sox]
+    # Everything this backend does is destructive, so the default is the strict
+    # one and no tool can be quietly reclassified by omission.
+    default_effect_class: destructive
+
+  - id: srv_websearch
+    name: websearch-hostile
+    namespace: ns_websearch
+    endpoint: http://localhost:9104
+    serving_mode: strict
+    criticality: low
+    data_classification: public
+    default_effect_class: read
+
+bundles:
+  # The everyday catalog. Deliberately excludes the destructive deploy tools and
+  # the hostile backend.
+  - id: bnd_support
+    name: support
+    project: prj_go_to_market
+    priority: 10
+    ttl: 5m
+    token_budget: 20000
+    entries:
+      - namespace: ns_crm
+      - namespace: ns_hr
+      - namespace: ns_warehouse
+
+  # Platform operators additionally get the deployment tools.
+  - id: bnd_platform
+    name: platform
+    project: prj_internal
+    priority: 20
+    token_budget: 20000
+    entries:
+      - namespace: ns_deploy
+
+  # The hostile backend, isolated in its own bundle so it can only reach an
+  # audience that asks for it by name.
+  - id: bnd_untrusted
+    name: untrusted
+    project: prj_internal
+    priority: 90
+    token_budget: 20000
+    entries:
+      - namespace: ns_websearch
+
+policies:
+  - id: pol_destructive_confirm
+    name: confirm-destructive
+    priority: 10
+    rules:
+      # Destructive tools require human confirmation, whoever is asking. The
+      # gateway turns this into an MRTR input_required round trip.
+      - effect_classes: [destructive]
+        decision: confirm
+        reason: destructive operations require explicit human confirmation
+
+  - id: pol_restricted_data
+    name: restricted-data
+    priority: 20
+    rules:
+      # A tool over restricted data is hidden from anyone outside the group that
+      # owns it. Group-conditioned hiding makes the catalog identity-specific, so
+      # the gateway marks it cacheScope: private automatically.
+      - data_classifications: [restricted]
+        required_idp_groups: [data-restricted]
+        decision: hide
+        reason: restricted-classification tools are visible only to authorized groups
+        identity_specific: true
+
+audiences:
+  - id: aud_support
+    slug: support-agents
+    name: Support Agents
+    project: prj_go_to_market
+    bundles: [bnd_support]
+    policies: [pol_restricted_data]
+    rate_limits:
+      requests_per_minute: 600
+      concurrent_requests: 32
+      tokens_per_minute: 2000000
+
+  - id: aud_platform
+    slug: platform-agents
+    name: Platform Agents
+    project: prj_internal
+    bundles: [bnd_support, bnd_platform]
+    policies: [pol_destructive_confirm, pol_restricted_data]
+    allowed_idp_groups: [eng-platform]
+    rate_limits:
+      requests_per_minute: 300
+      concurrent_requests: 16
+      tokens_per_minute: 1000000
+
+  # An audience that includes the hostile backend, for demonstrating the guard.
+  # Restricted to the security team so nothing else can reach it.
+  - id: aud_research
+    slug: threat-research
+    name: Threat Research
+    project: prj_internal
+    bundles: [bnd_untrusted]
+    allowed_idp_groups: [sec-research]

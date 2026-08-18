@@ -241,12 +241,19 @@ func argsDigest(arguments any) string {
 // wrapBackendInputRequest turns a backend's input-required result into one the
 // client can safely act on.
 //
-// The backend's `requestState` goes inside the gateway's signed envelope. The
-// client therefore cannot read it, cannot forge it, and cannot replay it against
-// a different call — and the backend, on retry, gets back exactly the bytes it
-// produced.
+// The backend's `requestState` goes inside the gateway's signed envelope, bound
+// to the tool, the principal, the audience, and the argument digest. The client
+// cannot forge the envelope and cannot redeem it against a different call — and
+// the backend, on retry, gets back exactly the bytes it produced.
+//
+// The bindings are the same set a plugin deferral gets. There is no reason for a
+// backend's approval to be more replayable than a plugin's: an approval for
+// "promote build v1" must not authorize promoting v2, whoever asked the question.
 func (e *Edge) wrapBackendInputRequest(
 	tool *snapshot.Tool,
+	principal string,
+	audience string,
+	arguments any,
 	res *mcp.CallToolResult,
 ) (*mcp.CallToolResult, error) {
 	if e.opts.StateSigner == nil {
@@ -255,9 +262,12 @@ func (e *Edge) wrapBackendInputRequest(
 				"an unsigned state would let a client forge its own approval")
 	}
 	token, err := e.opts.StateSigner.Wrap(stateEnvelope{
-		Tool:    tool.Def.QualifiedName,
-		Source:  SourceBackend,
-		Backend: res.RequestState,
+		Audience:   audience,
+		Tool:       tool.Def.QualifiedName,
+		Principal:  principal,
+		ArgsDigest: argsDigest(arguments),
+		Source:     SourceBackend,
+		Backend:    res.RequestState,
 	})
 	if err != nil {
 		return nil, err

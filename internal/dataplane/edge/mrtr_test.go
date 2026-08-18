@@ -5,6 +5,7 @@ package edge_test
 import (
 	"context"
 	"encoding/base64"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -45,13 +46,19 @@ func TestMRTRBackendRoundTrip(t *testing.T) {
 	require.Contains(t, elicit.Message, "v2026.8.1",
 		"the prompt the human sees comes from the backend, unchanged")
 
-	// The state the client received is the gateway's envelope, not the
-	// backend's own string. A client that could read or forge the backend's
-	// state could self-authorize the promotion.
+	// The state the client received is the gateway's signed envelope, not the
+	// backend's own string handed straight through.
+	//
+	// The property this buys is *unforgeability*, not confidentiality: the
+	// envelope is signed and base64-encoded, so a determined client can decode
+	// and read the backend's state, but it cannot produce a valid envelope of its
+	// own or redeem this one against a different call. ADR 0012 explains why
+	// confidentiality is not needed here — nothing in the envelope is secret.
 	require.NotEmpty(t, first.RequestState)
-	require.NotContains(t, first.RequestState, "promote:v2026.8.1",
-		"the backend's raw state must not be visible to the client")
-	require.True(t, len(first.RequestState) > 40, "the envelope should be signed, not a passthrough")
+	require.NotEqual(t, "promote:v2026.8.1", first.RequestState,
+		"the backend's state must be wrapped, not passed through")
+	require.True(t, strings.HasPrefix(first.RequestState, "mcpd1."),
+		"the client should receive a signed envelope, got %q", first.RequestState)
 
 	// Round 2: the client fulfils the request and retries.
 	second, err := session.CallTool(ctx, &sdk.CallToolParams{
@@ -381,4 +388,67 @@ func TestMRTRStateCannotBeReplayedAgainstDifferentArguments(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, honest.IsError, contentText(honest))
+}
+
+// TestMRTRBackendStateIsBoundToTheCall: a backend's approval must be no more
+// replayable than a plugin's. An approval for "promote v1" must not authorize
+// promoting a different build, whoever asked the question.
+func TestMRTRBackendStateIsBoundToTheCall(t *testing.T) {
+	h := newHarness(t, harnessOptions{WithStateSigner: true})
+	ctx := context.Background()
+
+	alice := http.Header{}
+	alice.Set(edge.HeaderSubject, "alice@example.com")
+	aliceSession := h.Connect(t, "platform-agents", alice)
+
+	first, err := aliceSession.CallTool(ctx, &sdk.CallToolParams{
+		Name: "dep.promote_release", Arguments: map[string]any{"build": "v1"},
+	})
+	require.NoError(t, err)
+	require.True(t, first.NeedsInput())
+
+	t.Run("replayed against different arguments", func(t *testing.T) {
+		res, err := aliceSession.CallTool(ctx, &sdk.CallToolParams{
+			Name:      "dep.promote_release",
+			Arguments: map[string]any{"build": "v2-PRODUCTION"},
+			InputResponses: sdk.InputResponseMap{
+				"confirm": &sdk.ElicitResult{Action: "accept"},
+			},
+			RequestState: first.RequestState,
+		})
+		require.NoError(t, err)
+		require.True(t, res.IsError, "an approval for v1 must not authorize v2")
+		require.Contains(t, contentText(res), "could not be verified")
+	})
+
+	t.Run("replayed by a different principal", func(t *testing.T) {
+		bob := http.Header{}
+		bob.Set(edge.HeaderSubject, "bob@example.com")
+		bobSession := h.Connect(t, "platform-agents", bob)
+
+		res, err := bobSession.CallTool(ctx, &sdk.CallToolParams{
+			Name:      "dep.promote_release",
+			Arguments: map[string]any{"build": "v1"},
+			InputResponses: sdk.InputResponseMap{
+				"confirm": &sdk.ElicitResult{Action: "accept"},
+			},
+			RequestState: first.RequestState,
+		})
+		require.NoError(t, err)
+		require.True(t, res.IsError, "Alice's approval must not be redeemable by Bob")
+		require.Contains(t, contentText(res), "could not be verified")
+	})
+
+	// The honest retry, same principal and same arguments, still works.
+	honest, err := aliceSession.CallTool(ctx, &sdk.CallToolParams{
+		Name:      "dep.promote_release",
+		Arguments: map[string]any{"build": "v1"},
+		InputResponses: sdk.InputResponseMap{
+			"confirm": &sdk.ElicitResult{Action: "accept"},
+		},
+		RequestState: first.RequestState,
+	})
+	require.NoError(t, err)
+	require.False(t, honest.IsError, contentText(honest))
+	require.Contains(t, contentText(honest), "promoted")
 }

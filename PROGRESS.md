@@ -157,8 +157,8 @@ ADRs: [0009](docs/adr/0009-snapshot-signing-and-distribution.md),
 - MRTR: signed `requestState` envelope binding tool, principal, audience, and
   argument digest, with source-routed input responses.
 
-**44 tests**, all over real HTTP against live backends: conformance (16),
-security (6), MRTR (7), chaos (8), plus unit coverage.
+**39 tests** in the edge package, all over real HTTP against live backends:
+conformance, security, MRTR, and chaos. 172 tests across the repo.
 
 ADRs: [0003](docs/adr/0003-protocol-version-strategy.md),
 [0006](docs/adr/0006-serve-admitted-not-observed.md),

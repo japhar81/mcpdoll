@@ -52,6 +52,17 @@ type Store struct {
 	// checking for a new snapshot on every request.
 	observers []func(*View)
 
+	// preparer runs after a snapshot is verified and indexed but *before* it is
+	// swapped in, and may refuse it.
+	//
+	// This exists because indexing a snapshot is not the same as being able to
+	// serve it. The edge has to construct an MCP server per audience, and that
+	// construction can fail on a definition the view builder accepted. Without a
+	// fallible pre-swap step those failures happen after the commit — or, worse,
+	// panic — and a bad publish takes down every instance simultaneously instead
+	// of being refused.
+	preparer func(*View) error
+
 	lastReject struct {
 		version int64
 		reason  string
@@ -93,6 +104,19 @@ func (s *Store) Version() int64 {
 func (s *Store) Observe(fn func(*View)) {
 	s.mu.Lock()
 	s.observers = append(s.observers, fn)
+	s.mu.Unlock()
+}
+
+// SetPreparer registers the single function that must succeed before a snapshot
+// is swapped in.
+//
+// Returning an error refuses the activation and leaves the current snapshot
+// serving, exactly as a signature or validation failure does. There is one
+// preparer rather than a list because "prepared" is not a partial state: if two
+// preparers ran and the second failed, the first would already have committed.
+func (s *Store) SetPreparer(fn func(*View) error) {
+	s.mu.Lock()
+	s.preparer = fn
 	s.mu.Unlock()
 }
 
@@ -144,6 +168,25 @@ func (s *Store) Activate(signed *snapshotpb.SignedSnapshot, v *Verifier) (*View,
 		s.recordReject(view.Version, err.Error())
 		return nil, err
 	}
+	preparer := s.preparer
+	s.mu.Unlock()
+
+	// Prepare outside the lock — building an MCP server per audience is real
+	// work — and refuse the snapshot if it fails.
+	if preparer != nil {
+		if err := preparer(view); err != nil {
+			s.recordReject(view.Version, err.Error())
+			return nil, fmt.Errorf("snapshot: version %d cannot be served: %w", view.Version, err)
+		}
+	}
+
+	s.mu.Lock()
+	if serving := s.current.Load(); serving != nil && view.Version <= serving.Version {
+		s.mu.Unlock()
+		err := &ErrStaleVersion{Offered: view.Version, Serving: serving.Version}
+		s.recordReject(view.Version, err.Error())
+		return nil, err
+	}
 	s.history = append(s.history, &historyEntry{version: view.Version, signed: signed, view: view})
 	if len(s.history) > s.maxHistory {
 		s.history = s.history[len(s.history)-s.maxHistory:]
@@ -188,6 +231,18 @@ func (s *Store) Rollback(version int64) (*View, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("snapshot: rebuilding version %d for rollback: %w", version, err)
 	}
+	preparer := s.preparer
+	s.mu.Unlock()
+
+	// A rollback target was servable once, but prepare it again rather than
+	// assuming: the binary may have changed since it was last activated.
+	if preparer != nil {
+		if err := preparer(view); err != nil {
+			return nil, fmt.Errorf("snapshot: version %d can no longer be served: %w", version, err)
+		}
+	}
+
+	s.mu.Lock()
 	s.current.Store(view)
 	observers := slices.Clone(s.observers)
 	s.mu.Unlock()

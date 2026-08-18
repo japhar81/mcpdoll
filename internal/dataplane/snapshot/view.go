@@ -199,6 +199,16 @@ func Build(snap *snapshotpb.Snapshot) (*View, error) {
 			return nil, fmt.Errorf("snapshot: qualified name %q is claimed by two definitions (%s and %s)",
 				def.QualifiedName, prior.Digest, def.Digest)
 		}
+		// MCP requires an input schema on every tool, and the SDK panics on a
+		// tool that lacks one. Rejecting it here makes a malformed definition a
+		// refused activation — the previous snapshot keeps serving — rather than
+		// a crash loop across every data-plane instance at once.
+		if def.InputSchemaJson == "" {
+			return nil, fmt.Errorf(
+				"snapshot: tool %q has no input schema; MCP requires one "+
+					"(a tool with no arguments still declares {\"type\":\"object\"})",
+				def.QualifiedName)
+		}
 		expected := ns.Prefix + "." + def.Name
 		if def.QualifiedName != expected {
 			return nil, fmt.Errorf(

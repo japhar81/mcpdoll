@@ -260,3 +260,23 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 func TrustedKeyEntry(keyID string, pub ed25519.PublicKey) string {
 	return keyID + ":" + base64.StdEncoding.EncodeToString(pub)
 }
+
+// ParseUnverified parses a snapshot's bytes *without* checking the signature.
+//
+// It exists for one purpose: an operator diagnosing "why will this snapshot not
+// activate" needs to see the contents, and they may not hold the key it was
+// signed with. Nothing here is trusted for anything — the caller is inspecting,
+// not serving.
+//
+// The name is deliberately alarming. Nothing on a serving path may call this;
+// [Verifier.Verify] is the only way a snapshot becomes servable.
+func ParseUnverified(signed *snapshotpb.SignedSnapshot) (*snapshotpb.Snapshot, error) {
+	if signed == nil {
+		return nil, errors.New("snapshot: nothing to parse")
+	}
+	var snap snapshotpb.Snapshot
+	if err := proto.Unmarshal(signed.SnapshotBytes, &snap); err != nil {
+		return nil, fmt.Errorf("snapshot: parsing unverified bytes: %w", err)
+	}
+	return &snap, nil
+}

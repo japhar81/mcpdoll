@@ -193,7 +193,8 @@ func (e *Edge) toolHandler(
 		// wrapped in the gateway's own signed envelope before it reaches the
 		// client — see requeststate.go for why an unwrapped one is unsafe.
 		if res.NeedsInput() {
-			wrapped, err := e.wrapBackendInputRequest(tool, res)
+			wrapped, err := e.wrapBackendInputRequest(
+				tool, principal.Subject, av.Audience.Slug, arguments, res)
 			if err != nil {
 				outcome = "mrtr_wrap_error"
 				recordSpanError(span, err)

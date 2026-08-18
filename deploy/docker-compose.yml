@@ -1,0 +1,46 @@
+# Local observability for MCPDoll.
+#
+# Only the LGTM stack lives here. The gateway, the fixtures, and the CLI run as
+# local processes (see deploy/dev-up.sh) so a code change is live without an image
+# build — which is the difference between a stack you use and one you avoid.
+#
+# Postgres and Redis are deliberately absent: nothing in this build talks to them
+# yet (the control plane's durable side is not implemented — see
+# docs/deferred.md), and starting a database nothing uses would be misleading.
+
+name: mcpdoll
+
+services:
+  # Grafana's all-in-one LGTM bundle: Grafana, Prometheus, Loki, Tempo, and an
+  # OpenTelemetry Collector in one container. Same image and conventions as
+  # RAGdoll (ADR 0001), so both products' telemetry can share a Grafana.
+  otel-collector:
+    image: grafana/otel-lgtm:0.11.10
+    container_name: mcpdoll-lgtm
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Anonymous viewer access: `make dev` should not ask a developer to log in
+      # to read their own traces.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      ENABLE_LOGS_GRAFANA: "true"
+      ENABLE_LOGS_OTELCOL: "true"
+    ports:
+      - "3300:3000"   # Grafana  -> http://localhost:3300
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - lgtm-data:/data
+      - ./observability/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
+      - ./observability/dashboards:/etc/grafana/dashboards:ro
+    healthcheck:
+      # The image ships neither curl nor wget, so probe with bash's /dev/tcp.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/3000' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  lgtm-data:
