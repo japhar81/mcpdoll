@@ -40,3 +40,4 @@ deploy/local/*.pub
 deploy/local/snapshot.pb
 deploy/local/logs/
 deploy/local/dev.pids
+deploy/local/plugins/*.wasm

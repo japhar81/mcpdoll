@@ -68,9 +68,34 @@ compose() {
   fi
 }
 
-# ------------------------------------------------------------------ build ----
+# ------------------------------------------------------------- preflight ----
 
 command -v go >/dev/null || die "go is not on PATH"
+
+# Refuse to start on top of an existing stack.
+#
+# Without this the script "succeeds" against whatever is already listening: the
+# health checks pass, the banner prints, and the snapshot it just built is
+# quietly refused by the older process as a stale version. The result is a
+# developer debugging a gateway that is not the one they think they started.
+check_port_free() {
+  local port=$1 what=$2
+  if lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    die "port ${port} (${what}) is already in use — run 'make dev-down' first, "\
+        "or stop whatever is listening there"
+  fi
+}
+
+if command -v lsof >/dev/null 2>&1; then
+  check_port_free 8080 "data plane"
+  for port in 9101 9102 9103 9104 9105; do
+    check_port_free "${port}" "fixture backend"
+  done
+else
+  warn "lsof is unavailable; skipping the port-conflict check"
+fi
+
+# ------------------------------------------------------------------ build ----
 
 info "building binaries"
 mkdir -p bin
@@ -216,8 +241,8 @@ Try it:
   # The entitlements plugin ships in SHADOW: it records what it would hide
   # without hiding it. Watch it decide, then promote it:
   grep "shadow verdict diverged" ${LOG_DIR}/mcpdoll-dp.log
-  #   ... then set `rollout: enforce` on plg_entitlements in registry.yaml,
-  #   bump `version`, rebuild the snapshot, and the catalog changes.
+  #   ... then set \`rollout: enforce\` on plg_entitlements in registry.yaml,
+  #   bump \`version\`, rebuild the snapshot, and the catalog changes.
 
   # What is actually in the snapshot
   ./bin/mcpdoll snapshot inspect ${LOCAL_DIR}/snapshot.pb --tools

@@ -206,6 +206,12 @@ audiences:
     allowed_idp_groups: [sec-research]
 
 plugins:
+  # The `artifact_digest` values below are stamped by deploy/dev-up.sh when it
+  # builds the plugins, because a digest cannot be a constant in a committed file
+  # — it changes whenever a plugin does. Run `make dev` rather than building a
+  # snapshot by hand, or the digests here will not match your build and the host
+  # will (correctly) refuse to load the plugin.
+
   # Redaction runs at ON_TOOL_RESULT, where content nobody reviewed arrives.
   # Enforcing from the start because it only ever removes; a redaction plugin in
   # shadow protects nothing.
@@ -220,7 +226,7 @@ plugins:
     writes: [result.content]
     rollout: enforce
     artifact_ref: file://deploy/local/plugins/redact.wasm
-    artifact_digest: "sha256:e64a58b0d28cd17771e9a03c224ebc47896a75ea390f22bc8377bb06f92ff205"
+    artifact_digest: "sha256:7cb18df64ee5145a2ecb96265747898c49132c667e63b8f495002edf8600b640"
     failure_policy:
       # A redaction outage on a read should not take down every read; on a
       # destructive call, proceeding without the check is not a safe default.
@@ -246,7 +252,7 @@ plugins:
     identity_dependent: true
     rollout: shadow
     artifact_ref: file://deploy/local/plugins/entitlements.wasm
-    artifact_digest: "sha256:207308231f2d729b59c8b44ba225e40cbf4ae5e4b10fbaa5d7bb5668a003fe19"
+    artifact_digest: "sha256:be11ebce564256bf134b7688b93e70fef1dae18724060ea2e920d50fcdb3f422"
     failure_policy:
       read: open
       destructive: closed
