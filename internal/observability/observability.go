@@ -194,3 +194,9 @@ func NoopProvider() *Provider {
 		shutdown: []func(context.Context) error{tp.Shutdown, mp.Shutdown},
 	}
 }
+
+// MetricAttrs is a terser spelling of metric.WithAttributes, so a call site that
+// records a measurement reads as the measurement rather than as the plumbing.
+func MetricAttrs(kv ...attribute.KeyValue) metric.MeasurementOption {
+	return metric.WithAttributes(kv...)
+}
