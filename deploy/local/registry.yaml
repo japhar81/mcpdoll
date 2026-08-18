@@ -204,3 +204,59 @@ audiences:
     project: prj_internal
     bundles: [bnd_untrusted]
     allowed_idp_groups: [sec-research]
+
+plugins:
+  # Redaction runs at ON_TOOL_RESULT, where content nobody reviewed arrives.
+  # Enforcing from the start because it only ever removes; a redaction plugin in
+  # shadow protects nothing.
+  - id: plg_redact
+    name: redact
+    version: 1.0.0
+    runtime: wasm
+    hooks: [on_tool_result]
+    priority: 50
+    budget: 50ms
+    reads: [result]
+    writes: [result.content]
+    rollout: enforce
+    artifact_ref: file://deploy/local/plugins/redact.wasm
+    artifact_digest: "sha256:e64a58b0d28cd17771e9a03c224ebc47896a75ea390f22bc8377bb06f92ff205"
+    failure_policy:
+      # A redaction outage on a read should not take down every read; on a
+      # destructive call, proceeding without the check is not a safe default.
+      read: open
+      write: open
+      destructive: closed
+    config:
+      builtins: true
+      placeholder: "[REDACTED]"
+      annotate: true
+
+  # Entitlements starts in SHADOW: its verdicts are recorded and not acted on,
+  # so an operator can read the shadow diff before it starts denying anything.
+  - id: plg_entitlements
+    name: entitlements
+    version: 1.0.0
+    runtime: wasm
+    hooks: [on_catalog, on_tool_call]
+    priority: 20
+    budget: 50ms
+    reads: [principal, catalog, tool]
+    writes: [catalog]
+    identity_dependent: true
+    rollout: shadow
+    artifact_ref: file://deploy/local/plugins/entitlements.wasm
+    artifact_digest: "sha256:207308231f2d729b59c8b44ba225e40cbf4ae5e4b10fbaa5d7bb5668a003fe19"
+    failure_policy:
+      read: open
+      destructive: closed
+    config:
+      default: allow
+      hide_denied: true
+      rules:
+        # Warehouse tools are for the logistics team. In SHADOW this only
+        # records what it *would* hide — read the divergences before promoting.
+        - match: "whs.*"
+          allow_groups: [eng-logistics]
+        - match: "dep.*"
+          allow_groups: [eng-platform]

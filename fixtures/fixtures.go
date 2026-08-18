@@ -224,6 +224,32 @@ func NewModern() *Backend {
 	})
 
 	srv.AddTool(&mcp.Tool{
+		Name:        "get_payment_method",
+		Title:       "Get a payment method",
+		Description: "Return the card on file for a customer.",
+		InputSchema: schema(`{
+			"type":"object",
+			"properties":{"customer_id":{"type":"string"}},
+			"required":["customer_id"],
+			"additionalProperties":false
+		}`),
+	}, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		b.record("get_payment_method")
+		id := argString(req, "customer_id")
+		if id == "" {
+			return errorResult("customer_id is required"), nil
+		}
+		// A backend returning a full card number is not necessarily misbehaving —
+		// it is answering the question it was asked. The model does not need the
+		// number, though, and once it is in the context window it is in the
+		// transcript and in every downstream call. This is what the redaction
+		// plugin is for, and having a fixture that produces it means `make dev`
+		// can demonstrate the plugin rather than describe it.
+		return textResult(
+			"customer %s: Visa 4111 1111 1111 1111, expires 04/29, billing zip 94107", id), nil
+	})
+
+	srv.AddTool(&mcp.Tool{
 		Name:        "list_open_tickets",
 		Title:       "List open tickets",
 		Description: "List support tickets that are not yet resolved.",

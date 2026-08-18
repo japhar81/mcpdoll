@@ -22,7 +22,10 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/pipeline"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/plugins"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/wiring"
 	"github.com/mcpdoll/mcpdoll/internal/observability"
 	"github.com/mcpdoll/mcpdoll/internal/platform/config"
 	"github.com/mcpdoll/mcpdoll/internal/platform/logging"
@@ -146,6 +149,41 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("%w: %w", errStartup, err)
 	}
 
+	// Plugin runtimes. A deployment with no plugins still gets a registry — it
+	// costs nothing and means the edge does not branch on whether plugins exist.
+	wasmHost, err := plugins.NewWASMHost(ctx, plugins.WASMOptions{
+		Logger:   log,
+		CacheDir: os.Getenv("MCPDOLL_WASM_CACHE_DIR"),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", errStartup, err)
+	}
+	hosts := wiring.NewHostRegistry(wasmHost, log)
+	defer func() {
+		if err := hosts.Close(); err != nil {
+			log.Warn("closing plugin hosts", "err", err)
+		}
+	}()
+
+	engine, err := pipeline.New(pipeline.Options{
+		Logger:                  log,
+		Telemetry:               telemetry,
+		Metrics:                 metrics,
+		Hosts:                   hosts,
+		TotalBudget:             cfg.Pipeline.TotalBudget,
+		HookBudget:              cfg.Pipeline.HookBudget,
+		CircuitFailureThreshold: cfg.Pipeline.CircuitFailureThreshold,
+		CircuitCooldown:         cfg.Pipeline.CircuitCooldown,
+		TraceSink:               traceSink(log),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", errStartup, err)
+	}
+
+	// Plugins load on activation, before the edge rebuilds, so a request never
+	// arrives at a hook whose plugins are still being compiled.
+	store.Observe(func(view *snapshot.View) { hosts.Sync(ctx, view) })
+
 	dp, err := edge.New(edge.Options{
 		Store:       store,
 		Pool:        pool,
@@ -153,6 +191,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Logger:      log,
 		Telemetry:   telemetry,
 		Metrics:     metrics,
+		Pipeline:    wiring.NewEdgePipeline(engine, log),
 		GraceWindow: cfg.Health.GraceWindow,
 		StateSigner: stateSigner,
 	})
@@ -297,5 +336,36 @@ func buildSnapshotSource(
 			cfg.DataPlane.SnapshotSource)
 	default:
 		return nil, fmt.Errorf("dataplane.snapshot_source %q is unknown", cfg.DataPlane.SnapshotSource)
+	}
+}
+
+// traceSink is where a completed pipeline trace goes.
+//
+// It logs a one-line summary today. The durable, queryable audit store the
+// console's waterfall reads is not built (see docs/deferred.md), and a sink that
+// silently discarded traces would make that gap invisible — so this at least puts
+// the record somewhere a human can find it.
+func traceSink(log *slog.Logger) func(*pipeline.Trace) {
+	return func(t *pipeline.Trace) {
+		if len(t.Hooks) == 0 {
+			return
+		}
+		var ran bool
+		for _, h := range t.Hooks {
+			if len(h.Outcomes) > 0 {
+				ran = true
+			}
+		}
+		if !ran {
+			// No plugin was configured for this hook. Logging it would be one
+			// line per request per hook for a system with no plugins at all.
+			return
+		}
+		log.Debug("pipeline trace",
+			logging.FieldRequestID, t.RequestID,
+			logging.FieldAudience, t.Audience,
+			logging.FieldPrincipal, t.Principal,
+			logging.FieldToolName, t.Tool,
+			"summary", t.Summary())
 	}
 }

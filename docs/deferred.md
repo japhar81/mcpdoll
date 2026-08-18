@@ -91,18 +91,34 @@ Consequence: the tri-surface law is **not** currently satisfied, and
 tool itself is not built either. This is the largest single gap against the brief
 and is stated plainly rather than buried.
 
-### Pipeline engine and plugin hosts
+### The gRPC plugin host and the LLM guard
 
-**Contract built, engine not.** The seven hooks are in the proto
-(`snapshotpb.Hook`), the five-verdict model is in the plugin proto
-(`pluginpb.Decision`), manifests carry declared `reads`/`writes`, budgets,
-per-effect-class failure policy, and rollout state, and the edge's `Pipeline`
-interface is real — the MRTR and cacheScope tests drive it with working
-in-process implementations.
+**The WASM half is built; the gRPC half is not.** The hook engine, the wazero
+host, the SDK, and two first-party plugins (`redact`, `entitlements`) all work
+end to end — see PROGRESS.md.
 
-Missing: the hook engine that sequences plugins with budgets and circuit
-breakers, the `wazero` WASM host, the gRPC plugin host, the four first-party
-plugins, shadow/canary rollout evaluation, and the LLM guard.
+Missing: the gRPC plugin host and therefore the LLM guard, which needs it because
+it has to reach a model. The proto contract (`pluginpb`) is defined, and
+`wiring.HostRegistry` **refuses** a gRPC plugin with an explanatory error rather
+than ignoring it — a configured security control that silently did nothing would
+be worse than one that says it cannot run.
+
+Also missing from the first-party set: `header-map` (claim → backend header
+mapping). The mechanism it needs exists — `backends.Credential.Extra` already
+carries per-request headers — so it is a plugin to write, not a capability to
+add.
+
+### WASM fuel limits are not enforced
+
+`wazero` has no instruction metering. The plugin manifest carries a `fuel_limit`
+field and the host **does not enforce it**; termination is by wall-clock deadline
+via `WithCloseOnContextDone`.
+
+A runaway plugin *is* stopped, but the limit is load-dependent: the same plugin
+may complete on a quiet host and be cut off on a busy one. The host logs a
+warning when a manifest sets `fuel_limit`, rather than letting an operator
+believe a limit is in force. Switching to wasmtime or wasmer would fix it at the
+cost of cgo — see ADR 0008.
 
 ### Prober, drift detection, health state machine
 
@@ -148,13 +164,27 @@ reaching production would be a total authorization bypass, so that is a
 constructor error rather than a documented caveat. OIDC/JWT validation and SCIM
 are not built.
 
-### Deployment: `make dev`, compose, Helm, Grafana dashboards
+### Deployment: Helm, and Grafana dashboards as code
 
-`make dev` is wired to `deploy/dev-up.sh`, which does not exist. No compose file,
-no LGTM stack, no dashboards-as-code. The observability *instrumentation* is
-complete and wired from the first commit — spans, the full metric set, trace
-correlation in logs — so there is data to display; there is nothing yet to
-display it in.
+`make dev` **works**: it builds the binaries and the WASM plugins, starts five
+fixture backends and the LGTM stack, builds and signs a snapshot, and starts the
+data plane. What is missing is the production side — a Helm chart — and the
+Grafana dashboards as code.
+
+The observability *instrumentation* is complete and has been wired since the
+first commit: spans across client → edge → pipeline → plugin → backend, the full
+metric set, and trace-correlated logs. So there is data to display; there is
+nothing yet to display it in beyond Grafana's ad-hoc explore.
+
+### Audit trail persistence
+
+`pipeline.Trace` records everything the console's request-trace waterfall needs —
+every hook, every plugin, every verdict, every skip and its reason, budget
+consumption, and shadow divergences. The data-plane binary currently logs a
+one-line summary of each trace.
+
+Missing: the append-only, queryable store. The `TraceSink` seam is where it
+plugs in, and the trace type is already the shape the waterfall would render.
 
 ### Playwright e2e and `testcontainers-go` integration tests
 

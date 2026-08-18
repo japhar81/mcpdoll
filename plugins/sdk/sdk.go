@@ -271,6 +271,30 @@ func (inv *Invocation) ConfigBool(key string, fallback bool) bool {
 	return fallback
 }
 
+// ConfigFloat reads a number from the plugin's configuration.
+//
+// JSON has one number type, so a configured `5` arrives as a float64 and there
+// is no integer case to handle separately.
+func (inv *Invocation) ConfigFloat(key string, fallback float64) float64 {
+	if v, ok := inv.Config[key].(float64); ok {
+		return v
+	}
+	return fallback
+}
+
+// ConfigInt reads an integer from the plugin's configuration.
+//
+// A fractional value falls back rather than truncating: `threshold: 2.5` where
+// an integer was expected is a configuration mistake, and silently reading it as
+// 2 would hide it.
+func (inv *Invocation) ConfigInt(key string, fallback int) int {
+	v, ok := inv.Config[key].(float64)
+	if !ok || v != float64(int(v)) {
+		return fallback
+	}
+	return int(v)
+}
+
 // HasGroup reports whether the principal belongs to a group.
 func (inv *Invocation) HasGroup(group string) bool {
 	for _, g := range inv.Principal.Groups {

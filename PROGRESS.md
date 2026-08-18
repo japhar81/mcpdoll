@@ -3,14 +3,29 @@
 > Recovery point. If context is lost, read this first, then `docs/deferred.md`,
 > then `docs/adr/`.
 
-**Current state:** phase 1 complete and demonstrable. A real MCP client connects
-to the real edge over HTTP, discovers an aggregated catalog assembled from five
-live fixture backends, and calls tools across them — through the real pipeline,
-against a real signed snapshot.
+**Current state:** the data plane is complete and runnable. `make dev` starts
+five fixture backends, builds a signed snapshot by discovering them, and serves
+MCP 2026-07-28 on `:8080` with WASM plugins in the request path.
 
-**What is not built:** the control plane's durable side, the console, the plugin
-hosts, and the prober. See `docs/deferred.md`, which is honest about the size of
-those gaps rather than optimistic.
+Verified by hand as well as by tests — the full loop below was run end to end:
+
+```
+registry.yaml -> discover 5 live backends -> canonicalize -> sign
+              -> data plane (hot reload, no restart)
+              -> MCP client -> edge -> pipeline -> wazero -> WASM plugin
+              -> RFC 6902 patch (scope-checked) -> backend -> client
+```
+
+Observed: a card number returned by a backend never reached the client; the
+entitlements plugin in shadow recorded "would have hidden 2 tools" while changing
+nothing; promoting it to `enforce` and republishing changed the catalog from 8
+tools to 6 for an unentitled principal and refused the call to a hidden tool.
+
+**What is not built:** the control plane's durable side (Postgres, admission,
+approvals), the console, the parity check, the prober, and the gRPC plugin host.
+See `docs/deferred.md`, which states the size of those gaps rather than
+minimising them. **The tri-surface law is not currently satisfied** — there is a
+CLI but no API and no UI.
 
 ## Ground truth established (verified, not assumed)
 
@@ -158,11 +173,48 @@ ADRs: [0009](docs/adr/0009-snapshot-signing-and-distribution.md),
   argument digest, with source-routed input responses.
 
 **39 tests** in the edge package, all over real HTTP against live backends:
-conformance, security, MRTR, and chaos. 172 tests across the repo.
+conformance, security, MRTR, and chaos.
 
 ADRs: [0003](docs/adr/0003-protocol-version-strategy.md),
 [0006](docs/adr/0006-serve-admitted-not-observed.md),
 [0012](docs/adr/0012-mrtr-requeststate-wrapping.md)
+
+### Slice 6 — registry, snapshotter, CLI, data-plane binary
+`internal/controlplane/{registry,snapshotter}`, `internal/cli`, `cmd/` · surfaces: CLI + HTTP
+
+- **registry**: a reviewable YAML document declaring backends, tool effect
+  classes, bundles, audiences, policies and plugins. Unknown keys rejected, every
+  cross-reference validated, all problems reported at once. Enums that gate
+  behaviour refuse to default; the two that do — `serving_mode` → strict,
+  `rollout` → shadow — default in the safe direction.
+- **snapshotter**: concurrent discovery, canonicalization, resolution, signing.
+  Every problem is a build failure; a name collision names both culprits.
+- **cli**: `snapshot build/inspect/verify`, `keys generate`, `registry validate`,
+  and a gateway inspector that connects as a chosen identity over real MCP.
+  Human tables by default, JSON as the contract, documented exit codes, and the
+  hidden `__commands` dump the parity check will consume.
+- **mcpdoll-dp**: the data-plane binary, with a hot-reloading file snapshot
+  source.
+
+### Slice 7 — pipeline engine, WASM host, first-party plugins
+`internal/dataplane/{pipeline,plugins,wiring}`, `plugins/` · surfaces: library
+
+- **pipeline**: the seven-hook engine. Five-verdict model, per-hook and
+  per-request budgets, per-plugin circuit breakers, shadow/canary/enforce, and
+  per-effect-class failure policy. Every plugin's outcome is recorded including
+  the ones that did *not* run and why.
+- **patch**: RFC 6902 with write-scope enforcement — rejected whole if any
+  operation is out of scope, source and destination both checked, output
+  re-canonicalized.
+- **plugins**: wazero host with a zero-import guarantee, artifact digests
+  verified before load, pooled instances, and a guest discarded rather than
+  reused after a trap.
+- **sdk + redact + entitlements**: the ABI in one tested place.
+- **wiring**: the composition, tested end to end with a compiled plugin.
+
+ADRs: [0007](docs/adr/0007-seven-hooks.md),
+[0008](docs/adr/0008-dual-plugin-runtime.md),
+[0013](docs/adr/0013-wasm-abi-buffer-ownership.md)
 
 ## Blockers
 
@@ -174,16 +226,19 @@ ADRs: [0003](docs/adr/0003-protocol-version-strategy.md),
 
 ## Next, in priority order
 
-1. **The console and `tools/paritycheck`.** The tri-surface law is the brief's
-   first law and is currently unsatisfied. Needs `api/openapi.yaml` first, since
-   everything generates from it.
-2. **Control plane persistence + registry API.** Postgres schema, `sqlc`, the
-   registry handlers, then the admission stages.
-3. **Pipeline engine + `wazero` host.** The contract is settled; the engine is
-   not written.
-4. **Prober + drift + health state machine.** Inputs exist
-   (`mcp.Discover`, `DigestTools`); the loop does not.
-5. **`make dev`**: compose, LGTM, dashboards.
+1. **`api/openapi.yaml`, `tools/paritycheck`, and the console.** The tri-surface
+   law is the brief's first law and is the largest outstanding gap. The CLI
+   already carries `mcpdoll.operation` annotations and the `__commands` dump the
+   parity tool will read, so the CLI half is ready.
+2. **Control plane persistence + admission.** Postgres schema, `sqlc`, the
+   registry API, then the admission stages and human approval. The snapshotter is
+   already the piece admission would feed.
+3. **Prober + drift + health state machine.** Inputs exist (`mcp.Discover`,
+   `mcp.DigestTools`, the drifting fixture); the loop does not.
+4. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+   the host registry refuses a gRPC plugin loudly rather than ignoring it.
+5. **Grafana dashboards as code.** The instrumentation is complete; there is
+   nothing yet to display it in.
 
 ## Decisions of record
 

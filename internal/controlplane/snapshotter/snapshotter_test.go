@@ -120,12 +120,12 @@ func TestBuildDiscoversLiveBackends(t *testing.T) {
 	require.NotEmpty(t, result.Snapshot.RegistryDigest,
 		"the registry digest lets a snapshot be traced back to the document it came from")
 
-	// Three CRM tools and two HR tools, all discovered live.
-	require.Len(t, result.Snapshot.Tools, 5)
+	// Four CRM tools and two HR tools, all discovered live.
+	require.Len(t, result.Snapshot.Tools, 6)
 	names := qualifiedNames(result)
 	require.Equal(t, []string{
-		"crm.list_open_tickets", "crm.lookup_customer", "crm.update_customer",
-		"hr.get_org_chart", "hr.lookup_employee",
+		"crm.get_payment_method", "crm.list_open_tickets", "crm.lookup_customer",
+		"crm.update_customer", "hr.get_org_chart", "hr.lookup_employee",
 	}, names)
 
 	// The signature verifies, and the result is servable.
@@ -187,7 +187,7 @@ func TestBuildExcludesTools(t *testing.T) {
 
 	result := e.build(t, spec)
 	require.NotContains(t, qualifiedNames(result), "crm.update_customer")
-	require.Len(t, result.Snapshot.Tools, 4)
+	require.Len(t, result.Snapshot.Tools, 5)
 
 	var crm snapshotter.BackendReport
 	for _, r := range result.Discovered {

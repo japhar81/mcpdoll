@@ -229,6 +229,7 @@ func TestConformanceListTools(t *testing.T) {
 	// Stable total order: (bundle priority, namespace prefix, tool name). Every
 	// namespace's tools form a contiguous block, in prefix order.
 	require.Equal(t, []string{
+		"crm.get_payment_method",
 		"crm.list_open_tickets",
 		"crm.lookup_customer",
 		"crm.update_customer",

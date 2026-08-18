@@ -128,6 +128,36 @@ if [[ ! -f "${LOCAL_DIR}/${KEY_ID}.key" ]]; then
 fi
 TRUST_ENTRY="${KEY_ID}:$(tr -d '\n' < "${LOCAL_DIR}/${KEY_ID}.pub")"
 
+# ---------------------------------------------------------------- plugins ----
+
+# Build the first-party WASM plugins and rewrite their digests in the registry.
+#
+# The digest is what makes a swapped artifact fail closed, so it cannot be a
+# constant in a committed file — it changes whenever a plugin does. Stamping it
+# here means editing a plugin and re-running `make dev` just works, rather than
+# failing with a mismatch that looks like a security incident.
+info "building WASM plugins"
+mkdir -p "${LOCAL_DIR}/plugins"
+for plugin in redact entitlements; do
+  GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared \
+    -o "${LOCAL_DIR}/plugins/${plugin}.wasm" "./plugins/${plugin}"
+
+  digest="sha256:$(shasum -a 256 "${LOCAL_DIR}/plugins/${plugin}.wasm" | cut -d' ' -f1)"
+  # Replace the digest on the line following this plugin's artifact_ref.
+  python3 - "${LOCAL_DIR}/registry.yaml" "${plugin}" "${digest}" <<'PYEOF'
+import sys
+path, plugin, digest = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(path).read().split("\n")
+marker = f"artifact_ref: file://deploy/local/plugins/{plugin}.wasm"
+for i, line in enumerate(lines):
+    if marker in line and i + 1 < len(lines) and "artifact_digest:" in lines[i + 1]:
+        indent = lines[i + 1][: len(lines[i + 1]) - len(lines[i + 1].lstrip())]
+        lines[i + 1] = f'{indent}artifact_digest: "{digest}"'
+        break
+open(path, "w").write("\n".join(lines))
+PYEOF
+done
+
 # --------------------------------------------------------------- snapshot ----
 
 info "building a signed snapshot from ${LOCAL_DIR}/registry.yaml"
@@ -178,6 +208,16 @@ Try it:
   ./bin/mcpdoll gateway call dep.promote_release --audience platform-agents \\
       --subject ops@example.com --groups eng-platform \\
       --args '{"build":"v1"}' --output json
+
+  # The redact plugin at work: the backend returns a card number, the model does not see it
+  ./bin/mcpdoll gateway call crm.get_payment_method --audience support-agents \\
+      --args '{"customer_id":"cus_1"}'
+
+  # The entitlements plugin ships in SHADOW: it records what it would hide
+  # without hiding it. Watch it decide, then promote it:
+  grep "shadow verdict diverged" ${LOG_DIR}/mcpdoll-dp.log
+  #   ... then set `rollout: enforce` on plg_entitlements in registry.yaml,
+  #   bump `version`, rebuild the snapshot, and the catalog changes.
 
   # What is actually in the snapshot
   ./bin/mcpdoll snapshot inspect ${LOCAL_DIR}/snapshot.pb --tools
