@@ -28,6 +28,7 @@ func newSnapshotCmd(env *Env) *cobra.Command {
 	cmd.AddCommand(
 		newSnapshotBuildCmd(env),
 		newSnapshotInspectCmd(env),
+		newSnapshotCurrentCmd(env),
 		newSnapshotVerifyCmd(env),
 	)
 	return cmd

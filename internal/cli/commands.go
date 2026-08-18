@@ -85,14 +85,12 @@ func walkCommands(root *cobra.Command) CommandTree {
 		current := append(append([]string(nil), path...), cmd.Name())
 		children := cmd.Commands()
 
-		hasRunnableChild := false
-		for _, child := range children {
-			if child.Runnable() || child.HasSubCommands() {
-				hasRunnableChild = true
-			}
-		}
-
-		if cmd.Runnable() && !hasRunnableChild {
+		// Runnability is the whole test. A navigation group has no RunE, so it
+		// is excluded automatically — and a command that is *both* runnable and
+		// a parent (`registry servers`, which lists, and also holds `show`) is
+		// still reported. Suppressing those cost a real operation its CLI
+		// surface, and the parity check reported it as missing.
+		if cmd.Runnable() {
 			record := CommandRecord{
 				Path:      strings.Join(current, " "),
 				Operation: cmd.Annotations[annotationOperation],
@@ -186,6 +184,8 @@ func newRegistryCmd(env *Env) *cobra.Command {
 	cmd.AddCommand(
 		newRegistryValidateCmd(env),
 		newRegistryHooksCmd(env),
+		newRegistryShowCmd(env),
+		newRegistryServersCmd(env),
 	)
 	return cmd
 }

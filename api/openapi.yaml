@@ -1,0 +1,842 @@
+openapi: 3.1.0
+
+info:
+  title: MCPDoll Control Plane API
+  version: 0.1.0
+  summary: The single contract behind MCPDoll's API, CLI, and console.
+  description: |
+    This document is the source of truth for every MCPDoll operation. The Go
+    server interfaces, the Go client the CLI uses, the TypeScript client the
+    console uses, and `docs/api/` are all generated from it.
+
+    Two rules make that more than a slogan:
+
+    - **The CLI is an API client and never touches the database.** Anything the
+      CLI can do, an external integrator can do, because the CLI has no
+      privileged path.
+    - **Every operation declares its surfaces** in `x-mcpdoll-surfaces`, and
+      `make parity` fails the build if an operation lacks a CLI command or a UI
+      route, or if a CLI or UI binding names an operation that does not exist.
+
+    See `docs/adr/0004-api-first-tri-surface.md`.
+
+    ## What this version covers
+
+    The registry is a reviewable YAML document rather than database rows, and
+    the control plane's durable side is not built (see `docs/deferred.md`). So
+    the operations here are the ones that are genuinely implemented: reading the
+    registry, inspecting and verifying snapshots, and observing a live data
+    plane. Registry *mutation* through the API arrives with the database.
+
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+
+tags:
+  - name: registry
+    description: The declarative registry document
+  - name: snapshots
+    description: Signed serving configuration
+  - name: gateway
+    description: A live data plane
+  - name: plugins
+    description: Pipeline plugins and their rollout state
+  - name: system
+    description: Health and metadata
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness
+      tags: [system]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll system health
+        ui: /system/health
+      responses:
+        "200":
+          description: The control plane is alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /api/v1/hooks:
+    get:
+      operationId: listHooks
+      summary: List the seven pipeline hooks
+      description: |
+        The set is closed. Adding an eighth requires an ADR, so this list is a
+        contract rather than a convenience.
+      tags: [plugins]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll registry hooks
+        ui: /plugins/hooks
+      responses:
+        "200":
+          description: The hooks, in execution order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HookList" }
+
+  /api/v1/registry:
+    get:
+      operationId: getRegistry
+      summary: Read the resolved registry document
+      tags: [registry]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll registry show
+        ui: /registry
+      responses:
+        "200":
+          description: The registry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Registry" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/registry:validate:
+    post:
+      operationId: validateRegistry
+      summary: Validate a registry document without contacting any backend
+      description: |
+        Structure and internal consistency only: unknown keys, dangling
+        references, duplicate prefixes, TTLs that try to widen rather than
+        narrow. Offline, so it belongs in a pull-request check.
+      tags: [registry]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll registry validate
+        ui: /registry/validate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ValidateRegistryRequest" }
+      responses:
+        "200":
+          description: The document is valid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegistrySummary" }
+        "422":
+          description: The document is invalid, with every problem listed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/registry/servers:
+    get:
+      operationId: listServers
+      summary: List the registered backends
+      tags: [registry]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll registry servers
+        ui: /registry/servers
+      responses:
+        "200":
+          description: The backends
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServerList" }
+
+  /api/v1/registry/servers/{serverId}:
+    get:
+      operationId: getServer
+      summary: Read one backend
+      tags: [registry]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll registry servers show
+        ui: /registry/servers/:serverId
+      parameters:
+        - $ref: "#/components/parameters/ServerId"
+      responses:
+        "200":
+          description: The backend
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Server" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/snapshots/current:
+    get:
+      operationId: getCurrentSnapshot
+      summary: Read the snapshot the gateway is serving
+      tags: [snapshots]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll snapshot current
+        ui: /snapshots
+      responses:
+        "200":
+          description: The snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snapshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/snapshots:inspect:
+    post:
+      operationId: inspectSnapshot
+      summary: Show what a snapshot file contains
+      description: |
+        Reads a snapshot *without* verifying it, so one signed by a key you do
+        not hold can still be inspected — which is exactly when inspection is
+        most useful. Use `verifySnapshot` to check the signature.
+      tags: [snapshots]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll snapshot inspect
+        ui: /snapshots/inspect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InspectSnapshotRequest" }
+      responses:
+        "200":
+          description: The snapshot's contents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snapshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/snapshots:build:
+    post:
+      operationId: buildSnapshot
+      summary: Resolve the registry into a signed snapshot
+      description: |
+        Discovers every backend the registry names, canonicalizes what they
+        publish, and signs the result. Every problem is a build failure: a
+        snapshot some data-plane instances would refuse is worse than none.
+      tags: [snapshots]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll snapshot build
+        ui: /snapshots/build
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BuildSnapshotRequest" }
+      responses:
+        "200":
+          description: The build report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildReport" }
+        "422":
+          description: The snapshot could not be built
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/snapshots:verify:
+    post:
+      operationId: verifySnapshot
+      summary: Check a snapshot's signature and that it would activate
+      description: |
+        Both halves matter. A correctly signed snapshot with a dangling
+        reference is refused by every data-plane instance.
+      tags: [snapshots]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll snapshot verify
+        ui: /snapshots/verify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifySnapshotRequest" }
+      responses:
+        "200":
+          description: The verification result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerifyReport" }
+        "422":
+          description: The snapshot failed verification
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/keys:generate:
+    post:
+      operationId: generateSigningKey
+      summary: Mint an Ed25519 snapshot signing keypair
+      description: |
+        For local development. The private key is written unencrypted; whoever
+        holds it can publish configuration to every data-plane instance, so
+        production keys must come from your key management system.
+      tags: [snapshots]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll keys generate
+        ui: /snapshots/keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateKeyRequest" }
+      responses:
+        "200":
+          description: The generated key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneratedKey" }
+
+  /api/v1/plugins:
+    get:
+      operationId: listPlugins
+      summary: List the pipeline plugins and their rollout state
+      tags: [plugins]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll plugins list
+        ui: /plugins
+      responses:
+        "200":
+          description: The plugins
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginList" }
+
+  /api/v1/gateway/status:
+    get:
+      operationId: getGatewayStatus
+      summary: Report which snapshot a data plane is serving
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll gateway status
+        ui: /gateway
+      responses:
+        "200":
+          description: The gateway's status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayStatus" }
+        "503":
+          description: The gateway is not ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayStatus" }
+
+  /api/v1/gateway/audiences:
+    get:
+      operationId: listAudiences
+      summary: List the audiences a data plane serves
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll gateway audiences
+        ui: /gateway/audiences
+      responses:
+        "200":
+          description: The audiences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudienceList" }
+
+  /api/v1/gateway/audiences/{slug}/catalog:
+    get:
+      operationId: getAudienceCatalog
+      summary: List the tools an identity actually sees
+      description: |
+        Connects to the data plane as a real MCP client, as the given identity,
+        and returns the catalog it receives — including `ttlMs` and
+        `cacheScope`.
+
+        This is the answer to "which tools can this agent call?" that cannot be
+        wrong, because it is the same request the agent makes.
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll gateway catalog
+        ui: /gateway/audiences/:slug/catalog
+      parameters:
+        - $ref: "#/components/parameters/AudienceSlug"
+        - name: subject
+          in: query
+          description: Principal subject to present
+          schema: { type: string }
+        - name: groups
+          in: query
+          description: Comma-separated IdP groups to present
+          schema: { type: string }
+      responses:
+        "200":
+          description: The catalog that identity receives
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Catalog" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/gateway/audiences/{slug}/tools/{toolName}:call:
+    post:
+      operationId: callTool
+      summary: Call a tool through the gateway as a chosen identity
+      description: |
+        Invokes the tool as a real MCP client would, so what you see is what an
+        agent would see — including a policy denial or a grace-window
+        unavailability, both of which arrive as tool errors rather than
+        transport failures.
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll gateway call
+        ui: /gateway/audiences/:slug/playground
+      parameters:
+        - $ref: "#/components/parameters/AudienceSlug"
+        - name: toolName
+          in: path
+          required: true
+          description: The qualified tool name
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CallToolRequest" }
+      responses:
+        "200":
+          description: The tool result, including a tool-level error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallToolResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  parameters:
+    ServerId:
+      name: serverId
+      in: path
+      required: true
+      description: The backend's registry id
+      schema: { type: string }
+
+    AudienceSlug:
+      name: slug
+      in: path
+      required: true
+      description: The audience's URL slug
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: The resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: A single-sentence summary
+        problems:
+          type: array
+          description: |
+            Every problem found, not just the first. An operator fixing a
+            registry one error per run is a bad afternoon.
+          items: { type: string }
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [ok] }
+        version: { type: string }
+
+    HookList:
+      type: object
+      required: [hooks]
+      properties:
+        hooks:
+          type: array
+          description: The seven hooks, in execution order
+          items: { type: string }
+
+    Registry:
+      type: object
+      required: [org, version, namespaces, servers, bundles, audiences]
+      properties:
+        org: { type: string }
+        version:
+          type: integer
+          format: int64
+          description: Increases on every publish; the data plane refuses a stale one
+        namespaces: { type: array, items: { $ref: "#/components/schemas/Namespace" } }
+        servers: { type: array, items: { $ref: "#/components/schemas/Server" } }
+        bundles: { type: array, items: { $ref: "#/components/schemas/Bundle" } }
+        audiences: { type: array, items: { $ref: "#/components/schemas/Audience" } }
+        policies: { type: array, items: { $ref: "#/components/schemas/Policy" } }
+        plugins: { type: array, items: { $ref: "#/components/schemas/Plugin" } }
+
+    RegistrySummary:
+      type: object
+      required: [valid, org, version]
+      properties:
+        valid: { type: boolean }
+        org: { type: string }
+        version: { type: integer, format: int64 }
+        namespaces: { type: integer }
+        servers: { type: integer }
+        bundles: { type: integer }
+        audiences: { type: integer }
+        policies: { type: integer }
+        plugins: { type: integer }
+
+    ValidateRegistryRequest:
+      type: object
+      required: [document]
+      properties:
+        document:
+          type: string
+          description: The registry document, as YAML
+
+    Namespace:
+      type: object
+      required: [id, name, prefix]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix:
+          type: string
+          description: |
+            Immutable. Changing it renames every tool in the namespace, which
+            invalidates every client's prompt cache.
+        owner_idp_group: { type: string }
+        team: { type: string }
+        project: { type: string }
+
+    Server:
+      type: object
+      required: [id, name, namespace, endpoint]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        namespace: { type: string }
+        endpoint: { type: string, format: uri }
+        serving_mode: { type: string, enum: [strict, advisory] }
+        criticality: { type: string }
+        data_classification: { type: string }
+        compliance_scope: { type: array, items: { type: string } }
+        default_effect_class: { type: string, enum: [read, write, destructive] }
+        canary_tool: { type: string }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/RegisteredTool" }
+
+    RegisteredTool:
+      type: object
+      required: [name, effect_class]
+      properties:
+        name: { type: string }
+        effect_class: { type: string, enum: [read, write, destructive] }
+        excluded: { type: boolean }
+
+    Bundle:
+      type: object
+      required: [id, name, priority]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        priority:
+          type: integer
+          description: |
+            The leading component of the stable catalog ordering. Reordering
+            bundles invalidates clients' prompt caches on purpose.
+        token_budget: { type: integer }
+        project: { type: string }
+
+    Audience:
+      type: object
+      required: [id, slug]
+      properties:
+        id: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        project: { type: string }
+        bundles: { type: array, items: { type: string } }
+        policies: { type: array, items: { type: string } }
+        allowed_idp_groups: { type: array, items: { type: string } }
+
+    Policy:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        priority: { type: integer }
+        rule_count: { type: integer }
+
+    Plugin:
+      type: object
+      required: [id, name, runtime, hooks, rollout]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        version: { type: string }
+        runtime: { type: string, enum: [wasm, grpc] }
+        hooks: { type: array, items: { type: string } }
+        priority: { type: integer }
+        budget_ms: { type: integer }
+        reads: { type: array, items: { type: string } }
+        writes:
+          type: array
+          description: |
+            An enforced contract. A patch outside these scopes is rejected.
+          items: { type: string }
+        rollout:
+          type: string
+          enum: [shadow, canary, enforce]
+          description: |
+            Every plugin starts in shadow: one whose verdicts nobody has
+            observed must not be acting on traffic.
+        canary_percent: { type: integer }
+        identity_dependent:
+          type: boolean
+          description: |
+            At ON_CATALOG this forces `cacheScope: private`, because a view
+            shaped for one principal must not be served to another.
+        artifact_digest: { type: string }
+        loaded:
+          type: boolean
+          description: Whether the data plane could load it
+        load_error: { type: string }
+
+    PluginList:
+      type: object
+      required: [plugins]
+      properties:
+        plugins: { type: array, items: { $ref: "#/components/schemas/Plugin" } }
+
+    ServerList:
+      type: object
+      required: [servers]
+      properties:
+        servers: { type: array, items: { $ref: "#/components/schemas/Server" } }
+
+    Snapshot:
+      type: object
+      required: [version, org, servable]
+      properties:
+        version: { type: integer, format: int64 }
+        snapshot_id: { type: string }
+        org: { type: string }
+        built_at: { type: string, format: date-time }
+        age: { type: string }
+        key_id: { type: string }
+        algorithm: { type: string }
+        registry_digest: { type: string }
+        servable: { type: boolean }
+        audiences:
+          type: array
+          items: { $ref: "#/components/schemas/AudienceSummary" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/SnapshotTool" }
+
+    AudienceSummary:
+      type: object
+      required: [slug, tools, ttl_ms, cache_scope]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        tools: { type: integer }
+        ttl_ms: { type: integer }
+        cache_scope: { type: string, enum: [public, private] }
+        token_estimate: { type: integer }
+
+    SnapshotTool:
+      type: object
+      required: [qualified_name, effect_class, digest]
+      properties:
+        qualified_name: { type: string }
+        backend: { type: string }
+        effect_class: { type: string, enum: [read, write, destructive] }
+        token_estimate: { type: integer }
+        digest:
+          type: string
+          description: The content address; this is the definition's identity
+        semantic_digest:
+          type: string
+          description: |
+            The digest with prose stripped. Equal semantic digests plus
+            differing full digests means "only the wording changed".
+
+    AudienceList:
+      type: object
+      required: [audiences]
+      properties:
+        audiences: { type: array, items: { $ref: "#/components/schemas/AudienceSummary" } }
+
+    BuildSnapshotRequest:
+      type: object
+      properties:
+        registry_path: { type: string }
+        key_path: { type: string }
+        key_id: { type: string }
+        out_path: { type: string }
+        allow_unreachable:
+          type: boolean
+          description: |
+            Build even if a backend cannot be reached, omitting its tools. Off
+            by default: silently dropping a backend's tools invalidates clients'
+            prompt caches.
+        dry_run: { type: boolean }
+
+    BuildReport:
+      type: object
+      required: [version, snapshot_id, tools]
+      properties:
+        version: { type: integer, format: int64 }
+        snapshot_id: { type: string }
+        org: { type: string }
+        registry_digest: { type: string }
+        key_id: { type: string }
+        public_key: { type: string }
+        namespaces: { type: integer }
+        servers: { type: integer }
+        tools: { type: integer }
+        bundles: { type: integer }
+        audiences: { type: integer }
+        plugins: { type: integer }
+        backends:
+          type: array
+          items: { $ref: "#/components/schemas/BackendReport" }
+        warnings: { type: array, items: { type: string } }
+        output: { type: string }
+        dry_run: { type: boolean }
+
+    BackendReport:
+      type: object
+      required: [server_name, endpoint]
+      properties:
+        server_id: { type: string }
+        server_name: { type: string }
+        endpoint: { type: string }
+        negotiated_version:
+          type: string
+          description: |
+            Recorded per backend. A downgrade is normal but worth seeing: some
+            capabilities are unavailable below 2026-07-28.
+        admitted: { type: array, items: { type: string } }
+        excluded: { type: array, items: { type: string } }
+
+    InspectSnapshotRequest:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string }
+        tools:
+          type: boolean
+          description: List every tool rather than summarising by audience
+
+    VerifySnapshotRequest:
+      type: object
+      required: [path, trusted_keys]
+      properties:
+        path: { type: string }
+        trusted_keys:
+          type: array
+          description: Trusted signing keys as `keyID:base64PublicKey`
+          items: { type: string }
+
+    VerifyReport:
+      type: object
+      required: [valid, version]
+      properties:
+        file: { type: string }
+        valid: { type: boolean }
+        version: { type: integer, format: int64 }
+        key_id: { type: string }
+        tools: { type: integer }
+        audiences: { type: array, items: { type: string } }
+
+    GenerateKeyRequest:
+      type: object
+      properties:
+        directory: { type: string }
+        key_id: { type: string }
+
+    GeneratedKey:
+      type: object
+      required: [key_id, public_key, trust_entry]
+      properties:
+        key_id: { type: string }
+        directory: { type: string }
+        public_key: { type: string }
+        trust_entry:
+          type: string
+          description: The value to add to `dataplane.trusted_signing_keys`
+
+    GatewayStatus:
+      type: object
+      required: [gateway_url, ready]
+      properties:
+        gateway_url: { type: string }
+        status: { type: string }
+        ready: { type: boolean }
+        snapshot_version: { type: integer, format: int64 }
+        audiences: { type: integer }
+
+    Catalog:
+      type: object
+      required: [audience, tools, ttl_ms, cache_scope]
+      properties:
+        audience: { type: string }
+        subject: { type: string }
+        groups: { type: array, items: { type: string } }
+        protocol_version: { type: string }
+        server_name: { type: string }
+        ttl_ms: { type: integer }
+        cache_scope:
+          type: string
+          enum: [public, private]
+          description: |
+            `private` whenever the catalog can differ between principals. A
+            filtered catalog served as public would let a shared cache hand one
+            principal's view to another.
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/CatalogTool" }
+
+    CatalogTool:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        title: { type: string }
+        description: { type: string }
+
+    CallToolRequest:
+      type: object
+      properties:
+        subject: { type: string }
+        groups: { type: array, items: { type: string } }
+        arguments: { type: object, additionalProperties: true }
+        request_state:
+          type: string
+          description: The opaque state from a previous `input_required` result
+        input_responses:
+          type: object
+          additionalProperties: true
+          description: Answers to a previous result's input requests
+
+    CallToolResult:
+      type: object
+      required: [tool, is_error]
+      properties:
+        tool: { type: string }
+        audience: { type: string }
+        is_error:
+          type: boolean
+          description: |
+            A tool-level error, not a transport failure. A policy denial and a
+            backend outage both arrive this way so the model can act on them.
+        needs_input: { type: boolean }
+        duration_ms: { type: integer, format: int64 }
+        text: { type: string }
+        gateway_detail:
+          type: object
+          additionalProperties: true
+          description: The gateway's structured detail — outcome, backend, retry_after
+        input_requests: { type: array, items: { type: string } }
+        request_state: { type: string }

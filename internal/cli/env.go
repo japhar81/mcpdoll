@@ -33,8 +33,9 @@ type Env struct {
 	config     *Config
 
 	// Resolved during load and read by commands.
-	gatewayURL string
-	tokenRef   string
+	gatewayURL   string
+	tokenRef     string
+	snapshotPath string
 }
 
 // Config is `~/.mcpdoll/config.yaml`.
@@ -49,7 +50,10 @@ type Profile struct {
 	APIURL string `yaml:"api_url"`
 	// GatewayURL is the data plane, for the inspector commands.
 	GatewayURL string `yaml:"gateway_url"`
-	Project    string `yaml:"project"`
+	// SnapshotPath is the file the local data plane serves, so that
+	// `mcpdoll snapshot current` has somewhere to look.
+	SnapshotPath string `yaml:"snapshot_path"`
+	Project      string `yaml:"project"`
 	// TokenRef references a credential rather than holding one. A config file is
 	// world-readable often enough that storing a bearer token in it is a bad
 	// default; the value is read from the named environment variable.
@@ -118,6 +122,7 @@ func (e *Env) load(cmd *cobra.Command) error {
 		e.Project = firstNonEmpty(os.Getenv("MCPDOLL_PROJECT"), profile.Project)
 	}
 	e.gatewayURL = firstNonEmpty(os.Getenv("MCPDOLL_GATEWAY_URL"), profile.GatewayURL, "http://localhost:8080")
+	e.snapshotPath = firstNonEmpty(os.Getenv("MCPDOLL_SNAPSHOT_PATH"), profile.SnapshotPath, "snapshot.pb")
 	e.tokenRef = profile.TokenRef
 
 	_ = cmd
@@ -267,7 +272,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil {
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		// io.EOF means the file is empty, which is the same thing as absent and
+		// is a state a `touch` produces. Only a *parse* failure is an error.
 		return nil, configError(fmt.Errorf("parsing %s: %w", path, err))
 	}
 	if cfg.Profiles == nil {
