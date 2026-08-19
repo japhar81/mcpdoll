@@ -187,17 +187,29 @@ reaching production would be a total authorization bypass, so that is a
 constructor error rather than a documented caveat. OIDC/JWT validation and SCIM
 are not built.
 
-### Deployment: Helm, and Grafana dashboards as code
+### Deployment: no Helm chart
 
-`make dev` **works**: it builds the binaries and the WASM plugins, starts five
-fixture backends and the LGTM stack, builds and signs a snapshot, and starts the
-data plane. What is missing is the production side — a Helm chart — and the
-Grafana dashboards as code.
+`make dev` and `make up` both work. What is missing is the production side: a
+Helm chart, and Kubernetes manifests of any kind.
 
-The observability *instrumentation* is complete and has been wired since the
-first commit: spans across client → edge → pipeline → plugin → backend, the full
-metric set, and trace-correlated logs. So there is data to display; there is
-nothing yet to display it in beyond Grafana's ad-hoc explore.
+One dashboard is provisioned as code (`deploy/observability/dashboards/`) —
+serving, backends, and the plugin pipeline. There is no dashboard for the
+control plane, and there are no alert rules: `mcpdoll.drift.events` and
+`mcpdoll.snapshot.rejects` are the two that most obviously want one.
+
+### Instrumentation that had no dashboard, and metrics that had no feature
+
+Seven instruments were declared and never recorded, so every panel built on
+them read "No data" forever. They are wired now — probe runs and latency,
+backend health state, drift events, circuit state, snapshot age and rejects.
+
+Seven more were declared for features that do not exist: the guard's verdict
+cache, Redis idempotency, token and cost accounting, rate limiting, and the two
+admission stages. Those were deleted rather than left in place. A metric arrives
+with its feature; one that cannot emit is an alert rule that never fires and a
+panel that looks quiet rather than absent.
+
+`TestEveryInstrumentIsRecordedSomewhere` now fails the build on either mistake.
 
 ### The container images are development images
 

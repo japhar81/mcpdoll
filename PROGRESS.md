@@ -231,8 +231,9 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
    already the piece admission would feed.
 2. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-3. **Grafana dashboards as code.** The instrumentation is complete; there is
-   nothing yet to display it in.
+3. **A control-plane dashboard and alert rules.** The gateway dashboard is
+   provisioned as code; `mcpdoll.drift.events` and `mcpdoll.snapshot.rejects`
+   are the two metrics that most obviously want an alert.
 
 ## The tri-surface law
 

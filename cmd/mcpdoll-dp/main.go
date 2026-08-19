@@ -185,6 +185,14 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// arrives at a hook whose plugins are still being compiled.
 	store.Observe(func(view *snapshot.View) { hosts.Sync(ctx, view) })
 
+	// A refused snapshot is the signal that a publish did not take. Without
+	// this it is only a log line, which nothing alerts on.
+	store.SetRejectObserver(func(version int64, reason string) {
+		metrics.SnapshotRejects.Add(ctx, 1)
+		log.WarnContext(ctx, "refused a snapshot",
+			logging.FieldSnapshot, version, "reason", reason)
+	})
+
 	// The prober is what turns "the gateway serves admitted definitions" from a
 	// property nobody can observe into one somebody is checking. Its registry
 	// is the edge's drift guard, so a strict backend that redeploys a changed
@@ -192,6 +200,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	prober := health.New(health.Options{
 		Pool:        pool,
 		Snapshot:    store,
+		Metrics:     metrics,
 		Interval:    cfg.Health.ProbeInterval,
 		Timeout:     cfg.Health.ProbeTimeout,
 		GraceWindow: cfg.Health.GraceWindow,

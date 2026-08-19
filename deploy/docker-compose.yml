@@ -57,8 +57,13 @@ services:
       - "4318:4318"   # OTLP HTTP
     volumes:
       - lgtm-data:/data
-      - ./observability/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
-      - ./observability/dashboards:/etc/grafana/dashboards:ro
+      # Single FILE mounts, never a directory mount over
+      # /otel-lgtm/grafana/conf/provisioning. That directory is where the image
+      # keeps its own Prometheus, Tempo, Loki and Pyroscope datasources, and a
+      # directory mount replaces it wholesale — which is exactly how this stack
+      # came to have a Grafana with no datasources and no metrics in it.
+      - ./observability/mcpdoll-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/mcpdoll.yaml:ro
+      - ./observability/dashboards:/var/lib/grafana/mcpdoll-dashboards:ro
     healthcheck:
       # The image ships neither curl nor wget, so probe with bash's /dev/tcp.
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/3000' >/dev/null 2>&1 || exit 1"]

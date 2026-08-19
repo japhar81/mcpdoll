@@ -55,15 +55,26 @@ curl -fsS -H "Authorization: Bearer ${TOKEN}" \
 
 cat <<BANNER
 
-MCPDoll is up, in Docker.
+MCPDoll is up, in Docker. Serving snapshot ${snapshot}, ${backends} healthy backend(s).
 
-  Console         http://localhost:5173
-  Control plane   http://localhost:3001   (token: ${TOKEN})
-  Data plane      http://localhost:8080
-  Admin           http://localhost:8081/admin/backends
-  Grafana         http://localhost:3300   (folder: MCPDoll)
+Two planes, and which is which matters:
 
-  Serving snapshot ${snapshot} with ${backends} healthy backend(s).
+  Data plane      http://localhost:8080   agents connect here
+                  /mcp/support-agents  /mcp/platform-agents  /mcp/threat-research
+                  Serves from one signed snapshot. Does not need the control
+                  plane to answer a tool call.
+
+  Control plane   http://localhost:3001   operators and tooling connect here
+                  token: ${TOKEN}
+                  Reads the registry, builds and signs snapshots. Never in an
+                  agent's request path.
+
+  Admin           http://localhost:8081/admin/backends   operators only
+                  What the prober knows. A separate port because it lists every
+                  backend and its address.
+
+  Console         http://localhost:5173   start here — /overview explains the rest
+  Grafana         http://localhost:3300   folder: MCPDoll
 
 Try it:
 

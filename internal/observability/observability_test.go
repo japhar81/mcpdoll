@@ -4,6 +4,13 @@ package observability
 
 import (
 	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,18 +58,19 @@ func TestNewMetricsRegistersEverything(t *testing.T) {
 	m, err := NewMetrics(p.Meter)
 	require.NoError(t, err)
 
-	// Spot-check one instrument from each group so a nil field is caught here
-	// rather than as a nil-pointer panic on the serving path.
-	require.NotNil(t, m.ToolCalls)
-	require.NotNil(t, m.ToolLatency)
-	require.NotNil(t, m.BackendCircuitState)
-	require.NotNil(t, m.HookLatency)
-	require.NotNil(t, m.PluginVerdicts)
-	require.NotNil(t, m.CatalogCacheOps)
-	require.NotNil(t, m.SnapshotVersion)
-	require.NotNil(t, m.TokensConsumed)
-	require.NotNil(t, m.AdmissionStageLatency)
-	require.NotNil(t, m.DriftEvents)
+	// Every field, not a spot check. A newly added instrument that nobody
+	// remembered to construct is a nil interface that panics on the serving
+	// path the first time it is used — and a spot check is exactly the thing
+	// that would not have covered the new one.
+	v := reflect.ValueOf(*m)
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Type().Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		require.Falsef(t, v.Field(i).IsNil(),
+			"Metrics.%s was declared but never constructed in NewMetrics", field.Name)
+	}
 
 	// Recording must not panic with the noop meter provider.
 	ctx := context.Background()
@@ -170,3 +178,73 @@ func TestProviderShutdownIsIdempotent(t *testing.T) {
 	require.NoError(t, p.Shutdown(context.Background()))
 	require.NoError(t, p.Shutdown(context.Background()))
 }
+
+// TestEveryInstrumentIsRecordedSomewhere reads the source.
+//
+// An instrument that is declared and never written produces no series, which
+// means an operator who builds an alert on it gets a rule that never fires and
+// a dashboard panel that reads "No data" forever. Both look like the system is
+// quiet when in fact nobody is measuring.
+//
+// This check found fourteen such instruments the first time it ran: some were
+// for features that had since been built and never wired up, and some were for
+// features that do not exist. The first kind got wired; the second kind got
+// deleted, because a metric arrives with its feature.
+func TestEveryInstrumentIsRecordedSomewhere(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("..", "..")
+	src, err := os.ReadFile(filepath.Join(root, "internal", "observability", "metrics.go"))
+	require.NoError(t, err)
+
+	fields := instrumentField.FindAllStringSubmatch(string(src), -1)
+	require.NotEmpty(t, fields, "no instruments found — the struct's shape changed")
+
+	// Every .go file outside this package, so a recording here would not count
+	// as usage of itself.
+	var sources []string
+	require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", "bin", "proto":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "metrics.go") {
+			sources = append(sources, path)
+		}
+		return nil
+	}))
+
+	var corpus strings.Builder
+	for _, path := range sources {
+		body, err := os.ReadFile(path)
+		require.NoError(t, err)
+		corpus.Write(body)
+	}
+	text := corpus.String()
+
+	var orphans []string
+	for _, match := range fields {
+		name := match[1]
+		// `.Name.Add(` or `.Name.Record(` — the two ways an instrument is
+		// written. A mere mention (passing Metrics around) does not count.
+		if !strings.Contains(text, "."+name+".Add(") &&
+			!strings.Contains(text, "."+name+".Record(") {
+			orphans = append(orphans, name)
+		}
+	}
+	sort.Strings(orphans)
+
+	require.Emptyf(t, orphans,
+		"instrument(s) declared but never recorded: %s\n\n"+
+			"Either wire it where the feature lives, or delete it. A metric that "+
+			"cannot emit is a dashboard panel that reads \"No data\" forever and "+
+			"an alert that never fires.", strings.Join(orphans, ", "))
+}
+
+var instrumentField = regexp.MustCompile(`(?m)^\t(\w+)\s+metric\.\w+$`)

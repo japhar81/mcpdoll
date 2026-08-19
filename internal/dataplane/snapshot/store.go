@@ -52,6 +52,10 @@ type Store struct {
 	// checking for a new snapshot on every request.
 	observers []func(*View)
 
+	// onReject is notified when a snapshot is refused, for whatever the caller
+	// wants to do about it.
+	onReject func(version int64, reason string)
+
 	// preparer runs after a snapshot is verified and indexed but *before* it is
 	// swapped in, and may refuse it.
 	//
@@ -286,9 +290,28 @@ func (s *Store) LastReject() (int64, string) {
 	return s.lastReject.version, s.lastReject.reason
 }
 
+// SetRejectObserver installs a hook called whenever a snapshot is refused.
+//
+// A callback rather than a metrics dependency: this package is below
+// observability, and a refusal is a fact about the store that several callers
+// might want — a counter, a log line, an alert — rather than a metric the
+// store should be opinionated about.
+func (s *Store) SetRejectObserver(fn func(version int64, reason string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onReject = fn
+}
+
 func (s *Store) recordReject(version int64, reason string) {
 	s.mu.Lock()
 	s.lastReject.version = version
 	s.lastReject.reason = reason
+	observer := s.onReject
 	s.mu.Unlock()
+
+	// Outside the lock. A hook that recorded a metric or wrote a log while
+	// holding the store's mutex would serialise every activation behind it.
+	if observer != nil {
+		observer(version, reason)
+	}
 }

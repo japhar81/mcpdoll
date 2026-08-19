@@ -1,0 +1,19 @@
+# An *additional* dashboard provider, mounted as a single file alongside the
+# image's own.
+#
+# Mounting the whole provisioning directory would replace the image's, taking
+# the Prometheus, Tempo and Loki datasources with it — which leaves a Grafana
+# that starts cleanly and shows nothing at all.
+apiVersion: 1
+
+providers:
+  - name: MCPDoll
+    type: file
+    folder: MCPDoll
+    # The dashboards are read-only here on purpose: they are code, and an edit
+    # made in the browser that vanished on the next restart is worse than one
+    # the UI refuses to save.
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/mcpdoll-dashboards
+      foldersFromFilesStructure: false

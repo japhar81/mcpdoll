@@ -41,26 +41,14 @@ type Metrics struct {
 	CircuitTrips     metric.Int64Counter
 	ShadowDivergence metric.Int64Counter
 
-	// ---- caches -----------------------------------------------------------
-	CatalogCacheOps metric.Int64Counter
-	VerdictCacheOps metric.Int64Counter
-	IdempotencyOps  metric.Int64Counter
-
 	// ---- snapshot ---------------------------------------------------------
 	SnapshotVersion metric.Int64Gauge
 	SnapshotAgeSecs metric.Float64Gauge
 	SnapshotSwaps   metric.Int64Counter
 	SnapshotRejects metric.Int64Counter
 
-	// ---- tenancy / cost ---------------------------------------------------
-	TokensConsumed metric.Int64Counter
-	CostMicros     metric.Int64Counter
-	RateLimited    metric.Int64Counter
-
-	// ---- control plane ----------------------------------------------------
-	AdmissionStageLatency metric.Float64Histogram
-	AdmissionOutcomes     metric.Int64Counter
-	DriftEvents           metric.Int64Counter
+	// ---- drift ------------------------------------------------------------
+	DriftEvents metric.Int64Counter
 }
 
 // NewMetrics registers every instrument on the provided meter.
@@ -112,7 +100,8 @@ func NewMetrics(m metric.Meter) (*Metrics, error) {
 		metric.WithDescription("Health probe latency"), metric.WithUnit("ms"))
 	track(err)
 	out.BackendHealthState, err = m.Int64Gauge("mcpdoll.backend.health_state",
-		metric.WithDescription("Backend health: 0 healthy, 1 degraded, 2 ejected, 3 quarantined"))
+		metric.WithDescription(
+			"Backend health: 0 unknown, 1 healthy, 2 degraded, 3 unavailable, 4 drifted"))
 	track(err)
 
 	out.HookLatency, err = m.Float64Histogram("mcpdoll.hook.latency",
@@ -138,16 +127,6 @@ func NewMetrics(m metric.Meter) (*Metrics, error) {
 		metric.WithDescription("Shadow-mode verdicts that differ from the enforced outcome"))
 	track(err)
 
-	out.CatalogCacheOps, err = m.Int64Counter("mcpdoll.cache.catalog",
-		metric.WithDescription("Catalog cache operations, by result (hit/miss/evict)"))
-	track(err)
-	out.VerdictCacheOps, err = m.Int64Counter("mcpdoll.cache.verdict",
-		metric.WithDescription("Guard verdict cache operations, by result"))
-	track(err)
-	out.IdempotencyOps, err = m.Int64Counter("mcpdoll.cache.idempotency",
-		metric.WithDescription("Idempotency key operations, by result (new/replay)"))
-	track(err)
-
 	out.SnapshotVersion, err = m.Int64Gauge("mcpdoll.snapshot.version",
 		metric.WithDescription("Monotonic version of the snapshot this instance is serving"))
 	track(err)
@@ -162,24 +141,6 @@ func NewMetrics(m metric.Meter) (*Metrics, error) {
 		metric.WithDescription("Snapshots refused, by reason (signature/version/validation)"))
 	track(err)
 
-	out.TokensConsumed, err = m.Int64Counter("mcpdoll.tokens.consumed",
-		metric.WithDescription("Estimated tokens of catalog and result content served"),
-		metric.WithUnit("{token}"))
-	track(err)
-	out.CostMicros, err = m.Int64Counter("mcpdoll.cost",
-		metric.WithDescription("Attributed cost in micro-units, by project and team"),
-		metric.WithUnit("{micro}"))
-	track(err)
-	out.RateLimited, err = m.Int64Counter("mcpdoll.rate_limited",
-		metric.WithDescription("Requests rejected by a rate limit or token budget"))
-	track(err)
-
-	out.AdmissionStageLatency, err = m.Float64Histogram("mcpdoll.admission.stage_latency",
-		metric.WithDescription("Duration of one admission pipeline stage"), metric.WithUnit("ms"))
-	track(err)
-	out.AdmissionOutcomes, err = m.Int64Counter("mcpdoll.admission.outcomes",
-		metric.WithDescription("Admission runs by stage and outcome"))
-	track(err)
 	out.DriftEvents, err = m.Int64Counter("mcpdoll.drift.events",
 		metric.WithDescription("Drift detections, by class and configured action"))
 	track(err)

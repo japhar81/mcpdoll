@@ -12,6 +12,8 @@
  */
 import type { ComponentType } from "react";
 
+import { OverviewScreen } from "./screens/OverviewScreen.tsx";
+
 import { HealthScreen } from "./screens/HealthScreen.tsx";
 import { HooksScreen } from "./screens/HooksScreen.tsx";
 import { RegistryScreen } from "./screens/RegistryScreen.tsx";
@@ -33,16 +35,28 @@ import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
 export interface RouteDef {
   /** React Router path. Params use `:name`, matching the OpenAPI declaration. */
   path: string;
-  /** The operationId this screen is the UI for. */
-  operation: string;
+  /** The operationId this screen is the UI for. Absent on screens that
+   *  compose existing operations rather than adding one — the overview and
+   *  the login page. */
+  operation?: string;
   component: ComponentType;
   /** Sidebar label. Absent means reachable only by navigation from elsewhere. */
   nav?: string;
-  /** Sidebar grouping. */
-  section?: "Registry" | "Snapshots" | "Gateway" | "System";
+  /** Sidebar grouping. Named after the thing, not the feature: "Data plane"
+   *  and "Control plane" are what a reader needs to tell apart. */
+  section?:
+    "Overview" | "Registry" | "Snapshots" | "Data plane" | "Control plane";
 }
 
 export const ROUTES: RouteDef[] = [
+  // The landing page. It binds no operation — it composes several — so it does
+  // not appear in the generated manifest and does not affect `make parity`.
+  {
+    path: "/overview",
+    component: OverviewScreen,
+    nav: "Overview",
+    section: "Overview",
+  },
   {
     path: "/registry",
     operation: "getRegistry",
@@ -125,21 +139,21 @@ export const ROUTES: RouteDef[] = [
     operation: "getGatewayStatus",
     component: GatewayScreen,
     nav: "Status",
-    section: "Gateway",
+    section: "Data plane",
   },
   {
     path: "/gateway/backends",
     operation: "listBackends",
     component: BackendsScreen,
     nav: "Backend health",
-    section: "Gateway",
+    section: "Data plane",
   },
   {
     path: "/gateway/audiences",
     operation: "listAudiences",
     component: AudiencesScreen,
     nav: "Audiences",
-    section: "Gateway",
+    section: "Data plane",
   },
   {
     path: "/gateway/audiences/:slug/catalog",
@@ -157,8 +171,14 @@ export const ROUTES: RouteDef[] = [
     operation: "getHealth",
     component: HealthScreen,
     nav: "Health",
-    section: "System",
+    section: "Control plane",
   },
 ];
 
-export const SECTIONS = ["Registry", "Snapshots", "Gateway", "System"] as const;
+export const SECTIONS = [
+  "Overview",
+  "Registry",
+  "Snapshots",
+  "Data plane",
+  "Control plane",
+] as const;

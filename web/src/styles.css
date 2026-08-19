@@ -307,3 +307,188 @@ pre.out {
 
 a.link { color: var(--accent); text-decoration: none; }
 a.link:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------------- login --- */
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The same slate gradient RAGdoll's login uses, so the two products' sign-in
+     reads as one platform. ADR 0001. */
+  background: linear-gradient(160deg, #0f172a 0%, #1e293b 60%, #334155 100%);
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 32px 28px;
+  box-shadow: 0 20px 50px rgba(2, 6, 23, 0.45);
+  box-sizing: border-box;
+}
+
+.login-brand { display: flex; align-items: center; gap: 10px; }
+.login-brand h1 { font-size: 22px; margin: 0; color: var(--navy); }
+.login-logo {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+}
+.login-sub { color: var(--ink-dim); font-size: 13px; margin: 6px 0 20px; }
+
+.login-form { display: flex; flex-direction: column; gap: 12px; }
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+.login-form input {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.login-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+.login-submit { width: 100%; padding: 10px; border-radius: 8px; margin-top: 4px; }
+
+.login-error {
+  background: var(--destructive-bg);
+  color: var(--destructive-fg);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.login-note {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.login-note p { margin: 0 0 8px; }
+.login-note p:last-child { margin-bottom: 0; }
+.login-note code { font-size: 11px; }
+
+/* A held frame while the stored credential is checked. Deliberately empty:
+   the check is one request against a static list, and a spinner that flashes
+   for 30ms reads as jank rather than as progress. */
+.auth-checking { min-height: 100vh; background: var(--surface-sunken); }
+
+.conn-state {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.conn-state--warn { color: #fbbf24; }
+.conn-detail { color: #64748b; font-size: 11px; line-height: 1.5; margin: 6px 0 0; }
+.conn-detail code { font-size: 10px; }
+
+.conn-signout {
+  margin-top: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.conn-signout:hover:not(:disabled) { background: var(--navy-hover); color: #fff; }
+
+/* ------------------------------------------------------------- overview --- */
+
+.topology {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin: 16px 0 8px;
+}
+
+.plane {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.plane-head h3 { margin: 2px 0 0; font-size: 16px; }
+
+/* Who talks to this, above its name. It is the first thing a reader needs and
+   the thing a list of URLs never says. */
+.plane-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-dim);
+  font-weight: 600;
+}
+
+.plane-url {
+  background: var(--surface-sunken);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.plane-url code, .plane-url a { font-size: 13px; }
+.plane-url .muted { font-size: 11px; margin-top: 2px; }
+
+.plane-points { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: #334155; }
+.plane-points li { margin-bottom: 5px; }
+.plane-points li:last-child { margin-bottom: 0; }
+
+.plane-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.plane-facts > div { min-width: 0; }
+.plane-facts dt {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-dim);
+}
+.plane-facts dd { margin: 2px 0 0; font-size: 12px; word-break: break-all; }
+
+.plane-link { font-size: 12px; margin-top: auto; }
+
+.flow {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+  max-width: 76ch;
+}
+.flow li { margin-bottom: 8px; }

@@ -58,6 +58,57 @@ export function getToken(): string {
   return token;
 }
 
+type UnauthorizedHandler = () => void;
+
+let onUnauthorized: UnauthorizedHandler | null = null;
+
+/**
+ * Register what to do when any request comes back 401.
+ *
+ * A credential can stop working mid-session — the control plane restarts with
+ * a different token, or an operator rotates it. Without this, every open screen
+ * would render its own "unauthorized" error and the user would have to work out
+ * that they need to sign in again.
+ */
+export function setUnauthorizedHandler(
+  handler: UnauthorizedHandler | null,
+): void {
+  onUnauthorized = handler;
+}
+
+/**
+ * Check whether a credential is accepted, without adopting it.
+ *
+ * It asks for the hook list, which is the cheapest authenticated operation
+ * there is: a static array of seven strings, behind the same auth wall as
+ * everything else, touching no file and no backend. Verifying against
+ * something expensive would make a wrong password cost a registry read.
+ *
+ * Deliberately does not go through `request`, for two reasons: the token under
+ * test must not be installed before it is known to work, and a failed check
+ * must not trip the global unauthorized handler — the caller is *asking* about
+ * a 401, not suffering one.
+ */
+export async function probeCredential(
+  candidate: string,
+): Promise<"ok" | "unauthorized" | "unreachable"> {
+  const headers: Record<string, string> = {};
+  if (candidate) headers["Authorization"] = `Bearer ${candidate}`;
+
+  try {
+    const response = await fetch("/api/v1/hooks", { method: "GET", headers });
+    if (response.ok) return "ok";
+    if (response.status === 401 || response.status === 403)
+      return "unauthorized";
+    // Any other status means the control plane answered and something else is
+    // wrong. Reporting that as a bad password would send the user to fix the
+    // one thing that is fine.
+    return "unreachable";
+  } catch {
+    return "unreachable";
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -96,6 +147,11 @@ async function request<T>(
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      // Told once, centrally. Every screen rendering its own 401 leaves the
+      // user to deduce that the fix is signing in again.
+      onUnauthorized?.();
+    }
     throw new ApiError(
       response.status,
       parsed as ApiErrorBody | undefined,

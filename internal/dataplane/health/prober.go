@@ -13,6 +13,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	"github.com/mcpdoll/mcpdoll/internal/mcp"
+	"github.com/mcpdoll/mcpdoll/internal/observability"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -23,6 +24,14 @@ import (
 type Lister interface {
 	ListTools(ctx context.Context, serverID string, principal backends.Principal) ([]*sdk.Tool, error)
 	NegotiatedVersion(serverID string) string
+}
+
+// CircuitReporter is the optional half of [Lister] that exposes breaker state.
+//
+// Optional because a breaker belongs to the call path, not to probing: a
+// prober that required one could not be tested without a pool.
+type CircuitReporter interface {
+	CircuitState(serverID string) backends.State
 }
 
 // Options configures a Prober.
@@ -47,6 +56,11 @@ type Options struct {
 	// every thirty seconds is a small thundering herd against whatever they
 	// share.
 	Concurrency int
+
+	// Metrics is optional. Without it the prober still classifies and blocks;
+	// it just does so unobservably, which is the right behaviour for a test and
+	// the wrong one for a deployment.
+	Metrics *observability.Metrics
 
 	Logger *slog.Logger
 	// Now is injectable so tests can advance a clock rather than sleep.
@@ -124,6 +138,12 @@ func (p *Prober) ProbeAll(ctx context.Context) {
 		// No snapshot means nothing is being served, so there is nothing whose
 		// fitness to serve could be in question.
 		return
+	}
+
+	// The serving snapshot's age. A gauge nobody samples never appears, and
+	// this is the only loop that runs on a timer.
+	if m := p.opts.Metrics; m != nil {
+		m.SnapshotAgeSecs.Record(ctx, view.Age().Seconds())
 	}
 
 	servers := view.Servers()
@@ -210,6 +230,7 @@ func (p *Prober) probe(
 		current.State = classify(err, current.Drift, current.LastSuccess, p.now(), p.opts.GraceWindow)
 
 		p.opts.Registry.Set(current)
+		p.record(ctx, current, elapsed, "error")
 		p.logTransition(previous, current)
 		return
 	}
@@ -231,6 +252,7 @@ func (p *Prober) probe(
 		current.State = StateDrifted
 		current.Drift = previous.Drift
 		p.opts.Registry.Set(current)
+		p.record(ctx, current, elapsed, "uncanonicalizable")
 		p.logTransition(previous, current)
 		return
 	}
@@ -239,7 +261,98 @@ func (p *Prober) probe(
 	current.State = classify(nil, current.Drift, current.LastSuccess, p.now(), p.opts.GraceWindow)
 
 	p.opts.Registry.Set(current)
+	p.record(ctx, current, elapsed, "ok")
+	p.recordDrift(ctx, previous, current)
 	p.logTransition(previous, current)
+}
+
+// stateCode is the numeric health gauge.
+//
+// A gauge rather than a label-per-state counter, because the question is "what
+// is this backend now", and a counter answers "how often has it been". The
+// encoding is documented on the instrument so a dashboard need not guess.
+func stateCode(s State) int64 {
+	switch s {
+	case StateHealthy:
+		return 1
+	case StateDegraded:
+		return 2
+	case StateUnavailable:
+		return 3
+	case StateDrifted:
+		return 4
+	default:
+		return 0
+	}
+}
+
+// record publishes one probe's outcome.
+func (p *Prober) record(ctx context.Context, b Backend, elapsed time.Duration, outcome string) {
+	m := p.opts.Metrics
+	if m == nil {
+		return
+	}
+	backend := observability.MetricAttrs(observability.AttrBackend.String(b.ServerName))
+
+	m.ProbeRuns.Add(ctx, 1, observability.MetricAttrs(
+		observability.AttrBackend.String(b.ServerName),
+		observability.AttrOutcome.String(outcome),
+	))
+	m.ProbeLatency.Record(ctx, float64(elapsed.Microseconds())/1000.0, backend)
+	m.BackendHealthState.Record(ctx, stateCode(b.State), backend)
+
+	// The breaker's state is the pool's, not the prober's — but the prober is
+	// the only thing that runs on a timer, and a gauge nobody samples is a
+	// gauge that never appears.
+	if state, ok := p.circuitState(b.ServerID); ok {
+		m.BackendCircuitState.Record(ctx, state, backend)
+	}
+}
+
+// recordDrift counts drift as it appears, not on every sweep.
+//
+// Counting per sweep would turn one unfixed drift into a rate proportional to
+// the probe interval, which reads as an escalating problem rather than a
+// standing one.
+func (p *Prober) recordDrift(ctx context.Context, previous, current Backend) {
+	m := p.opts.Metrics
+	if m == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, d := range previous.Drift {
+		seen[d.Name+"|"+string(d.Kind)] = true
+	}
+	for _, d := range current.Drift {
+		if seen[d.Name+"|"+string(d.Kind)] {
+			continue
+		}
+		action := "recorded"
+		if d.Kind.Blocking() && current.ServingMode == "strict" {
+			action = "blocked"
+		}
+		m.DriftEvents.Add(ctx, 1, observability.MetricAttrs(
+			observability.AttrBackend.String(current.ServerName),
+			observability.AttrDriftClass.String(string(d.Kind)),
+			observability.AttrOutcome.String(action),
+		))
+	}
+}
+
+// circuitState reads the pool's breaker, when the pool exposes one.
+func (p *Prober) circuitState(serverID string) (int64, bool) {
+	reporter, ok := p.opts.Pool.(CircuitReporter)
+	if !ok {
+		return 0, false
+	}
+	switch reporter.CircuitState(serverID) {
+	case backends.StateOpen:
+		return 2, true
+	case backends.StateHalfOpen:
+		return 1, true
+	default:
+		return 0, true
+	}
 }
 
 // logTransition logs a state change, and only a state change.
