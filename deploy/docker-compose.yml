@@ -1,27 +1,52 @@
-# Local observability for MCPDoll.
+# The whole MCPDoll stack in containers.
 #
-# Only the LGTM stack lives here. The gateway, the fixtures, and the CLI run as
-# local processes (see deploy/dev-up.sh) so a code change is live without an image
-# build — which is the difference between a stack you use and one you avoid.
+# Startup has a real ordering constraint and compose enforces it rather than
+# leaving it to a sleep: the fixtures must be answering before the snapshot can
+# be built from what they publish, and the snapshot must exist before the data
+# plane starts. `bootstrap` is a one-shot container between the two, and
+# everything after it waits on `service_completed_successfully`.
 #
-# Postgres and Redis are deliberately absent: nothing in this build talks to them
-# yet (the control plane's durable side is not implemented — see
+# Postgres and Redis are deliberately absent: nothing in this build talks to
+# them (the control plane's durable side is not implemented — see
 # docs/deferred.md), and starting a database nothing uses would be misleading.
 
 name: mcpdoll
 
+# Every Go service runs the same image. Only ONE service declares how to build
+# it — `bootstrap`, below. Declaring the same build on several services makes
+# buildx run them concurrently and race on the export ("image already exists"),
+# and the failure looks like a Docker bug rather than a compose mistake.
+#
+# So: build through `make docker-up`, which builds before it starts. A bare
+# `docker compose up` on a machine with no image fails on the fixtures with a
+# legible "image not found".
+x-mcpdoll-image: &mcpdoll-image
+  image: mcpdoll/mcpdoll:dev
+  pull_policy: never
+
+# Every fixture is the same image and the same shape; only the kind and the port
+# differ. Anchored so adding one is two lines rather than twelve.
+x-fixture: &fixture
+  <<: *mcpdoll-image
+  restart: unless-stopped
+  networks: [mcpdoll]
+
 services:
+  # ------------------------------------------------------ observability ----
+
   # Grafana's all-in-one LGTM bundle: Grafana, Prometheus, Loki, Tempo, and an
   # OpenTelemetry Collector in one container. Same image and conventions as
   # RAGdoll (ADR 0001), so both products' telemetry can share a Grafana.
   otel-collector:
     image: grafana/otel-lgtm:0.11.10
     container_name: mcpdoll-lgtm
+    restart: unless-stopped
+    networks: [mcpdoll]
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      # Anonymous viewer access: `make dev` should not ask a developer to log in
-      # to read their own traces.
+      # Anonymous viewer access: bringing the stack up should not ask a
+      # developer to log in to read their own traces.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       ENABLE_LOGS_GRAFANA: "true"
@@ -42,5 +67,188 @@ services:
       retries: 30
       start_period: 30s
 
+  # ----------------------------------------------------------- fixtures ----
+  # Five real MCP backends. Not mocks of a backend — real servers built on the
+  # official SDK, which is why a protocol disagreement shows up here rather than
+  # in production.
+
+  fixture-crm:
+    <<: *fixture
+    container_name: mcpdoll-fixture-crm
+    command: ["fixture-backend", "-kind", "modern", "-addr", ":9101"]
+    healthcheck: &fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  fixture-hr:
+    <<: *fixture
+    container_name: mcpdoll-fixture-hr
+    # Legacy by construction: it speaks only 2025-11-25, so the gateway has to
+    # negotiate down per backend while still serving 2026-07-28 to its clients.
+    command: ["fixture-backend", "-kind", "legacy", "-addr", ":9102"]
+    healthcheck:
+      <<: *fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9102/healthz"]
+
+  fixture-warehouse:
+    <<: *fixture
+    container_name: mcpdoll-fixture-warehouse
+    # Deliberately slow, and fails one call in seven, so the health board and
+    # the circuit breaker have something real to show.
+    command:
+      - fixture-backend
+      - -kind=misbehaving
+      - -addr=:9103
+      - -latency=120ms
+      - -fail-every=7
+    healthcheck:
+      <<: *fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9103/healthz"]
+
+  fixture-websearch:
+    <<: *fixture
+    container_name: mcpdoll-fixture-websearch
+    # Poisoned descriptions and injected results. Registered but bundled only
+    # into the threat-research audience.
+    command: ["fixture-backend", "-kind", "hostile", "-addr", ":9104"]
+    healthcheck:
+      <<: *fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9104/healthz"]
+
+  fixture-deploy:
+    <<: *fixture
+    container_name: mcpdoll-fixture-deploy
+    # Real MRTR: its tools ask for confirmation before acting.
+    command: ["fixture-backend", "-kind", "confirming", "-addr", ":9105"]
+    healthcheck:
+      <<: *fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9105/healthz"]
+
+  # ---------------------------------------------------------- bootstrap ----
+
+  bootstrap:
+    <<: *mcpdoll-image
+    # The one place the shared image is built. It is the right one: every
+    # serving container depends on this having completed, so an image rebuild
+    # cannot be skipped by anything that matters.
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: mcpdoll-bootstrap
+    command: ["bootstrap.sh"]
+    # Runs to completion and exits. Everything that serves waits on that exit
+    # code, so a failed bootstrap stops the stack instead of producing a data
+    # plane that 503s for a reason nobody can see.
+    restart: "no"
+    networks: [mcpdoll]
+    volumes:
+      - state:/srv/state
+    depends_on:
+      fixture-crm: { condition: service_healthy }
+      fixture-hr: { condition: service_healthy }
+      fixture-warehouse: { condition: service_healthy }
+      fixture-websearch: { condition: service_healthy }
+      fixture-deploy: { condition: service_healthy }
+
+  # --------------------------------------------------------- data plane ----
+
+  dataplane:
+    <<: *mcpdoll-image
+    container_name: mcpdoll-dp
+    command: ["entrypoint-dp.sh"]
+    restart: unless-stopped
+    networks: [mcpdoll]
+    environment:
+      # The MRTR envelope key. A fixed development value: it must be stable
+      # across restarts, or a confirmation issued before a restart would be
+      # refused after one. A real deployment takes it from a secret store.
+      MCPDOLL_REQUEST_STATE_KEY: local-dev-request-state-key-32-bytes!!
+    ports:
+      - "8080:8080"   # MCP endpoints -> /mcp/<audience>
+      - "8081:8081"   # admin: backend health
+    volumes:
+      - state:/srv/state:ro
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    healthcheck:
+      # readyz, not healthz: a data plane with no snapshot is alive and cannot
+      # serve, and starting the control plane against it would only produce
+      # confusing 502s.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # ------------------------------------------------------ control plane ----
+
+  controlplane:
+    <<: *mcpdoll-image
+    container_name: mcpdoll-cp
+    command: ["mcpdoll-cp", "-config", "/srv/src/dataplane.yaml"]
+    restart: unless-stopped
+    networks: [mcpdoll]
+    environment:
+      # A fixed development token rather than --allow-anonymous. Anonymous mode
+      # exists and works, but running the stack the way production runs means
+      # the console exercises the auth path daily rather than discovering it at
+      # deploy time.
+      MCPDOLL_CP_TOKEN: ${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}
+    ports:
+      - "3001:3001"
+    volumes:
+      # Writable: buildSnapshot and generateSigningKey write here.
+      - state:/srv/state
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+      dataplane: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  # ------------------------------------------------------------ console ----
+
+  console:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.console
+    image: mcpdoll/console:dev
+    container_name: mcpdoll-console
+    restart: unless-stopped
+    networks: [mcpdoll]
+    environment:
+      MCPDOLL_API_URL: http://controlplane:3001
+    ports:
+      - "5173:5173"
+    volumes:
+      # Source mounted read-only so an edit is live on refresh. node_modules is
+      # masked by an anonymous volume: the host's copy is built for the host's
+      # platform, and letting it shadow the image's would break the moment they
+      # differ.
+      - ../web/src:/app/src:ro
+      - ../web/index.html:/app/index.html:ro
+      - /app/node_modules
+    depends_on:
+      controlplane: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5173/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+networks:
+  mcpdoll:
+    name: mcpdoll
+
 volumes:
   lgtm-data:
+  # The signing key, the resolved registry, and the snapshot. Shared between the
+  # bootstrap that writes them and the planes that read them.
+  state:

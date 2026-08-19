@@ -199,6 +199,25 @@ first commit: spans across client → edge → pipeline → plugin → backend, 
 metric set, and trace-correlated logs. So there is data to display; there is
 nothing yet to display it in beyond Grafana's ad-hoc explore.
 
+### The container images are development images
+
+`make up` runs the stack in Docker, and what it runs is not what would ship:
+
+- **The console runs Vite's dev server**, not a production build behind a static
+  server. Deliberate — this stack exists to be worked in, and a source edit
+  should be visible on refresh. A production image would `npm run build`.
+- **Everything is one image.** Three binaries, the fixtures, and the plugins
+  share `mcpdoll/mcpdoll:dev`. Fine for a stack that starts together; a real
+  deployment wants the data plane's image to contain the data plane.
+- **The fixture backends are in the compose file at all.** They are test
+  doubles. A deployment fronts real backends and would not ship these.
+- **Secrets are fixed development values** in the compose file: the API token
+  and the MRTR envelope key. Both are marked as such where they appear.
+- **No resource limits, no read-only root filesystem, no dropped capabilities.**
+  The containers run as a non-root user and nothing more.
+
+There is no Helm chart and no Kubernetes manifest.
+
 ### Health probing: built; ejection and the LLM guard's inputs are not
 
 The prober runs, classifies drift against the admitted digests, and blocks

@@ -1,0 +1,60 @@
+# Configuration for the containerized stack.
+#
+# Differs from deploy/local/dataplane.yaml only where the network does: hosts
+# are container names, paths are inside the image or the shared state volume.
+# Both files hold no secrets — the trusted signing key is injected at start by
+# deploy/docker/entrypoint-dp.sh, and the API token by compose.
+env: development
+
+log:
+  level: info
+  # JSON here, text locally. Container logs are read by a collector at least as
+  # often as by a person.
+  format: json
+
+telemetry:
+  otlp_endpoint: http://otel-collector:4318
+  service_name: mcpdoll-dp
+  sample_ratio: 1.0
+
+dataplane:
+  listen_addr: ":8080"
+  # The admin listener serves an inventory of the backends behind the gateway,
+  # so it is a separate port from the one agents reach. In compose it is bound
+  # to the host for `mcpdoll gateway backends`; in a real deployment it would
+  # not leave the internal network.
+  admin_addr: ":8081"
+  snapshot_source: file
+  snapshot_path: /srv/state/snapshot.pb
+  snapshot_history: 5
+
+controlplane:
+  listen_addr: ":3001"
+  registry_path: /srv/state/registry.yaml
+  gateway_url: http://dataplane:8080
+  admin_url: http://dataplane:8081
+  signing_key_path: /srv/state/dev.key
+  signing_key_id: dev
+  key_dir: /srv/state
+  # The console's origin. Named explicitly — this API mints signing keys, so no
+  # wildcard is acceptable even in development.
+  allowed_origins:
+    - http://localhost:5173
+
+snapshot:
+  catalog_ttl: 5m
+  degraded_catalog_ttl: 30s
+
+pipeline:
+  total_budget: 250ms
+  hook_budget: 50ms
+  circuit_failure_threshold: 3
+  circuit_cooldown: 10s
+
+health:
+  probe_interval: 30s
+  probe_timeout: 5s
+  grace_window: 10m
+  eject_after_failures: 3
+  ewma_alpha: 0.2
+  drift_scan_interval: 1m

@@ -1,0 +1,13 @@
+# Build artifacts and local state must not enter the build context: they make
+# the context large, they invalidate the cache on every local build, and
+# deploy/local holds a signing key.
+bin/
+web/node_modules/
+web/dist/
+deploy/local/dev.key
+deploy/local/dev.pub
+deploy/local/snapshot.pb
+deploy/local/plugins/
+deploy/local/logs/
+deploy/local/dev.pids
+.git/

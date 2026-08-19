@@ -114,13 +114,46 @@ fmt-check:
 
 # ------------------------------------------------------------------ dev ----
 
-## dev: bring up Postgres, Redis, LGTM, control plane, data plane, console, fixtures
+## dev: run the stack as host processes — fastest edit-to-running loop for Go
 dev:
 	./deploy/dev-up.sh
 
-## dev-down: tear the local stack down and delete its volumes
+## dev-down: tear the host stack down and delete its volumes
 dev-down:
 	./deploy/dev-down.sh
+
+# --------------------------------------------------------------- docker ----
+#
+# `make dev` and `make up` are the same stack two ways, and they bind the same
+# ports — run one or the other. Host processes rebuild faster; containers are
+# what a deployment actually looks like, and are the only way to find out that
+# a config file hardcoded localhost.
+
+COMPOSE := docker compose -f deploy/docker-compose.yml
+
+## up: build the images and bring the whole stack up in Docker, waiting for health
+up:
+	@./deploy/docker-up.sh
+
+## down: stop the Docker stack, keeping its volumes (the signing key survives)
+down:
+	$(COMPOSE) down --remove-orphans
+
+## down-hard: stop the Docker stack and delete its volumes, key and all
+down-hard:
+	$(COMPOSE) down --remove-orphans --volumes
+
+## ps: what the Docker stack is doing
+ps:
+	@$(COMPOSE) ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}'
+
+## logs: follow the Docker stack's logs (SERVICE=dataplane to narrow)
+logs:
+	$(COMPOSE) logs -f --tail=100 $(SERVICE)
+
+## restart: rebuild and recreate one service (SERVICE=dataplane)
+restart:
+	$(COMPOSE) up -d --build --force-recreate $(SERVICE)
 
 ## obs: open the local Grafana
 obs:
@@ -129,4 +162,5 @@ obs:
 
 .PHONY: help build clean test test-race test-cover test-conformance test-all \
         test-web test-e2e generate generate-go generate-ts verify-generated \
-        parity lint fmt fmt-check dev dev-down obs
+        parity lint fmt fmt-check dev dev-down obs \
+        up down down-hard ps logs restart
