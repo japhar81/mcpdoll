@@ -33,7 +33,11 @@ func testStore(t *testing.T) *store.Store {
 
 	dsn := os.Getenv("MCPDOLL_TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://mcpdoll:mcpdoll@localhost:5432/mcpdoll?sslmode=disable"
+		// mcpdoll_test, not mcpdoll. The suite must not write into the database
+		// the local stack is serving from: test tenants would accumulate there,
+		// and the platform-admin seeding would refuse to run because tenants
+		// already existed — leaving the stack with no way to log in.
+		dsn = "postgres://mcpdoll:mcpdoll@localhost:5432/mcpdoll_test?sslmode=disable"
 	}
 
 	ctx := context.Background()

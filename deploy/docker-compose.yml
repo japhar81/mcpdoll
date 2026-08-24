@@ -92,6 +92,9 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs once, on an empty data directory. Creates the test database so the
+      # suite never writes into the stack's own.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # -U and -d, because pg_isready defaults to the OS user and would report
       # ready against a database that does not exist.
