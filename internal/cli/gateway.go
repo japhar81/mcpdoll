@@ -10,9 +10,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
 	"github.com/spf13/cobra"
 )
 
@@ -138,7 +141,7 @@ func newGatewayCatalogCmd(env *Env) *cobra.Command {
 			annotationOperation: "getCatalog",
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			session, err := env.connectMCP(cmd.Context(), credential)
+			session, resolved, err := env.connectMCP(cmd.Context(), credential)
 			if err != nil {
 				return err
 			}
@@ -149,7 +152,12 @@ func newGatewayCatalogCmd(env *Env) *cobra.Command {
 				return unavailableError(fmt.Errorf("listing tools: %w", err))
 			}
 
+			// Who the gateway decided this credential is. Nothing on this side
+			// could have known — the tenant comes from the key.
+			tenant, subject := resolved.get()
 			report := catalogReport{
+				Tenant:     tenant,
+				Subject:    subject,
 				TTLMs:      res.TTLMs,
 				CacheScope: res.CacheScope,
 				full:       full,
@@ -268,7 +276,7 @@ func newGatewayCallCmd(env *Env) *cobra.Command {
 						"answer to the call it was asked about"))
 			}
 
-			session, err := env.connectMCP(cmd.Context(), credential)
+			session, _, err := env.connectMCP(cmd.Context(), credential)
 			if err != nil {
 				return err
 			}
@@ -404,9 +412,36 @@ func (r callReport) outcome() string {
 // --------------------------------------------------------------- plumbing ----
 
 // connectMCP opens a real MCP client session against the data plane.
-func (e *Env) connectMCP(ctx context.Context, credential string) (*sdk.ClientSession, error) {
+// resolvedIdentity is who the gateway said a credential turned out to be.
+//
+// Read from a response header rather than derived: the tenant comes from the
+// key (ADR 0019), so nothing on this side knows it until the gateway answers.
+type resolvedIdentity struct {
+	mu      sync.Mutex
+	tenant  string
+	subject string
+}
+
+func (r *resolvedIdentity) record(header http.Header) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if v := header.Get(edge.HeaderResolvedTenant); v != "" {
+		r.tenant = v
+	}
+	if v := header.Get(edge.HeaderResolvedSubject); v != "" {
+		r.subject = v
+	}
+}
+
+func (r *resolvedIdentity) get() (tenant, subject string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tenant, r.subject
+}
+
+func (e *Env) connectMCP(ctx context.Context, credential string) (*sdk.ClientSession, *resolvedIdentity, error) {
 	if credential == "" {
-		return nil, usageError(fmt.Errorf(
+		return nil, nil, usageError(fmt.Errorf(
 			"--as is required: inspection presents the principal's own credential " +
 				"rather than re-deriving what they should see"))
 	}
@@ -426,27 +461,31 @@ func (e *Env) connectMCP(ctx context.Context, credential string) (*sdk.ClientSes
 	// One endpoint. The tenant and the toolset both come from the credential
 	// (ADR 0019).
 	endpoint := strings.TrimRight(e.GatewayURL(), "/") + "/mcp"
+	resolved := &resolvedIdentity{}
 	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{
 		Endpoint:             endpoint,
-		HTTPClient:           headerClient(header),
+		HTTPClient:           headerClient(header, resolved),
 		DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {
-		return nil, unavailableError(fmt.Errorf("connecting to %s: %w", endpoint, err))
+		return nil, nil, unavailableError(fmt.Errorf("connecting to %s: %w", endpoint, err))
 	}
-	return session, nil
+	return session, resolved, nil
 }
 
-func headerClient(header http.Header) *http.Client {
+func headerClient(header http.Header, resolved *resolvedIdentity) *http.Client {
 	return &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: &staticHeaders{base: http.DefaultTransport, header: header},
+		Timeout: 60 * time.Second,
+		Transport: &staticHeaders{
+			base: http.DefaultTransport, header: header, resolved: resolved,
+		},
 	}
 }
 
 type staticHeaders struct {
-	base   http.RoundTripper
-	header http.Header
+	base     http.RoundTripper
+	header   http.Header
+	resolved *resolvedIdentity
 }
 
 func (t *staticHeaders) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -456,7 +495,11 @@ func (t *staticHeaders) RoundTrip(req *http.Request) (*http.Response, error) {
 			out.Header.Set(k, v)
 		}
 	}
-	return t.base.RoundTrip(out)
+	resp, err := t.base.RoundTrip(out)
+	if err == nil && t.resolved != nil {
+		t.resolved.record(resp.Header)
+	}
+	return resp, err
 }
 
 func resultText(res *sdk.CallToolResult) string {

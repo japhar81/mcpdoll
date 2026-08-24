@@ -257,50 +257,64 @@ have_user() {
 
 for tenant in acme globex; do
   have_tenant "${tenant}" \
-    || ./bin/mcpdoll tenants create "${tenant}" --name "${tenant^^}" --quiet >/dev/null
+    || ./bin/mcpdoll tenants create "${tenant}" \
+         --name "$(echo "${tenant}" | tr "[:lower:]" "[:upper:]")" --quiet >/dev/null
 done
 
-MINTED=""
-seed_user() {
-  local tenant=$1 email=$2 label=$3
-  shift 3
-  if have_user "${tenant}" "${email}"; then
-    return 0
+# Users and keys are separate concerns. A user survives across runs — they are
+# rows in a database this script does not own — but the *keys file* is an
+# artifact of this run, and a key's secret cannot be recovered once it is gone.
+# So: create users that are missing, and mint a key whenever the file is absent,
+# whether or not the user was new. A user may hold several keys, and the
+# alternative is a banner pointing at a file that does not exist.
+DEMO_USERS=(
+  "acme support@acme.example|Support Agent|tool_user@t/acme/ts/support"
+  "acme platform@acme.example|Platform Operator|tool_user@t/acme/ts/support,tool_user@t/acme/ts/platform"
+  "acme research@acme.example|Threat Researcher|tool_user@t/acme/ts/untrusted"
+  "globex support@globex.example|Support Agent|tool_user@t/globex/ts/support"
+)
+
+for entry in "${DEMO_USERS[@]}"; do
+  who="${entry%%|*}"
+  rest="${entry#*|}"
+  label="${rest%%|*}"
+  grants="${rest##*|}"
+  tenant="${who%% *}"
+  email="${who##* }"
+
+  if ! have_user "${tenant}" "${email}"; then
+    ./bin/mcpdoll users create "${email}" --tenant "${tenant}" --name "${label}" \
+      --password demo-password-not-a-secret --quiet >/dev/null
+    # Grants come second and separately, because a new user holding nothing is
+    # the correct starting state.
+    grant_args=()
+    IFS=',' read -ra parts <<< "${grants}"
+    for g in "${parts[@]}"; do grant_args+=(--grant "${g}"); done
+    ./bin/mcpdoll users grants set "${email}" --tenant "${tenant}" \
+      "${grant_args[@]}" --quiet >/dev/null
   fi
-  ./bin/mcpdoll users create "${email}" --tenant "${tenant}" --name "${label}" \
-    --password demo-password-not-a-secret --quiet >/dev/null
-  # Grants come second and separately, because a new user holding nothing is
-  # the correct starting state.
-  ./bin/mcpdoll users grants set "${email}" --tenant "${tenant}" "$@" --quiet >/dev/null
-  MINTED="${MINTED}${tenant} ${email}"$'\n'
-}
+done
 
-seed_user acme support@acme.example "Support Agent" \
-  --grant "tool_user@t/acme/ts/support"
-seed_user acme platform@acme.example "Platform Operator" \
-  --grant "tool_user@t/acme/ts/support" --grant "tool_user@t/acme/ts/platform"
-seed_user acme research@acme.example "Threat Researcher" \
-  --grant "tool_user@t/acme/ts/untrusted"
-seed_user globex support@globex.example "Support Agent" \
-  --grant "tool_user@t/globex/ts/support"
-
-if [[ -n "${MINTED}" ]]; then
+if [[ ! -s "${KEYS}" ]]; then
   {
     echo "# MCPDoll demo credentials, minted $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    echo "# Every secret here is shown once and nothing keeps it."
+    echo "# Every secret here is shown once and nothing keeps it. A previous"
+    echo "# run's keys are not recoverable, so this run minted new ones."
     echo
   } > "${KEYS}"
-  while read -r tenant email; do
-    [[ -n "${tenant}" ]] || continue
+  for entry in "${DEMO_USERS[@]}"; do
+    who="${entry%%|*}"
+    tenant="${who%% *}"
+    email="${who##* }"
     secret="$(./bin/mcpdoll users keys mint "${email}" --tenant "${tenant}" \
-      --name agent --output json --quiet \
+      --name "dev-$(date +%s)" --output json --quiet \
       | sed -n 's/.*"secret": "\([^"]*\)".*/\1/p')"
     [[ -n "${secret}" ]] || die "minting a key for ${email} produced no secret"
     printf '%-30s %s\n' "${tenant}/${email}" "${secret}" >> "${KEYS}"
-  done <<< "${MINTED}"
+  done
   info "credentials written to ${KEYS}"
 else
-  info "every demo user already existed; no keys minted"
+  info "reusing the credentials in ${KEYS}"
 fi
 echo
 

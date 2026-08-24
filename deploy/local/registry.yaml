@@ -214,7 +214,7 @@ plugins:
     writes: [result.content]
     rollout: enforce
     artifact_ref: file://deploy/local/plugins/redact.wasm
-    artifact_digest: "sha256:77c25b4766055af752a3a9471170deeb3a3221f4a740f33923226a8fed78d3c1"
+    artifact_digest: "sha256:21dc9256a2048e33909d3d3348a50efe04b385cd01e4b590c91380fd35ab4392"
     failure_policy:
       # A redaction outage on a read should not take down every read; on a
       # destructive call, proceeding without the check is not a safe default.
@@ -240,7 +240,7 @@ plugins:
     identity_dependent: true
     rollout: shadow
     artifact_ref: file://deploy/local/plugins/entitlements.wasm
-    artifact_digest: "sha256:64028822682f96733bb3954be8022dbaa2f9afcd29506fa2eea3b58e455e18cf"
+    artifact_digest: "sha256:2f8d1d6872a7437ba08ddfde4babb947fd9a9b984638acbcc8227690c4de3abb"
     failure_policy:
       read: open
       destructive: closed

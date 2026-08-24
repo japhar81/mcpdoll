@@ -118,7 +118,7 @@ fmt-check:
 dev:
 	./deploy/dev-up.sh
 
-## dev-down: tear the host stack down and delete its volumes
+## dev-down: stop the host stack, keeping the database
 dev-down:
 	./deploy/dev-down.sh
 
@@ -135,11 +135,11 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 up:
 	@./deploy/docker-up.sh
 
-## down: stop the Docker stack, keeping its volumes (the signing key survives)
+## down: stop the Docker stack, keeping its volumes (the key and the database survive)
 down:
 	$(COMPOSE) down --remove-orphans
 
-## down-hard: stop the Docker stack and delete its volumes, key and all
+## down-hard: stop and wipe everything — signing key, tenants, users, and keys
 down-hard:
 	$(COMPOSE) down --remove-orphans --volumes
 

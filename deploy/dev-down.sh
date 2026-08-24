@@ -49,8 +49,24 @@ else
 fi
 
 if compose version >/dev/null 2>&1; then
-  info "stopping the LGTM stack and deleting its volumes"
-  compose down -v 2>/dev/null || true
+  # Stop, do not destroy. `down -v` was right when the only container was LGTM
+  # and its volume held a few minutes of dev telemetry. It is wrong now that
+  # the same compose file owns Postgres: that volume holds every tenant, user,
+  # grant, and API key, and wiping it on `make dev-down` would mean a stack
+  # that forgets who exists every time it is stopped.
+  info "stopping the containers (Postgres data is kept)"
+  compose stop 2>/dev/null || true
 fi
 
 info "done"
+
+cat <<'NOTE'
+
+Containers are stopped, not removed, and Postgres keeps its data — tenants,
+users, and grants survive. To wipe it and start from an empty database:
+
+  docker compose -f deploy/docker-compose.yml down -v
+
+That also discards the demo credentials, which cannot be recovered. The next
+`make dev` mints new ones.
+NOTE
