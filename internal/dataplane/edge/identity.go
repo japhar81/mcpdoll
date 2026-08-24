@@ -152,18 +152,18 @@ func splitAndTrim(raw string) []string {
 // a memory-hard KDF on this path would be a denial-of-service primitive pointed
 // at ourselves.
 type APIKeyIdentityResolver struct {
-	// current returns the snapshot to verify against. A function rather than a
-	// value because the snapshot is swapped underneath: a resolver holding one
-	// view would keep authenticating keys a later snapshot revoked.
-	current func() *snapshot.View
+	// store holds both artifacts and swaps them independently. Held rather than
+	// snapshotted, because a resolver caching either would keep authenticating
+	// credentials a later publish removed.
+	store *snapshot.Store
 }
 
-// NewAPIKeyIdentityResolver builds a resolver over a snapshot source.
-func NewAPIKeyIdentityResolver(current func() *snapshot.View) (*APIKeyIdentityResolver, error) {
-	if current == nil {
-		return nil, errors.New("edge: an API key resolver needs a snapshot source")
+// NewAPIKeyIdentityResolver builds a resolver over the serving store.
+func NewAPIKeyIdentityResolver(store *snapshot.Store) (*APIKeyIdentityResolver, error) {
+	if store == nil {
+		return nil, errors.New("edge: an API key resolver needs a store")
 	}
-	return &APIKeyIdentityResolver{current: current}, nil
+	return &APIKeyIdentityResolver{store: store}, nil
 }
 
 // Resolve implements IdentityResolver.
@@ -180,7 +180,7 @@ func (r *APIKeyIdentityResolver) Resolve(header http.Header) (backends.Principal
 		return backends.Principal{}, ErrUnauthenticated
 	}
 
-	view := r.current()
+	view := r.store.Current()
 	if view == nil {
 		return backends.Principal{}, ErrUnauthenticated
 	}
@@ -190,7 +190,7 @@ func (r *APIKeyIdentityResolver) Resolve(header http.Header) (backends.Principal
 		return backends.Principal{}, ErrUnauthenticated
 	}
 
-	principal, ok := view.PrincipalByKeyPrefix(prefix)
+	principal, ok := r.store.Principals().ByKeyPrefix(prefix)
 	if !ok {
 		// Hash anyway. An unknown prefix returning before the comparison would
 		// be measurably faster than a wrong secret, which is an oracle for

@@ -26,8 +26,10 @@ func digestOf(secret string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// keyedView builds a snapshot carrying one principal reachable by one key.
-func keyedView(t *testing.T, prefix, secret string) *snapshot.View {
+// keyedStore builds a store serving one snapshot and one principal reachable by
+// one key. Two artifacts now, which is the point of ADR 0024: the key can be
+// added without touching the snapshot.
+func keyedStore(t *testing.T, prefix, secret string) *snapshot.Store {
 	t.Helper()
 
 	b := snapshot.NewBuilder(7)
@@ -46,24 +48,41 @@ func keyedView(t *testing.T, prefix, secret string) *snapshot.View {
 		InputSchema: []byte(`{"type":"object"}`),
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
 	})
-	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	snap, err := b.Build()
+	require.NoError(t, err)
+
+	store := servingStore(t, snap)
+	applyPrincipals(store, authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "key_1", TenantId: "tn_acme", Subject: "agent@acme.example",
 		Grants: []*snapshotpb.Grant{
 			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "support")},
 		},
 		KeyPrefix: prefix, KeySecretSha256: digestOf(secret),
 	}})
-
-	snap, err := b.Build()
-	require.NoError(t, err)
-	view, err := snapshot.Build(snap)
-	require.NoError(t, err)
-	return view
+	return store
 }
 
-func resolverOver(t *testing.T, view *snapshot.View) edge.IdentityResolver {
+// servingStore activates a snapshot through the real verified path.
+func servingStore(t *testing.T, snap *snapshotpb.Snapshot) *snapshot.Store {
 	t.Helper()
-	r, err := edge.NewAPIKeyIdentityResolver(func() *snapshot.View { return view })
+	pub, priv, err := snapshot.GenerateKey()
+	require.NoError(t, err)
+	signer, err := snapshot.NewSigner("test", priv)
+	require.NoError(t, err)
+	verifier, err := snapshot.NewVerifier([]string{snapshot.TrustedKeyEntry("test", pub)})
+	require.NoError(t, err)
+	signed, err := signer.Sign(snap)
+	require.NoError(t, err)
+
+	store := snapshot.NewStore(3)
+	_, err = store.Activate(signed, verifier)
+	require.NoError(t, err)
+	return store
+}
+
+func resolverOver(t *testing.T, store *snapshot.Store) edge.IdentityResolver {
+	t.Helper()
+	r, err := edge.NewAPIKeyIdentityResolver(store)
 	require.NoError(t, err)
 	return r
 }
@@ -76,9 +95,9 @@ func bearer(value string) http.Header {
 
 func TestAValidKeyResolvesToItsPrincipalAndTenant(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
 
-	principal, err := resolverOver(t, view).Resolve(bearer("mcpd.abc12345.s3cr3t-value"))
+	principal, err := resolverOver(t, store).Resolve(bearer("mcpd.abc12345.s3cr3t-value"))
 	require.NoError(t, err)
 
 	// The id is what authorization keys on; the tenant comes from the
@@ -90,13 +109,13 @@ func TestAValidKeyResolvesToItsPrincipalAndTenant(t *testing.T) {
 
 func TestAKeyNeverCarriesGroupsOrClaims(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
 
 	h := bearer("mcpd.abc12345.s3cr3t-value")
 	h.Set(edge.HeaderGroups, "data-restricted,eng-platform")
 	h.Set(edge.HeaderClaim+"Department", "finance")
 
-	principal, err := resolverOver(t, view).Resolve(h)
+	principal, err := resolverOver(t, store).Resolve(h)
 	require.NoError(t, err)
 
 	// A key that could assert group membership would let a credential grant
@@ -108,8 +127,8 @@ func TestAKeyNeverCarriesGroupsOrClaims(t *testing.T) {
 
 func TestEveryWrongCredentialFailsIdentically(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
-	resolver := resolverOver(t, view)
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
+	resolver := resolverOver(t, store)
 
 	for name, presented := range map[string]string{
 		"wrong secret":       "mcpd.abc12345.wrong",
@@ -135,9 +154,9 @@ func TestEveryWrongCredentialFailsIdentically(t *testing.T) {
 
 func TestNoCredentialIsNotAnAnonymousPrincipal(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
 
-	_, err := resolverOver(t, view).Resolve(http.Header{})
+	_, err := resolverOver(t, store).Resolve(http.Header{})
 	require.ErrorIs(t, err, edge.ErrUnauthenticated)
 }
 
@@ -147,7 +166,7 @@ func TestNoSnapshotAuthenticatesNobody(t *testing.T) {
 	// Before the first snapshot lands there is nothing to verify against.
 	// Failing closed is the only correct answer: a gateway that authenticated
 	// during its own startup window would be a way to get in by timing.
-	r, err := edge.NewAPIKeyIdentityResolver(func() *snapshot.View { return nil })
+	r, err := edge.NewAPIKeyIdentityResolver(snapshot.NewStore(3))
 	require.NoError(t, err)
 
 	_, err = r.Resolve(bearer("mcpd.abc12345.s3cr3t-value"))
@@ -157,41 +176,37 @@ func TestNoSnapshotAuthenticatesNobody(t *testing.T) {
 func TestTwoPrincipalsCannotShareAKeyPrefix(t *testing.T) {
 	t.Parallel()
 
-	b := snapshot.NewBuilder(7)
-	b.AddTenant(&snapshotpb.Tenant{Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active"})
-	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
-		{Id: "key_1", TenantId: "tn_acme", Subject: "a@x", KeyPrefix: "dup", KeySecretSha256: digestOf("one")},
-		{Id: "key_2", TenantId: "tn_acme", Subject: "b@x", KeyPrefix: "dup", KeySecretSha256: digestOf("two")},
-	})
-
 	// Not a duplicate id — an ambiguity about who is calling, whose answer
-	// would depend on map iteration order. Refused by the builder, so the
-	// snapshot never reaches a file, let alone a data plane.
-	_, err := b.Build()
+	// would depend on map iteration order. Refused when the set is indexed, so
+	// it never reaches a lookup.
+	_, err := snapshot.IndexPrincipals(&snapshotpb.PrincipalSet{
+		Version: 1,
+		Principals: []*snapshotpb.Principal{
+			{Id: "key_1", TenantId: "tn_acme", Subject: "a@x", KeyPrefix: "dup", KeySecretSha256: digestOf("one")},
+			{Id: "key_2", TenantId: "tn_acme", Subject: "b@x", KeyPrefix: "dup", KeySecretSha256: digestOf("two")},
+		},
+	})
 	require.ErrorContains(t, err, "claimed by two principals")
 }
 
 func TestAPrefixWithNoDigestIsRefusedAtLoad(t *testing.T) {
 	t.Parallel()
 
-	b := snapshot.NewBuilder(7)
-	b.AddTenant(&snapshotpb.Tenant{Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active"})
-	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
-		{Id: "key_1", TenantId: "tn_acme", Subject: "a@x", KeyPrefix: "abc"},
-	})
-
 	// An empty digest would compare equal to nothing, but the failure mode is
 	// worth refusing outright: it is one typo away from a principal any secret
 	// authenticates as.
-	_, err := b.Build()
+	_, err := snapshot.IndexPrincipals(&snapshotpb.PrincipalSet{
+		Version:    1,
+		Principals: []*snapshotpb.Principal{{Id: "key_1", TenantId: "tn_acme", Subject: "a@x", KeyPrefix: "abc"}},
+	})
 	require.ErrorContains(t, err, "any secret would verify")
 }
 
 func TestTheChainPrefersARealCredentialOverAClaimedSubject(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
 
-	keys, err := edge.NewAPIKeyIdentityResolver(func() *snapshot.View { return view })
+	keys, err := edge.NewAPIKeyIdentityResolver(store)
 	require.NoError(t, err)
 	headers, err := edge.NewHeaderIdentityResolver("development", "", nil)
 	require.NoError(t, err)
@@ -209,9 +224,9 @@ func TestTheChainPrefersARealCredentialOverAClaimedSubject(t *testing.T) {
 
 func TestAWrongKeyDoesNotFallThroughToTheHeaderResolver(t *testing.T) {
 	t.Parallel()
-	view := keyedView(t, "abc12345", "s3cr3t-value")
+	store := keyedStore(t, "abc12345", "s3cr3t-value")
 
-	keys, err := edge.NewAPIKeyIdentityResolver(func() *snapshot.View { return view })
+	keys, err := edge.NewAPIKeyIdentityResolver(store)
 	require.NoError(t, err)
 	// Empty default subject: with one, every failed authentication would
 	// silently succeed as that subject — including a request that presented a

@@ -41,3 +41,12 @@ SELECT * FROM grants ORDER BY user_id, scope, role;
 
 -- name: ListAllAPIKeyGrants :many
 SELECT * FROM api_key_grants ORDER BY api_key_id, scope, role;
+
+-- name: BumpPrincipalVersion :one
+-- The principal set's version. Monotonic, and what the data plane compares
+-- against what it holds — a set that did not bump would publish a file nobody
+-- applies.
+UPDATE revocation_state
+SET principal_version = principal_version + 1, updated_at = now()
+WHERE id = true
+RETURNING *;

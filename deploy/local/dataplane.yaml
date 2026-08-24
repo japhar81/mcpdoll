@@ -22,6 +22,7 @@ dataplane:
   snapshot_source: file
   snapshot_path: deploy/local/snapshot.pb
   revocations_path: deploy/local/revocations.pb
+  principals_path: deploy/local/principals.pb
   snapshot_history: 5
 
 controlplane:
@@ -33,6 +34,7 @@ controlplane:
   signing_key_id: dev
   key_dir: deploy/local
   revocations_path: deploy/local/revocations.pb
+  principals_path: deploy/local/principals.pb
   # The console's dev server. Named explicitly — this API mints signing keys,
   # so no wildcard origin is acceptable even locally.
   allowed_origins:

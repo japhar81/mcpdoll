@@ -105,11 +105,10 @@ What is still missing from the design:
   behind the same decider. SAML, SCIM, and the pluggable transport do not
   exist. This is the largest remaining gap for an enterprise deployment, and it
   is now an addition rather than a prerequisite.
-- **A grants-only rebuild that skips discovery.** ADR 0018 called this out as a
-  consequence and it is not addressed: every grant change triggers a full
-  republish, which re-probes every tenant's backends. Toggling ten grants is ten
-  discovery sweeps. The fix is to cache the last discovery pass and reuse it
-  when the registry digest is unchanged.
+- **~~A grants-only rebuild that skips discovery.~~** Done, and not the way
+  ADR 0018 proposed. Caching discovery would have made a wrong coupling cheap;
+  principals left the snapshot instead (ADR 0024), so a grant change costs no
+  build at all.
 
 ### Revocation is built; short-lived credentials are not
 

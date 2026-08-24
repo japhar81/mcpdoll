@@ -19,14 +19,13 @@ import (
 // reads this package — it reads the artifact this produces, which is what makes
 // a control-plane outage invisible to a tool call (ADR 0002, ADR 0018).
 
-// SnapshotState is the tenancy and RBAC a snapshot build reads.
+// SnapshotState is the tenancy a snapshot build reads.
+//
+// Tenants only. Principals moved to their own artifact (ADR 0024) — but tenants
+// stay, because a backend binding names one and a tool is admitted per tenant,
+// so the snapshot genuinely cannot be built without them.
 type SnapshotState struct {
 	Tenants []*snapshotpb.Tenant
-	// Principals are API keys, one each. A user with no key contributes
-	// nothing: they cannot reach the data plane, so publishing them would only
-	// make the artifact bigger.
-	Principals []*snapshotpb.Principal
-	Catalog    authz.Catalog
 }
 
 // SnapshotState reads everything a build needs, in a handful of queries.
@@ -42,29 +41,51 @@ func (s *Store) SnapshotState(ctx context.Context) (SnapshotState, error) {
 	if err != nil {
 		return SnapshotState{}, err
 	}
-	usersByID := map[uuid.UUID]User{}
-	tenantOfUser := map[uuid.UUID]uuid.UUID{}
-
 	for _, t := range tenants {
 		out.Tenants = append(out.Tenants, &snapshotpb.Tenant{
 			Id: t.ID.String(), Slug: t.Slug, Name: t.Name, Status: t.Status,
 		})
 	}
 
+	// Sorted, because the snapshot is signed and compared: two builds over
+	// identical state must produce identical bytes, or "did anything change?"
+	// stops being answerable by comparing digests.
+	sort.Slice(out.Tenants, func(i, j int) bool {
+		return out.Tenants[i].Slug < out.Tenants[j].Slug
+	})
+	return out, nil
+}
+
+// PrincipalSetState is who exists and what they hold.
+//
+// Read on its own, because it is published on its own: minting a key, issuing a
+// grant, and disabling a user all change this and none of them should cost a
+// discovery sweep of every backend (ADR 0024).
+func (s *Store) PrincipalSetState(ctx context.Context) (*snapshotpb.PrincipalSet, error) {
+	tenants, err := s.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	knownTenant := map[uuid.UUID]bool{}
+	for _, t := range tenants {
+		knownTenant[t.ID] = true
+	}
+
+	usersByID := map[uuid.UUID]User{}
+	principals := []*snapshotpb.Principal{}
 	users, err := s.q.ListAllUsers(ctx)
 	if err != nil {
-		return SnapshotState{}, wrap(err, "listing users")
+		return nil, wrap(err, "listing users")
 	}
 	for _, row := range users {
 		u := userFrom(row)
 		usersByID[u.ID] = u
-		tenantOfUser[u.ID] = u.TenantID
 	}
 
 	ownerGrants := map[uuid.UUID][]authz.Grant{}
 	grantRows, err := s.q.ListAllGrants(ctx)
 	if err != nil {
-		return SnapshotState{}, wrap(err, "listing grants")
+		return nil, wrap(err, "listing grants")
 	}
 	for _, row := range grantRows {
 		ownerGrants[row.UserID] = append(ownerGrants[row.UserID],
@@ -74,7 +95,7 @@ func (s *Store) SnapshotState(ctx context.Context) (SnapshotState, error) {
 	keyGrants := map[uuid.UUID][]authz.Grant{}
 	keyGrantRows, err := s.q.ListAllAPIKeyGrants(ctx)
 	if err != nil {
-		return SnapshotState{}, wrap(err, "listing key grants")
+		return nil, wrap(err, "listing key grants")
 	}
 	for _, row := range keyGrantRows {
 		keyGrants[row.ApiKeyID] = append(keyGrants[row.ApiKeyID],
@@ -83,11 +104,11 @@ func (s *Store) SnapshotState(ctx context.Context) (SnapshotState, error) {
 
 	keys, err := s.q.ListActiveAPIKeys(ctx)
 	if err != nil {
-		return SnapshotState{}, wrap(err, "listing keys")
+		return nil, wrap(err, "listing keys")
 	}
 	for _, row := range keys {
 		owner, known := usersByID[row.UserID]
-		if !known || owner.Status != "active" {
+		if !known || owner.Status != "active" || !knownTenant[owner.TenantID] {
 			// A key whose owner is gone or disabled authenticates nothing.
 			// Omitted rather than published-and-denied: the snapshot should not
 			// carry a credential the system has already decided against.
@@ -104,7 +125,7 @@ func (s *Store) SnapshotState(ctx context.Context) (SnapshotState, error) {
 			effective = authz.Intersect(declared, ownerGrants[owner.ID])
 		}
 
-		out.Principals = append(out.Principals, &snapshotpb.Principal{
+		principals = append(principals, &snapshotpb.Principal{
 			Id:              row.ID.String(),
 			TenantId:        owner.TenantID.String(),
 			Subject:         owner.Email,
@@ -114,20 +135,27 @@ func (s *Store) SnapshotState(ctx context.Context) (SnapshotState, error) {
 		})
 	}
 
-	// Sorted, because a snapshot's bytes are signed and compared. Two builds
-	// over identical state must produce identical artifacts, or "did anything
-	// change?" stops being answerable by comparing digests.
-	sort.Slice(out.Principals, func(i, j int) bool {
-		return out.Principals[i].Id < out.Principals[j].Id
-	})
-	sort.Slice(out.Tenants, func(i, j int) bool {
-		return out.Tenants[i].Slug < out.Tenants[j].Slug
-	})
+	sort.Slice(principals, func(i, j int) bool { return principals[i].Id < principals[j].Id })
 
-	if out.Catalog, err = s.Catalog(ctx); err != nil {
-		return SnapshotState{}, err
+	catalog, err := s.Catalog(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	rolePermissions := make([]*snapshotpb.RolePermission, 0, len(catalog))
+	// Sorted, because the set is signed and a map's iteration order would make
+	// two reads of identical state produce different bytes.
+	for _, role := range catalog.Roles() {
+		for _, permission := range catalog.Permissions(role) {
+			rolePermissions = append(rolePermissions, &snapshotpb.RolePermission{
+				Role: role, Permission: string(permission),
+			})
+		}
+	}
+
+	return &snapshotpb.PrincipalSet{
+		RolePermissions: rolePermissions,
+		Principals:      principals,
+	}, nil
 }
 
 func grantsToProto(grants []authz.Grant) []*snapshotpb.Grant {
@@ -142,4 +170,37 @@ func grantsToProto(grants []authz.Grant) []*snapshotpb.Grant {
 		return out[i].Role < out[j].Role
 	})
 	return out
+}
+
+// PublishPrincipalSet bumps the version and returns the set to sign.
+//
+// The bump and the read happen together so the version always describes the
+// bytes: reading first and bumping after would publish a set stamped with a
+// version that predates it, and a data plane comparing versions would refuse
+// the newer content.
+func (s *Store) PublishPrincipalSet(ctx context.Context) (*snapshotpb.PrincipalSet, error) {
+	row, err := s.q.BumpPrincipalVersion(ctx)
+	if err != nil {
+		return nil, wrap(err, "bumping the principal version")
+	}
+	set, err := s.PrincipalSetState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	set.Version = row.PrincipalVersion
+	if set.Version <= 0 {
+		// Version zero would be refused as not newer than a data plane's
+		// starting state, so a fresh install publishes 1 with whatever it has.
+		set.Version = 1
+	}
+	return set, nil
+}
+
+// PrincipalVersion is the version last published.
+func (s *Store) PrincipalVersion(ctx context.Context) (int64, error) {
+	row, err := s.q.GetRevocationState(ctx)
+	if err != nil {
+		return 0, wrap(err, "reading the principal version")
+	}
+	return row.PrincipalVersion, nil
 }

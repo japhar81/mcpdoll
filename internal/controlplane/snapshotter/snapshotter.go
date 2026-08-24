@@ -32,7 +32,6 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	mcpadapter "github.com/mcpdoll/mcpdoll/internal/mcp"
-	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	"github.com/mcpdoll/mcpdoll/internal/platform/canonical"
 	"github.com/mcpdoll/mcpdoll/internal/platform/ids"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
@@ -88,11 +87,9 @@ type Options struct {
 	// principal could belong to.
 	Tenants []*snapshotpb.Tenant
 
-	// Catalog and Principals are the compiled RBAC the snapshot carries, read
-	// from the control plane's database. Empty is legal — a deployment with no
-	// users yet serves nobody, which is correct rather than broken.
-	Catalog    authz.Catalog
-	Principals []*snapshotpb.Principal
+	// Principals are not here. They travel in their own signed artifact,
+	// published on every change and costing no discovery — carrying them here
+	// meant minting an API key required re-probing every backend (ADR 0024).
 
 	// Version is the snapshot version. It must exceed whatever the data plane
 	// is serving, or the swap is silently refused.
@@ -391,8 +388,6 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		}
 		b.AddPlugin(manifest)
 	}
-
-	b.SetRBAC(opts.Catalog, opts.Principals)
 
 	snap, err := b.Build()
 	if err != nil {

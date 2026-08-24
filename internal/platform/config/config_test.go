@@ -34,6 +34,7 @@ dataplane:
   snapshot_source: file
   snapshot_path: /var/lib/mcpdoll/snapshot.pb
   revocations_path: /var/lib/mcpdoll/revocations.pb
+  principals_path: /var/lib/mcpdoll/principals.pb
   trusted_signing_keys:
     - AAAA
     - BBBB
@@ -316,6 +317,7 @@ env: production
 dataplane:
   snapshot_source: file
   snapshot_path: /var/lib/mcpdoll/snapshot.pb
+  principals_path: /var/lib/mcpdoll/principals.pb
   trusted_signing_keys: [AAAA]
 `), 0o600))
 
@@ -334,6 +336,7 @@ env: development
 dataplane:
   snapshot_source: file
   snapshot_path: /tmp/snapshot.pb
+  principals_path: /tmp/principals.pb
   trusted_signing_keys: [AAAA]
 `), 0o600))
 

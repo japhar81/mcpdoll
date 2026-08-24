@@ -79,12 +79,6 @@ func newHarness(t *testing.T, opts pipeline.Options, manifests ...*snapshotpb.Pl
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
 	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
-	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
-		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
-		Grants: []*snapshotpb.Grant{
-			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
-		},
-	}})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm",
@@ -106,7 +100,18 @@ func newHarness(t *testing.T, opts pipeline.Options, manifests ...*snapshotpb.Pl
 	view, err := snapshot.Build(snap)
 	require.NoError(t, err)
 
-	pv, err := view.Principal(context.Background(), "usr_test")
+	// The store is what composes a principal's catalog now: it holds the
+	// snapshot and the principal set, which swap independently (ADR 0024).
+	store := storeServing(t, snap)
+	_ = view
+	applyPrincipals(store, authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
+		},
+	}})
+
+	pv, err := store.PrincipalView(context.Background(), "usr_test")
 	require.NoError(t, err)
 
 	h := &harness{hosts: hostMap{}, audience: pv}
@@ -811,4 +816,55 @@ func TestTraceSummary(t *testing.T) {
 	require.Contains(t, summary, "crm.lookup")
 	require.Contains(t, summary, "denier")
 	require.Contains(t, summary, "1 plugin(s) ran")
+}
+
+// storeServing puts a snapshot into a store, through the real path.
+//
+// Signing a fixture rather than reaching past verification: the store's job is
+// to refuse anything unverified, and a test seam around that would be a seam
+// around the property most worth keeping.
+func storeServing(t *testing.T, snap *snapshotpb.Snapshot) *snapshot.Store {
+	t.Helper()
+	pub, priv, err := snapshot.GenerateKey()
+	require.NoError(t, err)
+	signer, err := snapshot.NewSigner("test", priv)
+	require.NoError(t, err)
+	verifier, err := snapshot.NewVerifier([]string{snapshot.TrustedKeyEntry("test", pub)})
+	require.NoError(t, err)
+
+	signed, err := signer.Sign(snap)
+	require.NoError(t, err)
+	store := snapshot.NewStore(3)
+	_, err = store.Activate(signed, verifier)
+	require.NoError(t, err)
+	return store
+}
+
+// applyPrincipals installs a principal set on a store.
+//
+// Principals live in their own signed artifact now (ADR 0024), so a test that
+// wants a catalog composes one from two things rather than from a builder call.
+// Indexed without a signature, which is what [snapshot.IndexPrincipals] exists
+// for.
+func applyPrincipals(store *snapshot.Store, catalog authz.Catalog, principals []*snapshotpb.Principal) {
+	// One past whatever the store holds. A fixed version would make a second
+	// publish in one test fail the monotonicity check, which is the store doing
+	// its job — the helper just has to respect it.
+	set := &snapshotpb.PrincipalSet{
+		Version:    store.Principals().Version + 1,
+		Principals: principals,
+	}
+	for _, role := range catalog.Roles() {
+		for _, p := range catalog.Permissions(role) {
+			set.RolePermissions = append(set.RolePermissions,
+				&snapshotpb.RolePermission{Role: role, Permission: string(p)})
+		}
+	}
+	indexed, err := snapshot.IndexPrincipals(set)
+	if err != nil {
+		panic("test principal set is malformed: " + err.Error())
+	}
+	if err := store.ApplyPrincipals(indexed); err != nil {
+		panic("applying the test principal set: " + err.Error())
+	}
 }

@@ -10,7 +10,6 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	"github.com/mcpdoll/mcpdoll/internal/platform/canonical"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
@@ -283,35 +282,4 @@ func EstimateTokens(canonicalForm []byte) int {
 	// Structural characters tokenize roughly one-to-one; prose at ~4 bytes per
 	// token. Round up so a budget is never under-reported.
 	return structural + (prose+3)/4
-}
-
-// SetRBAC attaches the compiled authorization state.
-//
-// Grants travel inside the signed snapshot so the data plane can decide a
-// catalog without asking the control plane anything (ADR 0018). Signing them
-// matters as much as signing the tools: the grants are precisely the part an
-// attacker would want to change.
-func (b *Builder) SetRBAC(catalog authz.Catalog, principals []*snapshotpb.Principal) *Builder {
-	rbac := &snapshotpb.RBAC{Principals: principals}
-
-	// Sorted, because the snapshot is signed and a map's iteration order would
-	// make two builds of identical inputs produce different bytes — which
-	// would defeat any attempt to compare or deduplicate published artifacts.
-	for _, role := range catalog.Roles() {
-		for _, permission := range catalog.Permissions(role) {
-			rbac.RolePermissions = append(rbac.RolePermissions, &snapshotpb.RolePermission{
-				Role: role, Permission: string(permission),
-			})
-		}
-	}
-
-	if err := authz.ValidateCatalog(catalog); err != nil {
-		// A catalog granting tool:call without tool:list would produce
-		// capabilities that never appear in any catalog. Refused at build
-		// rather than served (ADR 0015).
-		b.errs = append(b.errs, err.Error())
-	}
-
-	b.snap.Rbac = rbac
-	return b
 }

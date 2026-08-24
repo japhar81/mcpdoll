@@ -67,10 +67,11 @@ type Revocation struct {
 }
 
 type RevocationState struct {
-	ID            bool
-	Version       int64
-	PrunedThrough int64
-	UpdatedAt     pgtype.Timestamptz
+	ID               bool
+	Version          int64
+	PrunedThrough    int64
+	UpdatedAt        pgtype.Timestamptz
+	PrincipalVersion int64
 }
 
 type RolePermission struct {

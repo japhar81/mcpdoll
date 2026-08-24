@@ -27,6 +27,29 @@ func (q *Queries) AddRolePermission(ctx context.Context, arg AddRolePermissionPa
 	return err
 }
 
+const bumpPrincipalVersion = `-- name: BumpPrincipalVersion :one
+UPDATE revocation_state
+SET principal_version = principal_version + 1, updated_at = now()
+WHERE id = true
+RETURNING id, version, pruned_through, updated_at, principal_version
+`
+
+// The principal set's version. Monotonic, and what the data plane compares
+// against what it holds — a set that did not bump would publish a file nobody
+// applies.
+func (q *Queries) BumpPrincipalVersion(ctx context.Context) (RevocationState, error) {
+	row := q.db.QueryRow(ctx, bumpPrincipalVersion)
+	var i RevocationState
+	err := row.Scan(
+		&i.ID,
+		&i.Version,
+		&i.PrunedThrough,
+		&i.UpdatedAt,
+		&i.PrincipalVersion,
+	)
+	return i, err
+}
+
 const createGrant = `-- name: CreateGrant :one
 INSERT INTO grants (user_id, role, scope, granted_by)
 VALUES ($1, $2, $3, $4)

@@ -95,27 +95,6 @@ func newInspectorCmd(env *Env) *cobra.Command {
 				}
 			}
 
-			// A credential is only usable once a snapshot carries it: the data
-			// plane verifies against digests in the artifact it holds, not
-			// against the database (ADR 0021). Minting and launching without
-			// publishing hands the Inspector a key the gateway 401s — and
-			// because our 401 carries WWW-Authenticate, the Inspector reads it
-			// as "this server wants OAuth" and asks for a browser. So: publish,
-			// then wait for the key to actually resolve.
-			if minted != nil {
-				if err := publishAndWait(ctx, env, key); err != nil {
-					return err
-				}
-			}
-
-			// Revoked on the way out, whether the Inspector exited on its own
-			// or the operator pressed ctrl-C. A credential that outlives the
-			// session that needed it is the thing this command must not leave
-			// behind.
-			if minted != nil && !keepKey {
-				defer revokeInspectorKey(env, minted)
-			}
-
 			endpoint := strings.TrimRight(env.GatewayURL(), "/") + "/mcp"
 			inspectorArgs := []string{"-y", inspectorPackage, "--" + mode,
 				"--transport", "http",
@@ -188,26 +167,6 @@ func mintInspectorKey(ctx context.Context, env *Env) (string, *api.APIKey, error
 				"pass --as with an agent key", me.Kind))
 	}
 
-	// Checked before minting, not after. A new key is unusable until a snapshot
-	// carries it, so a caller who cannot publish would be left holding a
-	// credential that does nothing — and would find out only once the Inspector
-	// failed to connect.
-	canPublish := false
-	for _, p := range me.Permissions {
-		if p == "snapshot:build" {
-			canPublish = true
-			break
-		}
-	}
-	if !canPublish {
-		return "", nil, configError(fmt.Errorf(
-			"minting an inspection key needs snapshot:build at global scope, because a " +
-				"new credential is not usable until a snapshot carries it, and you hold " +
-				"it only within your tenant if at all.\n\n" +
-				"Ask an administrator for an agent key and pass it with --as, or have " +
-				"them run this"))
-	}
-
 	expires := time.Now().Add(inspectorKeyTTL).UTC().Format(time.RFC3339)
 	body := map[string]any{
 		// Named so an operator finding it in the key list knows what made it.
@@ -226,21 +185,16 @@ func mintInspectorKey(ctx context.Context, env *Env) (string, *api.APIKey, error
 	return out.Secret, &out.Key, nil
 }
 
-// publishAndWait rebuilds the snapshot and blocks until the key resolves.
+// publishAndWait blocks until the minted key resolves.
 //
 // Polling the inspection endpoint rather than sleeping a fixed interval: it
 // asks the question that actually matters — can this credential list a catalog
 // — and it is the same call the console's inspect screen makes.
-func publishAndWait(ctx context.Context, env *Env, credential string) error {
-	env.Printf("publishing a snapshot so the new key resolves…\n")
-	if err := apiCall(ctx, env, "POST", "/api/v1/snapshots:build",
-		map[string]any{}, &struct{}{}); err != nil {
-		return fmt.Errorf(
-			"%w\n\nA freshly minted key is not usable until a snapshot carries it. "+
-				"Publish one, or pass --as with a key that already works", err)
-	}
-
-	deadline := time.Now().Add(60 * time.Second)
+func waitForCredential(ctx context.Context, env *Env, credential string) error {
+	// No publish. The control plane wrote the principal set when it minted the
+	// key (ADR 0024); this only waits for the gateway to pick it up, which is a
+	// second or two rather than a discovery sweep of every backend.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if credentialResolves(ctx, env, credential) {
 			env.Printf("the gateway is serving this credential\n")
@@ -248,7 +202,7 @@ func publishAndWait(ctx context.Context, env *Env, credential string) error {
 		}
 		if time.Now().After(deadline) {
 			return unavailableError(errors.New(
-				"the gateway did not pick up the new snapshot within a minute; " +
+				"the gateway did not pick up the new principal set within 30s; " +
 					"check `mcpdoll gateway status`"))
 		}
 		select {

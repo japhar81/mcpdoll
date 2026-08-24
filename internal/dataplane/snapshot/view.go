@@ -4,11 +4,9 @@ package snapshot
 
 import (
 	"cmp"
-	"context"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
@@ -48,24 +46,14 @@ type View struct {
 	// toolsByDigest indexes by content digest, for audit and drift lookups.
 	toolsByDigest map[string]*snapshotpb.ToolDefinition
 
-	// The compiled RBAC this snapshot carries.
-	catalog    authz.Catalog
-	principals map[string]*snapshotpb.Principal
-	// byKeyPrefix indexes principals by the public half of their credential,
-	// which is what makes authentication one map lookup and one hash rather
-	// than a scan (ADR 0021).
-	byKeyPrefix map[string]*snapshotpb.Principal
+	// fixtureStore is set only by tests, which assert against a bare *View but
+	// need the store that composes principals. Nil in production.
+	fixtureStore *Store
 
-	// engine compiles a principal's grants into a decider. Held on the view so
-	// a deployment using a different engine (ADR 0020) gets it everywhere.
-	engine authz.Engine
-
-	// mu guards the principal cache, which is populated lazily as principals
-	// connect. The cache belongs to this view and dies with it: a swap drops
-	// the whole map rather than invalidating entry by entry, because a stale
-	// view surviving a swap would serve revoked access.
-	mu    sync.RWMutex
-	cache map[string]*PrincipalView
+	// No principals here. They travel in their own signed artifact, because
+	// they change whenever somebody is hired or a key is minted and this one
+	// costs a discovery sweep of every backend to rebuild (ADR 0024). See
+	// [Principals].
 }
 
 // PrincipalView is one principal's catalog, composed from its grants.
@@ -158,11 +146,8 @@ func BuildWithEngine(snap *snapshotpb.Snapshot, engine authz.Engine) (*View, err
 		tenantsBySlug: map[string]*snapshotpb.Tenant{},
 		toolsByTenant: map[string][]*Tool{},
 		toolsByDigest: map[string]*snapshotpb.ToolDefinition{},
-		principals:    map[string]*snapshotpb.Principal{},
-		byKeyPrefix:   map[string]*snapshotpb.Principal{},
-		cache:         map[string]*PrincipalView{},
-		engine:        engine,
 	}
+	_ = engine
 	if snap.BuiltAt != nil {
 		v.BuiltAt = snap.BuiltAt.AsTime()
 	}
@@ -321,117 +306,14 @@ func BuildWithEngine(snap *snapshotpb.Snapshot, engine authz.Engine) (*View, err
 		}
 	}
 
-	if err := v.indexRBAC(snap.Rbac); err != nil {
-		return nil, err
-	}
 	return v, nil
 }
 
-// indexRBAC reads the compiled authorization state the snapshot carries.
-func (v *View) indexRBAC(rbac *snapshotpb.RBAC) error {
-	v.catalog = authz.Catalog{}
-	if rbac == nil {
-		// A snapshot with no RBAC serves nobody. Legal — a freshly built
-		// snapshot with no users yet is exactly that — and not an error.
-		return nil
-	}
-
-	for _, rp := range rbac.RolePermissions {
-		if v.catalog[rp.Role] == nil {
-			v.catalog[rp.Role] = map[authz.Permission]struct{}{}
-		}
-		v.catalog[rp.Role][authz.Permission(rp.Permission)] = struct{}{}
-	}
-
-	for _, p := range rbac.Principals {
-		if p.Id == "" {
-			return fmt.Errorf("snapshot: a principal has no id")
-		}
-		if _, dup := v.principals[p.Id]; dup {
-			return fmt.Errorf("snapshot: principal id %q appears twice", p.Id)
-		}
-		if _, ok := v.tenants[p.TenantId]; !ok {
-			return fmt.Errorf("snapshot: principal %q references unknown tenant %q",
-				p.Subject, p.TenantId)
-		}
-		v.principals[p.Id] = p
-
-		if p.KeyPrefix != "" {
-			if _, dup := v.byKeyPrefix[p.KeyPrefix]; dup {
-				// Two principals reachable by one credential is not a
-				// duplicate id; it is an ambiguity about who is calling, and
-				// the answer would depend on map iteration order.
-				return fmt.Errorf(
-					"snapshot: key prefix %q is claimed by two principals", p.KeyPrefix)
-			}
-			if p.KeySecretSha256 == "" {
-				return fmt.Errorf(
-					"snapshot: principal %q carries a key prefix with no digest, so "+
-						"any secret would verify against it", p.Subject)
-			}
-			v.byKeyPrefix[p.KeyPrefix] = p
-		}
-	}
-	return nil
-}
-
-// PrincipalByKeyPrefix returns the principal a credential prefix addresses.
+// composePrincipal builds one principal's catalog against this snapshot.
 //
-// The prefix alone proves nothing — the caller still has to verify the secret
-// against KeySecretSha256. Separating the two is what lets the lookup be
-// indexed while the comparison stays constant-time.
-func (v *View) PrincipalByKeyPrefix(prefix string) (*snapshotpb.Principal, bool) {
-	p, ok := v.byKeyPrefix[prefix]
-	return p, ok
-}
-
-// Principal composes and caches one principal's catalog.
-//
-// Lazily, on first connect, and cached for the life of this view. The cost is a
-// scope-prefix test per admitted tool in the principal's tenant against a
-// compiled decider — nanoseconds each (ADR 0015) — so a principal with a
-// thousand tools costs tens of microseconds once.
-func (v *View) Principal(ctx context.Context, id string) (*PrincipalView, error) {
-	v.mu.RLock()
-	cached, ok := v.cache[id]
-	v.mu.RUnlock()
-	if ok {
-		return cached, nil
-	}
-
-	principal, ok := v.principals[id]
-	if !ok {
-		return nil, fmt.Errorf("snapshot: no principal %q in snapshot %d", id, v.Version)
-	}
-	tenant, ok := v.tenants[principal.TenantId]
-	if !ok {
-		return nil, fmt.Errorf("snapshot: principal %q references unknown tenant", id)
-	}
-
-	grants := make([]authz.Grant, 0, len(principal.Grants))
-	for _, g := range principal.Grants {
-		grants = append(grants, authz.Grant{Role: g.Role, Scope: g.Scope})
-	}
-
-	decide, err := v.engine.Prepare(ctx, grants, v.catalog)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot: compiling grants for %q: %w", principal.Subject, err)
-	}
-
-	view := v.composePrincipal(principal, tenant, decide)
-
-	v.mu.Lock()
-	// Re-check: two connections for one principal can race here, and the
-	// second must not replace a view the first already handed out.
-	if existing, ok := v.cache[id]; ok {
-		v.mu.Unlock()
-		return existing, nil
-	}
-	v.cache[id] = view
-	v.mu.Unlock()
-	return view, nil
-}
-
+// Exported through [Store.PrincipalView], which owns the cache: a composed view
+// is a function of *two* artifacts now, and caching it on either one alone
+// would serve a stale catalog after the other moved.
 func (v *View) composePrincipal(
 	principal *snapshotpb.Principal,
 	tenant *snapshotpb.Tenant,
@@ -587,16 +469,6 @@ func (v *View) TenantSlugs() []string {
 	out := make([]string, 0, len(v.tenantsBySlug))
 	for slug := range v.tenantsBySlug {
 		out = append(out, slug)
-	}
-	slices.Sort(out)
-	return out
-}
-
-// PrincipalIDs lists every principal the snapshot carries, sorted.
-func (v *View) PrincipalIDs() []string {
-	out := make([]string, 0, len(v.principals))
-	for id := range v.principals {
-		out = append(out, id)
 	}
 	slices.Sort(out)
 	return out

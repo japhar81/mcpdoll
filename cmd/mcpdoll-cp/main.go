@@ -169,6 +169,7 @@ func run() int {
 		SigningKeyID:    cfg.ControlPlane.SigningKeyID,
 		KeyDir:          cfg.ControlPlane.KeyDir,
 		RevocationsPath: cfg.ControlPlane.RevocationsPath,
+		PrincipalsPath:  cfg.ControlPlane.PrincipalsPath,
 		Token:           token,
 		AllowAnonymous:  *allowAnonymous,
 		AllowedOrigins:  cfg.ControlPlane.AllowedOrigins,
@@ -214,6 +215,8 @@ func run() int {
 	// it, a growing age means the data plane has stopped receiving the
 	// artifact — which is the only failure that matters here (ADR 0023).
 	go server.RunRevocationHeartbeat(ctx)
+	// Same reasoning, for who exists rather than who is refused.
+	go server.RunPrincipalHeartbeat(ctx)
 
 	select {
 	case err := <-errs:

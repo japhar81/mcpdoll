@@ -52,6 +52,11 @@ type Config struct {
 	// avoid — so [New] warns rather than failing.
 	RevocationsPath string
 
+	// PrincipalsPath is where the signed principal set is written (ADR 0024).
+	// Empty means who-exists changes still take effect — at snapshot latency,
+	// which is what this artifact exists to avoid.
+	PrincipalsPath string
+
 	// Token is the bearer credential every operation except /healthz requires.
 	Token string
 	// AllowAnonymous disables that check. It exists so local development is not
@@ -110,6 +115,13 @@ func New(cfg Config) (*Server, error) {
 
 	s := &Server{cfg: cfg, log: cfg.Logger}
 	s.routes()
+
+	if cfg.PrincipalsPath == "" {
+		s.log.Warn("no principal set path configured",
+			slog.String("detail",
+				"minting a key or issuing a grant will not take effect until the next "+
+					"snapshot is published; set controlplane.principals_path (ADR 0024)"))
+	}
 
 	if cfg.RevocationsPath == "" {
 		s.log.Warn("no revocation list path configured",

@@ -80,7 +80,11 @@ type DataPlane struct {
 	// revoked credential then works until the next snapshot — so [Validate]
 	// says so rather than letting it pass silently.
 	RevocationsPath string `yaml:"revocations_path"`
-	ControlPlaneCP  string `yaml:"control_plane_addr"`
+	// PrincipalsPath is the signed principal set (ADR 0024). Without it the
+	// gateway authenticates nobody: the credentials and grants it verifies
+	// against live in this file, not in the snapshot.
+	PrincipalsPath string `yaml:"principals_path"`
+	ControlPlaneCP string `yaml:"control_plane_addr"`
 	// TrustedSigningKeys are the base64 Ed25519 public keys a snapshot may be
 	// signed with. More than one so a key rotation does not need lockstep
 	// restarts.
@@ -126,6 +130,10 @@ type ControlPlane struct {
 	// startup rather than refusing, because a control plane that only reads has
 	// no business writing one.
 	RevocationsPath string `yaml:"revocations_path"`
+	// PrincipalsPath is where the signed principal set is written, for the data
+	// plane to read (ADR 0024). It must be the same file
+	// `dataplane.principals_path` points at.
+	PrincipalsPath string `yaml:"principals_path"`
 }
 
 type SnapshotConfig struct {
@@ -322,6 +330,14 @@ func (c *Config) Validate() error {
 	case "file":
 		if c.DataPlane.SnapshotPath == "" {
 			errs = append(errs, "dataplane.snapshot_path is required when snapshot_source is \"file\"")
+		}
+		if c.DataPlane.PrincipalsPath == "" {
+			// Not production-only: without it the gateway has no credentials to
+			// verify against and authenticates nobody, in any environment.
+			errs = append(errs,
+				"dataplane.principals_path is required when snapshot_source is "+
+					"\"file\": the credentials and grants the gateway verifies against "+
+					"live there, not in the snapshot (ADR 0024)")
 		}
 		if c.DataPlane.RevocationsPath == "" && isProduction(c.Env) {
 			// Not an error: a deployment can legitimately choose to accept

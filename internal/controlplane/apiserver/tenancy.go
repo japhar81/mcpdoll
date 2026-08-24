@@ -220,6 +220,7 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	warnPrincipals(w, s.publishPrincipals(r.Context()))
 	writeJSON(w, s.log, http.StatusCreated, tenantOf(tenant))
 }
 
@@ -255,6 +256,7 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	_ = s.publishPrincipals(r.Context())
 	if problem != "" {
 		writeJSON(w, s.log, http.StatusAccepted, Error{
 			Code:     CodeUnavailable,
@@ -330,6 +332,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// A new user holds nothing. That is the correct starting state and not an
 	// omission: an account that could see tools the moment it existed would
 	// make onboarding the thing that grants access.
+	warnPrincipals(w, s.publishPrincipals(r.Context()))
 	writeJSON(w, s.log, http.StatusCreated, userOf(user, tenant.Slug))
 }
 
@@ -388,6 +391,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		problem = s.publishRevocations(r.Context())
+	}
+	// Both artifacts: the principal set stops carrying them, and the revocation
+	// list refuses the credentials it was carrying a moment ago.
+	if p := s.publishPrincipals(r.Context()); p != "" && problem == "" {
+		problem = p
 	}
 
 	user, slug, err := s.userWithTenant(r, id)
@@ -601,6 +609,9 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	// The change is live within a second, not at the next snapshot: grants
+	// travel in the principal set now (ADR 0024).
+	warnPrincipals(w, s.publishPrincipals(r.Context()))
 	writeJSON(w, s.log, http.StatusOK, grantListOf(id, grants))
 }
 
@@ -706,6 +717,9 @@ func (s *Server) handleMintAPIKey(w http.ResponseWriter, r *http.Request) {
 	// The one response that carries a secret. It is stored only as an Argon2id
 	// hash, so a caller who does not capture it has to mint another key —
 	// which is the property that makes a leaked log harmless.
+	// Published before answering, so the key in this response works by the time
+	// the caller reads it.
+	warnPrincipals(w, s.publishPrincipals(r.Context()))
 	writeJSON(w, s.log, http.StatusCreated, api.MintedAPIKey{
 		Key: apiKeyOf(key, time.Now()), Secret: secret,
 	})
@@ -732,6 +746,7 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	_ = s.publishPrincipals(r.Context())
 	if problem := s.publishRevocations(r.Context()); problem != "" {
 		// The key *is* revoked. It simply takes effect at snapshot latency
 		// instead of immediately, and saying so is better than a 204 that

@@ -39,6 +39,7 @@ deploy/local/*.pem
 deploy/local/*.pub
 deploy/local/snapshot.pb
 deploy/local/revocations.pb
+deploy/local/principals.pb
 # Minted agent credentials. `make dev` writes real, working secrets here, and
 # the `mcpd.` marker exists precisely so a scanner flags them in a repository —
 # so committing this file would trip the alarm this project designed.

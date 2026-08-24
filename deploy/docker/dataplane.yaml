@@ -29,6 +29,10 @@ dataplane:
   # The second signed artifact (ADR 0023). Without it a revoked credential
   # keeps working until the next snapshot is published, which may be never.
   revocations_path: /srv/state/revocations.pb
+  # Who exists and what they hold (ADR 0024). Separate from the snapshot
+  # because it changes whenever a key is minted, and this one costs a
+  # discovery sweep of every backend to rebuild.
+  principals_path: /srv/state/principals.pb
   snapshot_history: 5
 
 controlplane:
@@ -42,6 +46,7 @@ controlplane:
   # Written here by every operation that revokes something, and read by the
   # data plane from the same shared volume.
   revocations_path: /srv/state/revocations.pb
+  principals_path: /srv/state/principals.pb
   # The console's origin. Named explicitly — this API mints signing keys, so no
   # wildcard is acceptable even in development.
   allowed_origins:

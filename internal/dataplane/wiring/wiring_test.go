@@ -176,7 +176,6 @@ func (h *harness) publish(manifests ...*snapshotpb.PluginManifest) {
 			},
 		})
 	}
-	b.SetRBAC(authz.DefaultCatalog(), principals)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm", Bindings: []*snapshotpb.Binding{{TenantId: "tn_test", Primary: h.backend.URL()}},
@@ -212,6 +211,7 @@ func (h *harness) publish(manifests ...*snapshotpb.PluginManifest) {
 	require.NoError(h.t, err)
 	_, err = h.store.Activate(signed, h.verifier)
 	require.NoError(h.t, err)
+	applyPrincipals(h.store, authz.DefaultCatalog(), principals)
 }
 
 func (h *harness) connect(t *testing.T, subject string, groups ...string) *sdk.ClientSession {
@@ -555,4 +555,33 @@ func newListener(t *testing.T) net.Listener {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
 	return l
+}
+
+// applyPrincipals installs a principal set on a store.
+//
+// Principals live in their own signed artifact now (ADR 0024), so a test that
+// wants a catalog composes one from two things rather than from a builder call.
+// Indexed without a signature, which is what [snapshot.IndexPrincipals] exists
+// for.
+func applyPrincipals(store *snapshot.Store, catalog authz.Catalog, principals []*snapshotpb.Principal) {
+	// One past whatever the store holds. A fixed version would make a second
+	// publish in one test fail the monotonicity check, which is the store doing
+	// its job — the helper just has to respect it.
+	set := &snapshotpb.PrincipalSet{
+		Version:    store.Principals().Version + 1,
+		Principals: principals,
+	}
+	for _, role := range catalog.Roles() {
+		for _, p := range catalog.Permissions(role) {
+			set.RolePermissions = append(set.RolePermissions,
+				&snapshotpb.RolePermission{Role: role, Permission: string(p)})
+		}
+	}
+	indexed, err := snapshot.IndexPrincipals(set)
+	if err != nil {
+		panic("test principal set is malformed: " + err.Error())
+	}
+	if err := store.ApplyPrincipals(indexed); err != nil {
+		panic("applying the test principal set: " + err.Error())
+	}
 }

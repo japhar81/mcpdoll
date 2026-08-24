@@ -14,6 +14,10 @@ type Querier interface {
 	AddAPIKeyGrant(ctx context.Context, arg AddAPIKeyGrantParams) (ApiKeyGrant, error)
 	AddRevocation(ctx context.Context, arg AddRevocationParams) (Revocation, error)
 	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error
+	// The principal set's version. Monotonic, and what the data plane compares
+	// against what it holds — a set that did not bump would publish a file nobody
+	// applies.
+	BumpPrincipalVersion(ctx context.Context) (RevocationState, error)
 	// Monotonic, and the version the data plane compares against what it holds.
 	BumpRevocationVersion(ctx context.Context) (RevocationState, error)
 	// CountUsersByTenant answers the tenant list in one query rather than one per

@@ -317,17 +317,14 @@ ADRs: [0022](docs/adr/0022-control-plane-sessions-and-permissions.md),
    per operation now, and the console still shows every control to everyone —
    so a tenant admin finds out they cannot mint a signing key by clicking. The
    data is already on the session; nothing reads it.
-2. **A grants-only rebuild that skips discovery.** Every grant change currently
-   re-probes every tenant's backends. Toggling ten grants is ten discovery
-   sweeps, which is exactly the shape ADR 0018 warned about.
-3. **OIDC.** No longer a prerequisite for anything — it produces a `User` and
+2. **OIDC.** No longer a prerequisite for anything — it produces a `User` and
    joins the path local passwords already take (ADR 0022). It is the largest
    remaining gap for an enterprise deployment all the same.
-4. **Admission + the job queue.** The snapshotter is already the piece admission
+3. **Admission + the job queue.** The snapshotter is already the piece admission
    would feed.
-5. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+4. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-6. **Alert rules, starting with `mcpdoll.revocations.age`.** It is the exposure
+5. **Alert rules, starting with `mcpdoll.revocations.age`.** It is the exposure
    window for a revoked credential and the one number in this system that is
    meaningless without an alert on it. `mcpdoll.drift.events` and
    `mcpdoll.snapshot.rejects` are the next two.

@@ -303,8 +303,6 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.Tenants = state.Tenants
-		opts.Principals = state.Principals
-		opts.Catalog = state.Catalog
 	}
 	if req.DiscoverTimeoutMs > 0 {
 		opts.DiscoverTimeout = time.Duration(req.DiscoverTimeoutMs) * time.Millisecond

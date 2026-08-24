@@ -334,14 +334,16 @@ func (h *harness) Publish(opts harnessOptions) {
 			Id: subject, TenantId: "tn_acme", Subject: subject, Grants: grants,
 		})
 	}
-	b.SetRBAC(authz.DefaultCatalog(), principals)
-
 	snap, err := b.Build()
 	require.NoError(h.t, err)
 	signed, err := h.Signer.Sign(snap)
 	require.NoError(h.t, err)
 	_, err = h.Store.Activate(signed, h.Verifier)
 	require.NoError(h.t, err)
+
+	// After the snapshot, because a principal names a tenant the snapshot has
+	// to carry — which is also the order the data plane loads them in.
+	applyPrincipals(h.Store, authz.DefaultCatalog(), principals)
 }
 
 // Connect opens a real MCP client session against the gateway.
@@ -435,4 +437,33 @@ var testSubjects = []string{
 	"bob@example.com",
 	"admin@example.com",
 	"intern@example.com",
+}
+
+// applyPrincipals installs a principal set on a store.
+//
+// Principals live in their own signed artifact now (ADR 0024), so a test that
+// wants a catalog composes one from two things rather than from a builder call.
+// Indexed without a signature, which is what [snapshot.IndexPrincipals] exists
+// for.
+func applyPrincipals(store *snapshot.Store, catalog authz.Catalog, principals []*snapshotpb.Principal) {
+	// One past whatever the store holds. A fixed version would make a second
+	// publish in one test fail the monotonicity check, which is the store doing
+	// its job — the helper just has to respect it.
+	set := &snapshotpb.PrincipalSet{
+		Version:    store.Principals().Version + 1,
+		Principals: principals,
+	}
+	for _, role := range catalog.Roles() {
+		for _, p := range catalog.Permissions(role) {
+			set.RolePermissions = append(set.RolePermissions,
+				&snapshotpb.RolePermission{Role: role, Permission: string(p)})
+		}
+	}
+	indexed, err := snapshot.IndexPrincipals(set)
+	if err != nil {
+		panic("test principal set is malformed: " + err.Error())
+	}
+	if err := store.ApplyPrincipals(indexed); err != nil {
+		panic("applying the test principal set: " + err.Error())
+	}
 }

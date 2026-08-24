@@ -141,7 +141,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	})
 	defer pool.Close()
 
-	identity, err := buildIdentity(cfg, store.Current)
+	identity, err := buildIdentity(cfg, store)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errStartup, err)
 	}
@@ -236,6 +236,22 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("%w: loading the initial snapshot: %w", errStartup, err)
 	}
 
+	// The principal set, before the revocation list and after the snapshot: a
+	// principal references a tenant the snapshot must already carry, and a
+	// revocation refuses a principal this set must already have.
+	principals, err := buildPrincipalSource(cfg, store, verifier, log)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errStartup, err)
+	}
+	if err := principals.LoadOnce(ctx); err != nil {
+		// Not fatal, and loud. A gateway with no principal set authenticates
+		// nobody, which is a legible state — an install that has published
+		// nothing yet — rather than a reason to refuse to start.
+		log.ErrorContext(ctx, "starting without a principal set",
+			slog.String("error", err.Error()),
+			slog.String("detail", "no credential will authenticate until this loads"))
+	}
+
 	// The revocation list, after the snapshot: a list is refused when it was
 	// pruned against a snapshot newer than the one being served, so loading it
 	// first would refuse a perfectly good list on every start.
@@ -307,6 +323,12 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		}
 	}()
 
+	go func() {
+		if err := principals.Run(ctx); err != nil {
+			errs <- fmt.Errorf("principal source: %w", err)
+		}
+	}()
+
 	if revocations != nil {
 		go func() {
 			if err := revocations.Run(ctx); err != nil {
@@ -359,8 +381,8 @@ func shutdown(srv *http.Server, log *slog.Logger) {
 // complete authorization bypass, so it is two refusals rather than one.
 //
 // OIDC and SAML are recorded in docs/deferred.md.
-func buildIdentity(cfg config.Config, current func() *snapshot.View) (edge.IdentityResolver, error) {
-	keys, err := edge.NewAPIKeyIdentityResolver(current)
+func buildIdentity(cfg config.Config, store *snapshot.Store) (edge.IdentityResolver, error) {
+	keys, err := edge.NewAPIKeyIdentityResolver(store)
 	if err != nil {
 		return nil, err
 	}
@@ -375,6 +397,23 @@ func buildIdentity(cfg config.Config, current func() *snapshot.View) (edge.Ident
 		return nil, err
 	}
 	return edge.ChainIdentityResolvers(keys, headers), nil
+}
+
+// buildPrincipalSource wires the principal set.
+//
+// Not optional, unlike the revocation list: without it the gateway has nothing
+// to authenticate against. `Validate` refuses a config that omits the path, so
+// reaching here with an empty one is a programming error rather than a
+// deployment choice.
+func buildPrincipalSource(
+	cfg config.Config, store *snapshot.Store, verifier *snapshot.Verifier, log *slog.Logger,
+) (*snapshot.PrincipalSource, error) {
+	return snapshot.NewPrincipalSource(snapshot.PrincipalSourceOptions{
+		Path:     cfg.DataPlane.PrincipalsPath,
+		Store:    store,
+		Verifier: verifier,
+		Logger:   log,
+	})
 }
 
 // buildRevocationSource wires the revocation list, or returns nil.

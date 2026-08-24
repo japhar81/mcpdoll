@@ -50,7 +50,7 @@ const bumpRevocationVersion = `-- name: BumpRevocationVersion :one
 UPDATE revocation_state
 SET version = version + 1, updated_at = now()
 WHERE id = true
-RETURNING id, version, pruned_through, updated_at
+RETURNING id, version, pruned_through, updated_at, principal_version
 `
 
 // Monotonic, and the version the data plane compares against what it holds.
@@ -62,12 +62,13 @@ func (q *Queries) BumpRevocationVersion(ctx context.Context) (RevocationState, e
 		&i.Version,
 		&i.PrunedThrough,
 		&i.UpdatedAt,
+		&i.PrincipalVersion,
 	)
 	return i, err
 }
 
 const getRevocationState = `-- name: GetRevocationState :one
-SELECT id, version, pruned_through, updated_at FROM revocation_state WHERE id = true
+SELECT id, version, pruned_through, updated_at, principal_version FROM revocation_state WHERE id = true
 `
 
 func (q *Queries) GetRevocationState(ctx context.Context) (RevocationState, error) {
@@ -78,6 +79,7 @@ func (q *Queries) GetRevocationState(ctx context.Context) (RevocationState, erro
 		&i.Version,
 		&i.PrunedThrough,
 		&i.UpdatedAt,
+		&i.PrincipalVersion,
 	)
 	return i, err
 }
@@ -121,7 +123,7 @@ const setRevocationPrunedThrough = `-- name: SetRevocationPrunedThrough :one
 UPDATE revocation_state
 SET version = version + 1, pruned_through = $1, updated_at = now()
 WHERE id = true
-RETURNING id, version, pruned_through, updated_at
+RETURNING id, version, pruned_through, updated_at, principal_version
 `
 
 func (q *Queries) SetRevocationPrunedThrough(ctx context.Context, prunedThrough int64) (RevocationState, error) {
@@ -132,6 +134,7 @@ func (q *Queries) SetRevocationPrunedThrough(ctx context.Context, prunedThrough 
 		&i.Version,
 		&i.PrunedThrough,
 		&i.UpdatedAt,
+		&i.PrincipalVersion,
 	)
 	return i, err
 }

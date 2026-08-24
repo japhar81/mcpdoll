@@ -109,10 +109,7 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 					return configError(err)
 				}
 				opts.Tenants = state.Tenants
-				opts.Principals = state.Principals
-				opts.Catalog = state.Catalog
-				env.Printf("carrying %d tenant(s) and %d principal(s) from the database\n",
-					len(state.Tenants), len(state.Principals))
+				env.Printf("carrying %d tenant(s) from the database\n", len(state.Tenants))
 			} else if bindsAnyTenant(spec) {
 				return configError(fmt.Errorf(
 					"this registry binds backends to tenants, so the build needs the " +

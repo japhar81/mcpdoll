@@ -220,6 +220,13 @@ func New(opts Options) (*Edge, error) {
 	// Registered as the preparer, not an observer, so a snapshot the edge cannot
 	// serve is refused instead of committed.
 	opts.Store.SetPreparer(e.rebuild)
+
+	// A principal's catalog is composed from the snapshot *and* the principal
+	// set, and this cache holds a built MCP server per principal. Purging only
+	// on a snapshot swap would keep serving a catalog built against grants that
+	// have since changed — which is the whole failure ADR 0024 removes, one
+	// layer above where it removed it.
+	opts.Store.ObservePrincipals(func(*snapshot.Principals) { e.principals.Purge() })
 	if current := opts.Store.Current(); current != nil {
 		if err := e.rebuild(current); err != nil {
 			return nil, fmt.Errorf("edge: the snapshot already in the store cannot be served: %w", err)
@@ -435,7 +442,9 @@ func (e *Edge) serverFor(ctx context.Context, principal backends.Principal) (*pr
 		return nil, errors.New("edge: no snapshot")
 	}
 
-	pv, err := view.Principal(ctx, principal.ID)
+	// Through the store, not the view: a principal's catalog is composed from
+	// the snapshot *and* the principal set, which swap independently (ADR 0024).
+	pv, err := e.opts.Store.PrincipalView(ctx, principal.ID)
 	if err != nil {
 		return nil, err
 	}

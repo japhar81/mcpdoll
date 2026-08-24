@@ -95,12 +95,6 @@ func newStoreWithSnapshot(t *testing.T, servingMode snapshotpb.ServingMode) *sna
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
 	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
-	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
-		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
-		Grants: []*snapshotpb.Grant{
-			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
-		},
-	}})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_whs", Name: "warehouse", Prefix: "whs"})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_whs", Name: "warehouse", NamespaceId: "ns_whs",
@@ -126,6 +120,12 @@ func newStoreWithSnapshot(t *testing.T, servingMode snapshotpb.ServingMode) *sna
 	store := snapshot.NewStore(3)
 	_, err = store.Activate(signed, verifier)
 	require.NoError(t, err)
+	applyPrincipals(store, authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
+		},
+	}})
 	return store
 }
 
@@ -301,4 +301,33 @@ func TestRunProbesImmediatelyRatherThanAfterOneInterval(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// applyPrincipals installs a principal set on a store.
+//
+// Principals live in their own signed artifact now (ADR 0024), so a test that
+// wants a catalog composes one from two things rather than from a builder call.
+// Indexed without a signature, which is what [snapshot.IndexPrincipals] exists
+// for.
+func applyPrincipals(store *snapshot.Store, catalog authz.Catalog, principals []*snapshotpb.Principal) {
+	// One past whatever the store holds. A fixed version would make a second
+	// publish in one test fail the monotonicity check, which is the store doing
+	// its job — the helper just has to respect it.
+	set := &snapshotpb.PrincipalSet{
+		Version:    store.Principals().Version + 1,
+		Principals: principals,
+	}
+	for _, role := range catalog.Roles() {
+		for _, p := range catalog.Permissions(role) {
+			set.RolePermissions = append(set.RolePermissions,
+				&snapshotpb.RolePermission{Role: role, Permission: string(p)})
+		}
+	}
+	indexed, err := snapshot.IndexPrincipals(set)
+	if err != nil {
+		panic("test principal set is malformed: " + err.Error())
+	}
+	if err := store.ApplyPrincipals(indexed); err != nil {
+		panic("applying the test principal set: " + err.Error())
+	}
 }

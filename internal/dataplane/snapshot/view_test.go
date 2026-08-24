@@ -18,6 +18,20 @@ import (
 // and a billing backend, exposed through one bundle to one audience.
 type fixture struct {
 	b *Builder
+	// principals travel in their own artifact now (ADR 0024). The fixture holds
+	// them so a test can set them independently of the snapshot, which is the
+	// whole point of the separation.
+	catalog    authz.Catalog
+	principals []*snapshotpb.Principal
+	// store is populated by build() and is what composes a PrincipalView, since
+	// composition is a function of both artifacts.
+	store *Store
+}
+
+// setRBAC replaces the fixture's principal set. Named for what it used to be on
+// the builder, so the call sites read the same.
+func (f *fixture) setRBAC(catalog authz.Catalog, principals []*snapshotpb.Principal) {
+	f.catalog, f.principals = catalog, principals
 }
 
 func newFixture(version int64) *fixture {
@@ -90,6 +104,27 @@ func (f *fixture) build(t *testing.T) *View {
 	require.NoError(t, err)
 	v, err := Build(snap)
 	require.NoError(t, err)
+
+	// Both artifacts into a store, because a PrincipalView is composed from the
+	// pair. A test that only needs snapshot facts ignores the store entirely.
+	f.store = NewStore(3)
+	f.store.activateForTest(v)
+	if f.catalog != nil || len(f.principals) > 0 {
+		set := EmptyPrincipals()
+		set.Version = 1
+		set.catalog = f.catalog
+		if set.catalog == nil {
+			set.catalog = authz.Catalog{}
+		}
+		for _, p := range f.principals {
+			set.byID[p.Id] = p
+			if p.KeyPrefix != "" {
+				set.byKeyPrefix[p.KeyPrefix] = p
+			}
+		}
+		require.NoError(t, f.store.ApplyPrincipals(set))
+	}
+	v.fixtureStore = f.store
 	return v
 }
 
@@ -108,7 +143,7 @@ func defaultFixture(version int64) *fixture {
 
 	// A principal holding the whole toolset, which is the shape most tests
 	// want: everything admitted for the tenant is visible to it.
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
 		Grants: []*snapshotpb.Grant{
 			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "support")},
@@ -122,9 +157,35 @@ func defaultFixture(version int64) *fixture {
 // the tenant.
 func (v *View) principalView(t *testing.T) *PrincipalView {
 	t.Helper()
-	pv, err := v.Principal(context.Background(), "usr_alice")
+
+	// A view built outside the fixture — the store tests construct their own —
+	// has no store to compose against. Give it one rather than requiring every
+	// such test to know that a PrincipalView is now a function of two
+	// artifacts.
+	store := v.fixtureStore
+	if store == nil {
+		store = NewStore(3)
+		store.activateForTest(v)
+		require.NoError(t, store.ApplyPrincipals(defaultPrincipals()))
+	}
+	pv, err := store.PrincipalView(context.Background(), "usr_alice")
 	require.NoError(t, err)
 	return pv
+}
+
+// defaultPrincipals is alice holding the whole support toolset — the shape most
+// assertions want.
+func defaultPrincipals() *Principals {
+	set := EmptyPrincipals()
+	set.Version = 1
+	set.catalog = authz.DefaultCatalog()
+	set.byID["usr_alice"] = &snapshotpb.Principal{
+		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "support")},
+		},
+	}
+	return set
 }
 
 func TestBuildIndexesEverything(t *testing.T) {
@@ -226,7 +287,7 @@ func TestToolsetPriorityLeadsTheOrdering(t *testing.T) {
 	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "get_invoice",
 		snapshotpb.EffectClass_EFFECT_CLASS_READ)
 
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
 		Grants: []*snapshotpb.Grant{
 			{Role: authz.RoleToolUser, Scope: authz.TenantScope("acme")},
@@ -254,7 +315,7 @@ func TestAToolsetGrantSeesExactlyThatToolset(t *testing.T) {
 	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "void_invoice",
 		snapshotpb.EffectClass_EFFECT_CLASS_DESTRUCTIVE)
 
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
 		Grants: []*snapshotpb.Grant{
 			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "crm")},
@@ -268,7 +329,7 @@ func TestAToolsetGrantSeesExactlyThatToolset(t *testing.T) {
 
 func TestASingleToolGrantSeesOneTool(t *testing.T) {
 	f := defaultFixture(1)
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "usr_bob", TenantId: "tn_acme", Subject: "bob@example.com",
 		Grants: []*snapshotpb.Grant{
 			{Role: authz.RoleToolUser,
@@ -277,7 +338,7 @@ func TestASingleToolGrantSeesOneTool(t *testing.T) {
 	}})
 
 	v := f.build(t)
-	pv, err := v.Principal(context.Background(), "usr_bob")
+	pv, err := v.fixtureStore.PrincipalView(context.Background(), "usr_bob")
 	require.NoError(t, err)
 
 	// "Give Bob one tool" is a grant at a deeper scope, not a bespoke bundle.
@@ -286,12 +347,12 @@ func TestASingleToolGrantSeesOneTool(t *testing.T) {
 
 func TestAPrincipalWithNoGrantsGetsAnEmptyCatalogNotAnError(t *testing.T) {
 	f := defaultFixture(1)
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
 		Id: "usr_new", TenantId: "tn_acme", Subject: "new@example.com",
 	}})
 
 	v := f.build(t)
-	pv, err := v.Principal(context.Background(), "usr_new")
+	pv, err := v.fixtureStore.PrincipalView(context.Background(), "usr_new")
 
 	// The correct state for a just-provisioned user under open_no_access
 	// signup. An error here would make "exists but holds nothing" look like a
@@ -302,7 +363,7 @@ func TestAPrincipalWithNoGrantsGetsAnEmptyCatalogNotAnError(t *testing.T) {
 
 func TestListAndCallAreSeparatePrivileges(t *testing.T) {
 	f := defaultFixture(1)
-	f.b.SetRBAC(authz.Catalog{
+	f.setRBAC(authz.Catalog{
 		// A role that may see tools without invoking them. The reverse
 		// combination is refused at admission (ADR 0015).
 		"reader": {authz.PermToolList: {}},
@@ -314,7 +375,7 @@ func TestListAndCallAreSeparatePrivileges(t *testing.T) {
 	}})
 
 	v := f.build(t)
-	pv, err := v.Principal(context.Background(), "usr_carol")
+	pv, err := v.fixtureStore.PrincipalView(context.Background(), "usr_carol")
 	require.NoError(t, err)
 
 	require.NotEmpty(t, pv.Tools, "the reader can see the catalog")
@@ -331,7 +392,7 @@ func TestTwoPrincipalsInOneTenantGetDifferentCatalogs(t *testing.T) {
 	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "get_invoice",
 		snapshotpb.EffectClass_EFFECT_CLASS_READ)
 
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
 		{
 			Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
 			Grants: []*snapshotpb.Grant{{
@@ -347,9 +408,9 @@ func TestTwoPrincipalsInOneTenantGetDifferentCatalogs(t *testing.T) {
 	})
 
 	v := f.build(t)
-	alice, err := v.Principal(context.Background(), "usr_alice")
+	alice, err := v.fixtureStore.PrincipalView(context.Background(), "usr_alice")
 	require.NoError(t, err)
-	bob, err := v.Principal(context.Background(), "usr_bob")
+	bob, err := v.fixtureStore.PrincipalView(context.Background(), "usr_bob")
 	require.NoError(t, err)
 
 	// Same URL, same tenant, different catalogs. This is the property that
@@ -361,9 +422,9 @@ func TestTwoPrincipalsInOneTenantGetDifferentCatalogs(t *testing.T) {
 func TestPrincipalViewsAreCachedPerView(t *testing.T) {
 	v := defaultFixture(1).build(t)
 
-	first, err := v.Principal(context.Background(), "usr_alice")
+	first, err := v.fixtureStore.PrincipalView(context.Background(), "usr_alice")
 	require.NoError(t, err)
-	second, err := v.Principal(context.Background(), "usr_alice")
+	second, err := v.fixtureStore.PrincipalView(context.Background(), "usr_alice")
 	require.NoError(t, err)
 
 	// The same pointer: composing is cheap but not free, and a connection per
@@ -384,7 +445,7 @@ func TestPrincipalViewsAreCachedPerView(t *testing.T) {
 func TestEveryCatalogIsPrivate(t *testing.T) {
 	v := defaultFixture(1).build(t)
 
-	pv, err := v.Principal(context.Background(), "usr_alice")
+	pv, err := v.fixtureStore.PrincipalView(context.Background(), "usr_alice")
 	require.NoError(t, err)
 
 	// Serving one principal's catalog from a shared cache to another principal
@@ -619,7 +680,7 @@ func TestPluginsAreScopedToToolsets(t *testing.T) {
 		Priority: 20,
 	})
 
-	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
+	f.setRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
 		{
 			Id: "usr_crm", TenantId: "tn_acme", Subject: "crm@example.com",
 			Grants: []*snapshotpb.Grant{{
@@ -636,12 +697,12 @@ func TestPluginsAreScopedToToolsets(t *testing.T) {
 
 	v := f.build(t)
 
-	crm, err := v.Principal(context.Background(), "usr_crm")
+	crm, err := v.fixtureStore.PrincipalView(context.Background(), "usr_crm")
 	require.NoError(t, err)
 	require.Equal(t, []string{"scoped", "global"},
 		pluginNames(crm.PluginsFor(snapshotpb.Hook_HOOK_ON_REQUEST)))
 
-	bil, err := v.Principal(context.Background(), "usr_bil")
+	bil, err := v.fixtureStore.PrincipalView(context.Background(), "usr_bil")
 	require.NoError(t, err)
 
 	// Scoping now follows the principal's grants: a plugin limited to a

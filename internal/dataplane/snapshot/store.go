@@ -3,6 +3,7 @@
 package snapshot
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -40,7 +41,19 @@ func (e *ErrNotFound) Error() string {
 type Store struct {
 	current atomic.Pointer[View]
 
-	// revocations is the second signed artifact (ADR 0023). Held beside the
+	// principals is who exists and what they hold (ADR 0024). Held beside the
+	// snapshot rather than inside it because it changes on a different clock:
+	// this one costs a discovery sweep to rebuild, that one costs nothing.
+	principals atomic.Pointer[Principals]
+
+	// composed caches PrincipalViews under both versions. A composed view is a
+	// function of two artifacts now, so caching under either alone would serve
+	// a stale catalog after the other moved — the exact coupling ADR 0024
+	// removes, reintroduced one layer down.
+	composedMu sync.RWMutex
+	composed   map[composedKey]*PrincipalView
+
+	// revocations is the third signed artifact (ADR 0023). Held beside the
 	// snapshot rather than inside it, because it changes on a different clock:
 	// a snapshot is republished when configuration changes, a revocation list
 	// the moment somebody revokes something.
@@ -60,6 +73,13 @@ type Store struct {
 	// rebuild its per-audience MCP servers exactly once per swap rather than
 	// checking for a new snapshot on every request.
 	observers []func(*View)
+
+	// principalObservers are notified after a principal set swaps, so a caller
+	// holding anything derived from one — the edge caches a built MCP server
+	// per principal — can drop it. Without this, the edge keeps serving a
+	// catalog composed against grants that have since changed, which is the
+	// coupling ADR 0024 removes reappearing one layer up.
+	principalObservers []func(*Principals)
 
 	// onReject is notified when a snapshot is refused, for whatever the caller
 	// wants to do about it.
@@ -103,6 +123,115 @@ func NewStore(maxHistory int) *Store {
 // a snapshot is a real state, and it must fail requests with a clear "not ready"
 // rather than panic.
 func (s *Store) Current() *View { return s.current.Load() }
+
+// composedKey identifies a cached PrincipalView.
+type composedKey struct {
+	snapshotVersion  int64
+	principalVersion int64
+	principalID      string
+}
+
+// Principals returns the set in effect. Never nil.
+func (s *Store) Principals() *Principals {
+	if p := s.principals.Load(); p != nil {
+		return p
+	}
+	return EmptyPrincipals()
+}
+
+// ApplyPrincipals swaps in a newer set.
+//
+// Same monotonicity rule as the snapshot and the revocation list: a replayed
+// older artifact must not roll authorization backwards.
+func (s *Store) ApplyPrincipals(next *Principals) error {
+	if next == nil {
+		return errors.New("snapshot: nothing to apply")
+	}
+	if held := s.principals.Load(); held != nil && next.Version <= held.Version {
+		return ErrStalePrincipals
+	}
+	s.principals.Store(next)
+
+	// Every composed view was built against the previous set. Dropping the
+	// whole map rather than invalidating entry by entry, because a stale view
+	// surviving a swap would serve revoked access and per-entry invalidation is
+	// a chance to miss one.
+	s.composedMu.Lock()
+	s.composed = nil
+	s.composedMu.Unlock()
+
+	s.mu.Lock()
+	observers := make([]func(*Principals), len(s.principalObservers))
+	copy(observers, s.principalObservers)
+	s.mu.Unlock()
+	for _, fn := range observers {
+		fn(next)
+	}
+	return nil
+}
+
+// ObservePrincipals registers a callback run after each principal-set swap.
+func (s *Store) ObservePrincipals(fn func(*Principals)) {
+	s.mu.Lock()
+	s.principalObservers = append(s.principalObservers, fn)
+	s.mu.Unlock()
+}
+
+// PrincipalView composes one principal's catalog from both artifacts.
+//
+// Lazily, on first connect, and cached until either artifact swaps. The cost is
+// a scope test per admitted tool in the principal's tenant against a compiled
+// decider — nanoseconds each (ADR 0015).
+func (s *Store) PrincipalView(ctx context.Context, id string) (*PrincipalView, error) {
+	view := s.Current()
+	if view == nil {
+		return nil, errors.New("snapshot: no snapshot")
+	}
+	principals := s.Principals()
+
+	key := composedKey{view.Version, principals.Version, id}
+	s.composedMu.RLock()
+	cached, ok := s.composed[key]
+	s.composedMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	principal, ok := principals.ByID(id)
+	if !ok {
+		return nil, fmt.Errorf(
+			"snapshot: no principal %q in principal set %d", id, principals.Version)
+	}
+	tenant := view.TenantByID(principal.TenantId)
+	if tenant == nil {
+		// The two artifacts disagree: this principal belongs to a tenant the
+		// serving snapshot does not carry. Refused rather than served an empty
+		// catalog, because the two states need different fixes.
+		return nil, fmt.Errorf(
+			"snapshot: principal %q belongs to tenant %q, which snapshot %d does not carry",
+			principal.Subject, principal.TenantId, view.Version)
+	}
+
+	decide, err := principals.decider(ctx, principal)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: compiling grants for %q: %w", principal.Subject, err)
+	}
+	composed := view.composePrincipal(principal, tenant, decide)
+
+	s.composedMu.Lock()
+	// Re-check: two connections for one principal can race here, and the second
+	// must not replace a view the first already handed out.
+	if s.composed == nil {
+		s.composed = map[composedKey]*PrincipalView{}
+	}
+	if existing, dup := s.composed[key]; dup {
+		s.composedMu.Unlock()
+		return existing, nil
+	}
+	s.composed[key] = composed
+	s.composedMu.Unlock()
+	return composed, nil
+}
 
 // Revocations returns the list in effect. Never nil: a gateway that has never
 // loaded one and one that loaded an empty one behave identically, and they

@@ -37,6 +37,46 @@ message SignedSnapshot {
   string algorithm = 4;
 }
 
+// SignedPrincipalSet is who exists and what they hold.
+//
+// Separate from the snapshot because it changes on a different clock: a
+// snapshot is republished when an operator changes serving configuration and
+// costs a discovery sweep of every backend, while a principal set changes
+// whenever somebody is hired, a key is minted, or access is granted — and costs
+// nothing (ADR 0024).
+//
+// Binding them together meant minting a key required re-probing every backend,
+// and made a grant — which names a *scope*, deliberately independent of what
+// that scope currently admits — depend on the catalog's publish cycle.
+message SignedPrincipalSet {
+  // Serialized PrincipalSet message.
+  bytes set_bytes = 1;
+
+  string key_id = 2;
+
+  // Ed25519 signature over PRINCIPAL_SIGNING_CONTEXT || set_bytes. Its own
+  // context, so a signature minted over one artifact cannot verify against
+  // another.
+  bytes signature = 3;
+
+  string algorithm = 4;
+}
+
+// PrincipalSet is the compiled RBAC the data plane evaluates against.
+message PrincipalSet {
+  // Monotonic. The data plane refuses a set no newer than the one it holds.
+  int64 version = 1;
+
+  google.protobuf.Timestamp issued_at = 2;
+
+  // The role catalog. Travels with the principals because a grant naming a role
+  // the catalog does not define authorizes nothing — splitting them would let
+  // the two arrive out of step and silently deauthorize everyone.
+  repeated RolePermission role_permissions = 3;
+
+  repeated Principal principals = 4;
+}
+
 // SignedRevocationList is the second signed artifact the data plane loads.
 //
 // It exists because everything else in this system takes effect at snapshot
@@ -129,10 +169,10 @@ message Snapshot {
   // Toolsets replace bundles: the unit an administrator grants (ADR 0016).
   repeated Toolset toolsets = 15;
 
-  // Compiled RBAC. Grants travel in the snapshot so the data plane needs
-  // nothing from the control plane to decide what a principal may see —
-  // ADR 0018. Revocation therefore takes effect at snapshot latency.
-  RBAC rbac = 16;
+  // 16 was `rbac`. Principals moved to their own signed artifact (ADR 0024):
+  // they change whenever somebody is hired or a key is minted, and carrying
+  // them here meant that cost a discovery sweep of every backend.
+  reserved 16;
 }
 
 // CatalogDefaults are the deployment-wide list-result settings. Per-toolset and
@@ -353,17 +393,6 @@ message Toolset {
 
   int32 token_budget = 4;
   int32 ttl_ms = 5;
-}
-
-// RBAC is the compiled authorization state: the role catalog plus every
-// principal's grants.
-//
-// It ships inside the signed snapshot so the data plane can decide a catalog
-// without asking anything (ADR 0018). Signing it matters as much as signing the
-// tools: grants are precisely the part an attacker would want to change.
-message RBAC {
-  repeated RolePermission role_permissions = 1;
-  repeated Principal principals = 2;
 }
 
 // RolePermission is a Casbin `p` policy.
