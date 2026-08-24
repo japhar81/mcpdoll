@@ -117,13 +117,17 @@ done
 # Only ever run by the dev stack. The password is deliberately self-describing:
 # anything reading `demo-password-not-a-secret` in a production database is a
 # finding, not a mystery.
-if have_user platform dev-admin@mcpdoll.local; then
+# In `acme`, not `platform`. Grants are global either way — this account
+# administers everything — but a principal's *catalog* comes from their own
+# tenant, and `platform` has no backend bindings. An administrator whose
+# gateway view is permanently empty is a bad first five minutes.
+if have_user acme dev-admin@mcpdoll.local; then
   log "console admin already exists"
 else
   log "creating the console admin"
-  mcpdoll users create dev-admin@mcpdoll.local --tenant platform \
+  mcpdoll users create dev-admin@mcpdoll.local --tenant acme \
     --name "Console Admin" --password "demo-password-not-a-secret" >/dev/null
-  mcpdoll users grants set dev-admin@mcpdoll.local --tenant platform \
+  mcpdoll users grants set dev-admin@mcpdoll.local --tenant acme \
     --grant "platform_admin@*" >/dev/null
 fi
 

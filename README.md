@@ -84,7 +84,7 @@ rather than a mystery.
 
 | Tenant | Email | Password | What it can do |
 |---|---|---|---|
-| `platform` | `dev-admin@mcpdoll.local` | `demo-password-not-a-secret` | Everything. **Start here.** |
+| `acme` | `dev-admin@mcpdoll.local` | `demo-password-not-a-secret` | Everything. **Start here.** |
 | `acme` | `platform@acme.example` | `demo-password-not-a-secret` | Tenant admin for `acme` |
 | `acme` | `support@acme.example` | `demo-password-not-a-secret` | Tool access only — signs in, sees nothing |
 

@@ -40,21 +40,26 @@ func (e *apiError) Error() string {
 // apiCall performs one request and decodes the result into out.
 //
 // out may be nil for operations that answer 204. body may be nil for reads.
-func apiCall(ctx context.Context, env *Env, method, path string, body, out any) error {
+// newAPIRequest builds an authenticated request against the control plane.
+//
+// Split out of [apiCall] so a caller that needs an extra header — inspection
+// presents a *second* credential alongside the operator's — can build one
+// without reimplementing the auth and encoding.
+func newAPIRequest(ctx context.Context, env *Env, method, path string, body any) (*http.Request, error) {
 	url := strings.TrimRight(env.APIURL, "/") + path
 
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		reader = bytes.NewReader(encoded)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -62,8 +67,21 @@ func apiCall(ctx context.Context, env *Env, method, path string, body, out any) 
 	if token := env.Token(); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	return req, nil
+}
 
-	resp, err := http.DefaultClient.Do(req)
+// httpClient is the client every control-plane call uses.
+func httpClient() *http.Client {
+	return &http.Client{Timeout: apiTimeout}
+}
+
+func apiCall(ctx context.Context, env *Env, method, path string, body, out any) error {
+	req, err := newAPIRequest(ctx, env, method, path, body)
+	if err != nil {
+		return err
+	}
+
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return unavailableError(fmt.Errorf(
 			"cannot reach the control plane at %s: %w", env.APIURL, err))
