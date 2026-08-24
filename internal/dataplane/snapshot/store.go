@@ -40,6 +40,15 @@ func (e *ErrNotFound) Error() string {
 type Store struct {
 	current atomic.Pointer[View]
 
+	// revocations is the second signed artifact (ADR 0023). Held beside the
+	// snapshot rather than inside it, because it changes on a different clock:
+	// a snapshot is republished when configuration changes, a revocation list
+	// the moment somebody revokes something.
+	//
+	// It only ever subtracts. Nothing read from here can authorize anything, so
+	// an *allowed* action is still explained by the snapshot alone.
+	revocations atomic.Pointer[Revocations]
+
 	mu      sync.Mutex
 	history []*historyEntry
 	// maxHistory bounds retained snapshots. History exists so an operator can
@@ -94,6 +103,40 @@ func NewStore(maxHistory int) *Store {
 // a snapshot is a real state, and it must fail requests with a clear "not ready"
 // rather than panic.
 func (s *Store) Current() *View { return s.current.Load() }
+
+// Revocations returns the list in effect. Never nil: a gateway that has never
+// loaded one and one that loaded an empty one behave identically, and they
+// should — neither has anything to refuse.
+func (s *Store) Revocations() *Revocations {
+	if r := s.revocations.Load(); r != nil {
+		return r
+	}
+	return EmptyRevocations()
+}
+
+// ApplyRevocations swaps in a newer list, or refuses it and says why.
+//
+// Two refusals, and both keep strictly more denials than accepting would:
+//
+//   - A list no newer than the one held. Same monotonicity rule as the
+//     snapshot, and for the same reason: a replayed older artifact must not
+//     roll policy backwards.
+//   - A list pruned against a snapshot newer than the one being served.
+//     Accepting it would silently drop denials this snapshot has not absorbed.
+//     It self-corrects the moment that snapshot lands.
+func (s *Store) ApplyRevocations(next *Revocations) error {
+	if next == nil {
+		return errors.New("snapshot: nothing to apply")
+	}
+	if held := s.revocations.Load(); held != nil && next.Version <= held.Version {
+		return ErrStaleRevocations
+	}
+	if serving := s.Version(); next.PrunedThroughVersion > serving {
+		return ErrRevocationsAheadOfSnapshot
+	}
+	s.revocations.Store(next)
+	return nil
+}
 
 // Version returns the serving version, or 0 if nothing is active.
 func (s *Store) Version() int64 {

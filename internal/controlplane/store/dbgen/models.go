@@ -56,9 +56,39 @@ type IdentityProvider struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type Revocation struct {
+	ID           int64
+	PrincipalID  uuid.UUID
+	Kind         string
+	UserID       *uuid.UUID
+	Reason       *string
+	RevokedAt    pgtype.Timestamptz
+	SupersededBy *int64
+}
+
+type RevocationState struct {
+	ID            bool
+	Version       int64
+	PrunedThrough int64
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type RolePermission struct {
 	Role       string
 	Permission string
+}
+
+type Session struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Prefix     string
+	Hash       string
+	UserAgent  *string
+	Ip         *string
+	CreatedAt  pgtype.Timestamptz
+	LastSeenAt pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
+	RevokedAt  pgtype.Timestamptz
 }
 
 type Tenant struct {

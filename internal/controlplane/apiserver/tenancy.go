@@ -135,6 +135,20 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Filtered, not refused. A tenant admin can legitimately see one of these,
+	// and answering "forbidden" to a question the caller is partly entitled to
+	// ask is useless to anyone who is not a platform administrator (ADR 0022).
+	caller := CallerFrom(r.Context())
+	visible := out.Registered[:0]
+	for _, t := range out.Registered {
+		if caller.Can(authz.PermTenantManage, authz.TenantScope(t.Slug)) ||
+			caller.Can(authz.PermUserManage, authz.TenantScope(t.Slug)) ||
+			caller.Can(authz.PermGatewayInspect, authz.TenantScope(t.Slug)) {
+			visible = append(visible, t)
+		}
+	}
+	out.Registered = visible
+
 	sort.Slice(out.Registered, func(i, j int) bool {
 		return out.Registered[i].Slug < out.Registered[j].Slug
 	})
@@ -218,11 +232,35 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	if st == nil {
 		return
 	}
+	// Revoke before deleting. The cascade removes the rows, so afterwards
+	// there is nothing left to enumerate — and the keys those rows described
+	// are still in the serving snapshot, working.
+	users, err := st.ListUsersByTenant(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	for _, u := range users {
+		if _, err := st.RevokeUser(r.Context(), u.ID, "tenant deleted"); err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+	}
+	problem := s.publishRevocations(r.Context())
+
 	// Cascades to the tenant's users, their grants, and their keys. That is the
 	// schema's doing rather than this handler's, which is what makes it
 	// complete: nobody has to remember every table.
 	if err := st.DeleteTenant(r.Context(), id); err != nil {
 		s.writeStoreError(w, err)
+		return
+	}
+	if problem != "" {
+		writeJSON(w, s.log, http.StatusAccepted, Error{
+			Code:     CodeUnavailable,
+			Message:  "the tenant was deleted, but its credentials are not refused yet",
+			Problems: []string{problem},
+		})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -338,10 +376,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+
+	// Disabling is the offboarding path, and it is the more common of the two
+	// cases ADR 0023 exists for. Revoking the keys alone would leave it
+	// incomplete in the way that is hardest to notice: the person is gone from
+	// the console and their automation is still running.
+	problem := ""
+	if req.Status == "disabled" {
+		if _, err := st.RevokeUser(r.Context(), id, "user disabled"); err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		problem = s.publishRevocations(r.Context())
+	}
+
 	user, slug, err := s.userWithTenant(r, id)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
+	}
+	if problem != "" {
+		w.Header().Set("X-MCPDoll-Warning", problem)
 	}
 	writeJSON(w, s.log, http.StatusOK, userOf(user, slug))
 }
@@ -504,6 +559,7 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	caller := CallerFrom(r.Context())
 	scopes := s.servingScopes()
 	want := make([]authz.Grant, 0, len(req.Grants))
 	for _, g := range req.Grants {
@@ -517,6 +573,20 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 		}
 		if problem := scopes.check(g.Scope); problem != "" {
 			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, problem)
+			return
+		}
+		// You cannot grant what you do not hold.
+		//
+		// The route already checked role:manage at the *target user's* tenant.
+		// This checks it at the scope of each grant being issued, which is a
+		// different question — without it, a tenant admin could grant
+		// themselves platform_admin at `*` and the permission set's whole
+		// structure would be decoration (ADR 0022).
+		if !caller.Can(authz.PermRoleManage, g.Scope) {
+			writeError(w, s.log, http.StatusForbidden, CodeForbidden,
+				"you cannot grant "+g.Role+" at "+g.Scope+
+					": issuing a grant requires role:manage at a scope covering it, "+
+					"and you do not hold it there")
 			return
 		}
 		want = append(want, authz.Grant{Role: g.Role, Scope: g.Scope})
@@ -652,6 +722,25 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := st.RevokeAPIKey(r.Context(), id); err != nil {
 		s.writeStoreError(w, err)
+		return
+	}
+
+	// The database row is marked, and that alone stops nothing: the data plane
+	// verifies against the snapshot it holds. Publishing the revocation list is
+	// what makes this immediate (ADR 0023).
+	if _, err := st.Revoke(r.Context(), id, "api_key", nil, "revoked via the API"); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if problem := s.publishRevocations(r.Context()); problem != "" {
+		// The key *is* revoked. It simply takes effect at snapshot latency
+		// instead of immediately, and saying so is better than a 204 that
+		// implies more than happened.
+		writeJSON(w, s.log, http.StatusAccepted, Error{
+			Code:     CodeUnavailable,
+			Message:  "the key was revoked, but not immediately",
+			Problems: []string{problem},
+		})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

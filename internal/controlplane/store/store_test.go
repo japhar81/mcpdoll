@@ -323,7 +323,7 @@ func TestRevokingTheUsersGrantKillsTheKeyWithoutTouchingIt(t *testing.T) {
 	require.NotEmpty(t, resolved.Grants)
 
 	// The admin revokes the *user's* grant. Nobody touches the key.
-	require.NoError(t, s.Revoke(ctx, user.ID, ownerGrant))
+	require.NoError(t, s.RevokeGrant(ctx, user.ID, ownerGrant))
 
 	resolved, err = s.ResolveAPIKey(ctx, plaintext)
 	require.NoError(t, err, "the key still authenticates — it just carries nothing")

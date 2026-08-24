@@ -12,7 +12,10 @@ import (
 
 type Querier interface {
 	AddAPIKeyGrant(ctx context.Context, arg AddAPIKeyGrantParams) (ApiKeyGrant, error)
+	AddRevocation(ctx context.Context, arg AddRevocationParams) (Revocation, error)
 	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error
+	// Monotonic, and the version the data plane compares against what it holds.
+	BumpRevocationVersion(ctx context.Context) (RevocationState, error)
 	// CountUsersByTenant answers the tenant list in one query rather than one per
 	// tenant. A tenant list is the first screen an operator opens, and N+1 there is
 	// N+1 forever.
@@ -20,15 +23,20 @@ type Querier interface {
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateGrant(ctx context.Context, arg CreateGrantParams) (Grant, error)
 	CreateIdentityProvider(ctx context.Context, arg CreateIdentityProviderParams) (IdentityProvider, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
+	// Rows whose credential could not authenticate anyway. Kept for a grace period
+	// so a session that expired an hour ago still explains itself in an audit.
+	DeleteExpiredSessions(ctx context.Context) error
 	DeleteIdentityProvider(ctx context.Context, id uuid.UUID) error
 	DeleteRole(ctx context.Context, role string) error
 	// The slug is deliberately absent from UpdateTenant: it appears in every scope
 	// string, so renaming a tenant would orphan every grant naming it.
 	DeleteTenant(ctx context.Context, id uuid.UUID) error
 	DeleteUser(ctx context.Context, id uuid.UUID) error
+	GetAPIKey(ctx context.Context, id uuid.UUID) (ApiKey, error)
 	// The authentication path. Looks up by the public prefix; the caller then
 	// verifies the secret against `hash`. Revoked and expired keys are returned
 	// rather than filtered, so the caller can tell "revoked" from "no such key" —
@@ -36,6 +44,12 @@ type Querier interface {
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	GetAuthSettings(ctx context.Context) (AuthSetting, error)
 	GetIdentityProviderBySlug(ctx context.Context, slug string) (IdentityProvider, error)
+	GetRevocationState(ctx context.Context) (RevocationState, error)
+	// The authentication path. Looks up by the public prefix; the caller verifies
+	// the secret against `hash`. Revoked and expired rows are returned rather than
+	// filtered, so the caller can tell "expired" from "no such session" — the two
+	// deserve different log lines and the same response.
+	GetSessionByPrefix(ctx context.Context, prefix string) (Session, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	GetTenantBySlug(ctx context.Context, slug string) (Tenant, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
@@ -43,6 +57,7 @@ type Querier interface {
 	GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error)
 	LinkIdentity(ctx context.Context, arg LinkIdentityParams) (UserIdentity, error)
 	ListAPIKeyGrants(ctx context.Context, apiKeyID uuid.UUID) ([]ApiKeyGrant, error)
+	ListAPIKeyIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ApiKey, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	// Every key that could authenticate right now, across every tenant. This is
@@ -52,6 +67,10 @@ type Querier interface {
 	// authenticate would put a dead credential's digest into a signed file for no
 	// reason.
 	ListActiveAPIKeys(ctx context.Context) ([]ApiKey, error)
+	// Everything the data plane must still refuse. A superseded entry is one a
+	// published snapshot already omits, so carrying it would only make the signed
+	// list bigger.
+	ListActiveRevocations(ctx context.Context) ([]Revocation, error)
 	ListAllAPIKeyGrants(ctx context.Context) ([]ApiKeyGrant, error)
 	// Every user's grants in one query. A snapshot build needs all of them, and
 	// asking per user turns a publish into one round trip per person on staff.
@@ -65,14 +84,25 @@ type Querier interface {
 	ListIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
 	ListIdentityProviders(ctx context.Context) ([]IdentityProvider, error)
 	ListRolePermissions(ctx context.Context) ([]RolePermission, error)
+	ListSessionsByUser(ctx context.Context, userID uuid.UUID) ([]Session, error)
 	ListTenants(ctx context.Context) ([]Tenant, error)
 	ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]User, error)
 	RemoveRolePermission(ctx context.Context, arg RemoveRolePermissionParams) error
 	RevokeAPIKey(ctx context.Context, id uuid.UUID) error
 	RevokeGrant(ctx context.Context, arg RevokeGrantParams) error
 	RevokeGrantByID(ctx context.Context, id uuid.UUID) error
+	RevokeSession(ctx context.Context, id uuid.UUID) error
+	// Signing somebody out everywhere. Returns the ids so each becomes a revocation
+	// entry: a session already handed out is a live credential, and marking the row
+	// is not the same as stopping it.
+	RevokeSessionsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	SetRevocationPrunedThrough(ctx context.Context, prunedThrough int64) (RevocationState, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
+	// Called when a snapshot is published: every revocation committed before the
+	// build read the database is already reflected in it.
+	SupersedeRevocationsBefore(ctx context.Context, arg SupersedeRevocationsBeforeParams) error
 	TouchAPIKey(ctx context.Context, id uuid.UUID) error
+	TouchSession(ctx context.Context, id uuid.UUID) error
 	UnlinkIdentity(ctx context.Context, id uuid.UUID) error
 	UpdateAuthSettings(ctx context.Context, arg UpdateAuthSettingsParams) (AuthSetting, error)
 	UpdateIdentityProvider(ctx context.Context, arg UpdateIdentityProviderParams) (IdentityProvider, error)

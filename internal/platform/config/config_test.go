@@ -33,6 +33,7 @@ dataplane:
   listen_addr: ":9999"
   snapshot_source: file
   snapshot_path: /var/lib/mcpdoll/snapshot.pb
+  revocations_path: /var/lib/mcpdoll/revocations.pb
   trusted_signing_keys:
     - AAAA
     - BBBB
@@ -298,4 +299,44 @@ func TestParseLevel(t *testing.T) {
 	}
 	_, err := ParseLevel("verbose")
 	require.ErrorContains(t, err, "must be one of")
+}
+
+// TestProductionRequiresARevocationPath: without one, revoking a credential
+// takes effect at the next snapshot rather than immediately — which may be
+// never, if nobody publishes.
+//
+// A startup error rather than a warning, for the same reason `--allow-anonymous`
+// has to be typed: the unsafe state must not be reachable by omission. A
+// deployment that genuinely wants snapshot-latency revocation can say so by
+// running as staging, which is a thing somebody has to choose.
+func TestProductionRequiresARevocationPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prod.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+env: production
+dataplane:
+  snapshot_source: file
+  snapshot_path: /var/lib/mcpdoll/snapshot.pb
+  trusted_signing_keys: [AAAA]
+`), 0o600))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "revocations_path")
+	require.Contains(t, err.Error(), "keeps working until the next snapshot")
+}
+
+// TestDevelopmentDoesNotRequireOne: `make dev` must not be a configuration
+// exercise, and a developer poking at a gateway is not the threat model.
+func TestDevelopmentDoesNotRequireOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dev.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+env: development
+dataplane:
+  snapshot_source: file
+  snapshot_path: /tmp/snapshot.pb
+  trusted_signing_keys: [AAAA]
+`), 0o600))
+
+	_, err := Load(path)
+	require.NoError(t, err)
 }

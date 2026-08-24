@@ -236,6 +236,27 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("%w: loading the initial snapshot: %w", errStartup, err)
 	}
 
+	// The revocation list, after the snapshot: a list is refused when it was
+	// pruned against a snapshot newer than the one being served, so loading it
+	// first would refuse a perfectly good list on every start.
+	revocations, err := buildRevocationSource(cfg, store, verifier, log)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errStartup, err)
+	}
+	if revocations != nil {
+		if err := revocations.LoadOnce(ctx); err != nil {
+			// Not fatal. A gateway that refused to start over an unreadable
+			// revocation list would turn a safety mechanism into a liveness
+			// risk — and the log line plus the age gauge are what an operator
+			// acts on.
+			log.ErrorContext(ctx, "starting without a revocation list",
+				slog.String("error", err.Error()),
+				slog.String("detail",
+					"revoked credentials will keep working until this loads or the "+
+						"next snapshot lands"))
+		}
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.DataPlane.ListenAddr,
 		Handler:           dp.Handler(),
@@ -285,6 +306,14 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			errs <- fmt.Errorf("snapshot source: %w", err)
 		}
 	}()
+
+	if revocations != nil {
+		go func() {
+			if err := revocations.Run(ctx); err != nil {
+				errs <- fmt.Errorf("revocation source: %w", err)
+			}
+		}()
+	}
 
 	// After the listener, deliberately. The first sweep makes a round trip to
 	// every backend, and holding readiness open for that would make a gateway
@@ -346,6 +375,30 @@ func buildIdentity(cfg config.Config, current func() *snapshot.View) (edge.Ident
 		return nil, err
 	}
 	return edge.ChainIdentityResolvers(keys, headers), nil
+}
+
+// buildRevocationSource wires the revocation list, or returns nil.
+//
+// Nil rather than an error when no path is configured: a deployment that has
+// never revoked anything has nothing to distribute, and `Validate` already
+// refuses the omission in production, where it is a real exposure rather than a
+// preference.
+func buildRevocationSource(
+	cfg config.Config, store *snapshot.Store, verifier *snapshot.Verifier, log *slog.Logger,
+) (*snapshot.RevocationSource, error) {
+	if cfg.DataPlane.RevocationsPath == "" {
+		log.Warn("no revocation list configured",
+			slog.String("detail",
+				"a revoked credential will keep working until the next snapshot is "+
+					"published; set dataplane.revocations_path (ADR 0023)"))
+		return nil, nil
+	}
+	return snapshot.NewRevocationSource(snapshot.RevocationSourceOptions{
+		Path:     cfg.DataPlane.RevocationsPath,
+		Store:    store,
+		Verifier: verifier,
+		Logger:   log,
+	})
 }
 
 // buildStateSigner obtains the MRTR requestState signing key.

@@ -13,6 +13,8 @@
 import type { ComponentType } from "react";
 
 import { OverviewScreen } from "./screens/OverviewScreen.tsx";
+import { LoginScreen } from "./screens/LoginScreen.tsx";
+import { LogoutScreen } from "./screens/LogoutScreen.tsx";
 
 import { HealthScreen } from "./screens/HealthScreen.tsx";
 import { HooksScreen } from "./screens/HooksScreen.tsx";
@@ -34,6 +36,8 @@ import { UserScreen } from "./screens/UserScreen.tsx";
 import { GrantsScreen } from "./screens/GrantsScreen.tsx";
 import { APIKeysScreen } from "./screens/APIKeysScreen.tsx";
 import { RolesScreen } from "./screens/RolesScreen.tsx";
+import { SessionScreen } from "./screens/SessionScreen.tsx";
+import { RevocationsScreen } from "./screens/RevocationsScreen.tsx";
 import { CatalogScreen } from "./screens/CatalogScreen.tsx";
 import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
 
@@ -59,6 +63,20 @@ export interface RouteDef {
 }
 
 export const ROUTES: RouteDef[] = [
+  // Sign-in and sign-out. `/login` is also rendered by App.tsx *outside* the
+  // auth guard — signing in cannot require being signed in — and appears here
+  // so `make parity` can see that the operation has a route. Listing it twice
+  // is harmless: the guard's route never matches for a signed-out visitor.
+  {
+    path: "/login",
+    operation: "login",
+    component: LoginScreen,
+  },
+  {
+    path: "/logout",
+    operation: "logout",
+    component: LogoutScreen,
+  },
   // The landing page. It binds no operation — it composes several — so it does
   // not appear in the generated manifest and does not affect `make parity`.
   {
@@ -162,6 +180,20 @@ export const ROUTES: RouteDef[] = [
   // form, the delete confirmation, and the grant editor live on the page that
   // lists what they act on, because a confirmation which does not show what it
   // is about is not a confirmation. The route is the deep link into that mode.
+  {
+    path: "/session",
+    operation: "getSession",
+    component: SessionScreen,
+    nav: "Your credential",
+    section: "Tenancy",
+  },
+  {
+    path: "/gateway/revocations",
+    operation: "getRevocations",
+    component: RevocationsScreen,
+    nav: "Revocations",
+    section: "Data plane",
+  },
   {
     path: "/tenants",
     operation: "listTenants",

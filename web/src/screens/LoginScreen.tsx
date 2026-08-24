@@ -6,17 +6,26 @@ import { useAuth } from "../lib/auth.tsx";
 /**
  * Sign in to the control plane.
  *
- * It asks for a bearer token rather than a username and password, and says so.
- * There is no identity provider in this build (see docs/deferred.md), and a
- * form that said "Password" would be lying about what it wants and about what
- * the credential can do — a control-plane token can mint a signing key.
+ * A password, because a local password is a principal: the control plane
+ * resolves it to a user, reads their grants, and checks every operation against
+ * them (ADR 0022). This used to ask for the deployment's bearer token, which
+ * made every console user the same principal — the most privileged one.
+ *
+ * That token still works, and the second form is deliberately below the fold
+ * and labelled for what it is. It holds every permission, so a console that
+ * offered it as an equal choice would make the break-glass credential the
+ * convenient one.
  */
 export function LoginScreen() {
   const auth = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
+  const [tenant, setTenant] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,7 +38,25 @@ export function LoginScreen() {
     return <Navigate to={from} replace />;
   }
 
-  async function submit(event: FormEvent) {
+  async function submitPassword(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+
+    const result = await auth.signInWithPassword(tenant.trim(), email.trim(), password);
+    if (result === "ok") {
+      navigate(from, { replace: true });
+      return;
+    }
+    setError(
+      result === "unauthorized"
+        ? "The tenant, email, or password is wrong."
+        : "The control plane could not be reached. Is it running on :3001?",
+    );
+    setBusy(false);
+  }
+
+  async function submitToken(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
@@ -41,7 +68,7 @@ export function LoginScreen() {
     }
     setError(
       result === "unauthorized"
-        ? "The control plane did not accept that token."
+        ? "The control plane did not accept that credential."
         : "The control plane could not be reached. Is it running on :3001?",
     );
     setBusy(false);
@@ -49,24 +76,42 @@ export function LoginScreen() {
 
   return (
     <div className="login-shell">
-      <form className="login-card" onSubmit={submit}>
+      <div className="login-card">
         <div className="login-brand">
           <span className="login-logo">◆</span>
           <h1>MCPDoll</h1>
         </div>
         <p className="login-sub">Sign in to the control plane</p>
 
-        <div className="login-form">
+        <form className="login-form" onSubmit={submitPassword}>
           <label>
-            API token
+            Tenant
+            <input
+              autoFocus
+              spellCheck={false}
+              placeholder="acme"
+              value={tenant}
+              onChange={(e) => setTenant(e.target.value)}
+            />
+          </label>
+          <label>
+            Email
+            <input
+              type="email"
+              autoComplete="username"
+              spellCheck={false}
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+          <label>
+            Password
             <input
               type="password"
               autoComplete="current-password"
-              autoFocus
-              spellCheck={false}
-              placeholder="bearer token"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
             />
           </label>
 
@@ -75,24 +120,59 @@ export function LoginScreen() {
           <button
             className="primary login-submit"
             type="submit"
-            disabled={busy}
+            disabled={busy || !tenant.trim() || !email.trim()}
           >
-            {busy ? "Checking…" : "Sign in"}
+            {busy ? "Signing in…" : "Sign in"}
           </button>
-        </div>
+        </form>
 
         <div className="login-note">
           <p>
-            The control plane refuses to start without a token unless it was
-            given <code>--allow-anonymous</code>. If it was, leave this blank
-            and sign in.
+            The tenant is part of who you are, not a filter: the same email in
+            two tenants is two different people.
           </p>
           <p>
-            This token can rebuild the serving snapshot and mint a signing key.
-            It is not a read-only credential.
+            What you can do here is decided by your grants — the same ones that
+            decide what an agent sees through the gateway. There is one
+            authorization model, not two.
           </p>
         </div>
-      </form>
+
+        {!showToken ? (
+          <button className="link login-alt" onClick={() => setShowToken(true)}>
+            Use the deployment token instead
+          </button>
+        ) : (
+          <form className="login-form login-alt-form" onSubmit={submitToken}>
+            <label>
+              Deployment token or API key
+              <input
+                type="password"
+                spellCheck={false}
+                placeholder="mcpd.… or the configured token"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </label>
+            <button className="secondary login-submit" type="submit" disabled={busy}>
+              {busy ? "Checking…" : "Sign in with a token"}
+            </button>
+            <div className="login-note">
+              <p>
+                <strong>The configured token holds every permission.</strong> It
+                exists so CI can build a snapshot before any user does, and so a
+                deployment whose database is down is still inspectable. Every
+                use of it is logged. An API key works here too, and carries only
+                what its owner granted it.
+              </p>
+              <p>
+                Leave it blank if the control plane was started with{" "}
+                <code>--allow-anonymous</code>.
+              </p>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

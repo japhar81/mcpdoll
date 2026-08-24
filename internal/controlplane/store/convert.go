@@ -117,6 +117,13 @@ func timePtr(ts pgtype.Timestamptz) *time.Time {
 	return &t
 }
 
+// timestamptz converts a required time. Distinct from [timestamptzPtr] because
+// a column that is NOT NULL and one that is nullable want different zero
+// behaviour, and conflating them writes a NULL where the schema forbids it.
+func timestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: true}
+}
+
 func timestamptzPtr(t *time.Time) pgtype.Timestamptz {
 	if t == nil {
 		return pgtype.Timestamptz{}

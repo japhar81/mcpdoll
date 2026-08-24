@@ -291,6 +291,11 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 	// tenant the build does not carry, which is a build failure — correctly, so
 	// the message names the missing half rather than producing a snapshot that
 	// admits tools for a tenant no principal could belong to.
+	//
+	// readAt is when the state was read, and it is what makes pruning safe
+	// below: anything revoked after this moment is *not* in the snapshot, so
+	// pruning it would silently un-revoke a credential.
+	readAt := time.Now()
 	if s.cfg.Store != nil {
 		state, err := s.cfg.Store.SnapshotState(r.Context())
 		if err != nil {
@@ -341,6 +346,24 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		report.Output = s.cfg.SnapshotPath
+
+		// A revocation is redundant once a snapshot built after it is serving,
+		// because that snapshot already omits the credential. Pruning here is
+		// what stops the signed list growing forever.
+		//
+		// Only after the file is written: pruning against a snapshot that never
+		// reached disk would drop denials nothing else carries.
+		if s.cfg.Store != nil {
+			if _, err := s.cfg.Store.PruneRevocations(
+				r.Context(), result.Snapshot.Version, readAt); err != nil {
+				// Not fatal. The snapshot is published and correct; the list is
+				// merely larger than it needs to be, which costs bytes rather
+				// than safety.
+				s.log.Warn("pruning revocations failed", "error", err)
+			} else if problem := s.publishRevocations(r.Context()); problem != "" {
+				report.Warnings = append(report.Warnings, problem)
+			}
+		}
 	}
 	writeJSON(w, s.log, http.StatusOK, report)
 }

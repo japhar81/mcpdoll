@@ -382,6 +382,23 @@ func (e *Edge) serveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Revoked, whatever the snapshot says. Checked before the principal is
+	// composed rather than after, so a refused credential never reaches a
+	// catalog, a plugin, or a backend — and never populates a cache entry that
+	// would outlive the check (ADR 0023).
+	if e.opts.Store.Revocations().Refuses(principal.ID) {
+		e.log.WarnContext(r.Context(), "refusing a revoked credential",
+			logging.FieldPrincipal, principal.Subject,
+			logging.FieldTenant, principal.Tenant,
+			logging.FieldSnapshot, version)
+		if e.opts.Metrics != nil {
+			e.opts.Metrics.RevocationRefusals.Add(r.Context(), 1)
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="mcpdoll"`)
+		http.Error(w, "this credential has been revoked", http.StatusUnauthorized)
+		return
+	}
+
 	if _, err := e.serverFor(r.Context(), principal); err != nil {
 		// The credential resolved but the snapshot does not carry this
 		// principal — it was created after the last publish. A 403 rather than
@@ -475,8 +492,18 @@ func (e *Edge) serveReady(w http.ResponseWriter, _ *http.Request) {
 	// longer describes anything (ADR 0019). Still a count rather than names —
 	// enumerating tenants to an unauthenticated caller is the same information
 	// leak enumerating audiences was.
-	fmt.Fprintf(w, `{"status":"ok","snapshot_version":%d,"tenants":%d,"tools":%d}`,
-		version, tenants, tools)
+	//
+	// The revocation list's version and age go here too. The age is the
+	// exposure window for a revoked credential (ADR 0023), and it belongs on
+	// the endpoint every operator surface already polls rather than only in a
+	// metric somebody has to know to look for. Counts, not principal ids: this
+	// endpoint is unauthenticated.
+	revocations := e.opts.Store.Revocations()
+	fmt.Fprintf(w,
+		`{"status":"ok","snapshot_version":%d,"tenants":%d,"tools":%d,`+
+			`"revocations_version":%d,"revocations_age_seconds":%.1f,"revoked_principals":%d}`,
+		version, tenants, tools,
+		revocations.Version, revocations.Age().Seconds(), revocations.Count())
 }
 
 // SnapshotVersion reports what the edge is serving, for the admin surface.

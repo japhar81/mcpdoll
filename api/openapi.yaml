@@ -341,6 +341,103 @@ paths:
               schema: { $ref: "#/components/schemas/BackendHealthReport" }
         "502": { $ref: "#/components/responses/Unavailable" }
 
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: Sign in as a person, and receive a session
+      description: |
+        A local password is a principal: this returns a session whose grants are
+        the user's, and every operation is then checked against them. That was
+        recorded as blocked on an identity provider and was not — OIDC is a
+        second *source* of identity, not a prerequisite for having one
+        (ADR 0022).
+
+        The tenant is part of the identity rather than a lookup hint: the same
+        email may exist in two tenants and they are different people.
+
+        Every failure answers identically. A caller learns whether they signed
+        in and nothing else — not whether the tenant exists, not whether the
+        email does, not whether the account is disabled.
+      tags: [auth]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll auth login
+        ui: /login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "201":
+          description: The session, with its token shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/auth/session:
+    get:
+      operationId: getSession
+      summary: Who the caller is and what they may do
+      description: |
+        What a console renders from. A button that 403s is worse than a button
+        that is not there, so "what may I do" has to be answerable before
+        anything is attempted.
+
+        `permissions` is what the caller holds at global scope only. A tenant
+        admin holds theirs at `t/<tenant>` and this list is empty for them —
+        flattening the union would claim more than they have.
+      tags: [auth]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll auth whoami
+        ui: /session
+      responses:
+        "200":
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+    delete:
+      operationId: logout
+      summary: End the current session
+      description: |
+        Revokes the session row and publishes a revocation list, so it stops
+        working at once rather than at its expiry.
+      tags: [auth]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll auth logout
+        ui: /logout
+      responses:
+        "204": { description: Signed out }
+
+  /api/v1/revocations:
+    get:
+      operationId: getRevocations
+      summary: What has been revoked, and whether the gateway has applied it
+      description: |
+        Both halves, because the gap between them is the exposure. `version` is
+        what the control plane published; `serving_version` is what the gateway
+        is applying; `serving_age_seconds` is how long a revoked credential
+        would still work.
+
+        ADR 0023 does not eliminate that window — failing closed on an
+        unreachable list would let a control-plane outage stop tool calls, which
+        reverses the property the whole architecture provides. It bounds it, and
+        this is where the bound is visible.
+      tags: [gateway]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll revocations
+        ui: /gateway/revocations
+      responses:
+        "200":
+          description: The revocation state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevocationReport" }
+
   /api/v1/tenants:
     get:
       operationId: listTenants
@@ -772,6 +869,15 @@ components:
         The request is legitimate but conflicts with existing state — a slug or
         an email already taken. Not a 500: telling the caller the server broke
         sends them to the wrong place.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Unauthorized:
+      description: |
+        No credential, or one that is not valid. Every way of getting it wrong
+        answers identically — a caller learns whether their credential worked
+        and nothing else.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1307,6 +1413,17 @@ components:
             one endpoint and per-principal catalogs, "how many audiences" no
             longer describes anything (ADR 0019).
         tools: { type: integer }
+        revocations_version:
+          type: integer
+          format: int64
+          description: The revocation list this instance is applying.
+        revocations_age_seconds:
+          type: number
+          format: double
+          description: |
+            How long ago that list was issued. The exposure window for a revoked
+            credential, and the number to alert on (ADR 0023).
+        revoked_principals: { type: integer }
 
     TenantList:
       allOf:
@@ -1321,6 +1438,107 @@ components:
             registered:
               type: array
               items: { $ref: "#/components/schemas/TenantSummary" }
+
+    LoginRequest:
+      type: object
+      required: [tenant, email, password]
+      properties:
+        tenant:
+          type: string
+          description: |
+            Part of the identity, not a lookup hint: the same email in two
+            tenants is two different people.
+        email: { type: string }
+        password: { type: string, format: password }
+
+    Session:
+      type: object
+      required: [token, expires_at, user, grants]
+      properties:
+        token:
+          type: string
+          description: |
+            The only place this appears. Stored as a SHA-256 digest of CSPRNG
+            output, so nothing can show it again.
+        expires_at: { type: string, format: date-time }
+        user: { $ref: "#/components/schemas/User" }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/Grant" }
+
+    SessionInfo:
+      type: object
+      required: [kind, subject, grants, permissions]
+      properties:
+        kind:
+          type: string
+          enum: [session, api_key, static]
+          description: |
+            How the caller authenticated. `static` is the break-glass
+            configuration token, which holds platform_admin at `*` — it exists
+            so CI can build a snapshot before any user does, and every use of it
+            is logged.
+        subject: { type: string }
+        tenant: { type: string }
+        user_id: { type: string, format: uuid }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/Grant" }
+        permissions:
+          type: array
+          description: Held at global scope only.
+          items: { type: string }
+
+    RevocationReport:
+      type: object
+      required: [version, serving_version, serving_age_seconds, in_effect, pruned_through, revocations]
+      properties:
+        version:
+          type: integer
+          format: int64
+          description: What the control plane last published.
+        serving_version:
+          type: integer
+          format: int64
+          description: |
+            What the gateway is applying. Behind `version` means a revoked
+            credential is still working.
+        serving_age_seconds:
+          type: number
+          format: double
+          description: The exposure window for a revoked credential.
+        in_effect:
+          type: boolean
+          description: Has what was published reached the gateway?
+        pruned_through:
+          type: integer
+          format: int64
+          description: |
+            The snapshot version that already reflects everything dropped from
+            the list, so carrying those entries would only make it bigger.
+        path: { type: string }
+        warning: { type: string }
+        revocations:
+          type: array
+          items: { $ref: "#/components/schemas/Revocation" }
+
+    Revocation:
+      type: object
+      required: [principal_id, kind, revoked_at]
+      properties:
+        principal_id:
+          type: string
+          format: uuid
+          description: |
+            The id the snapshot addresses the principal by — a key id or a
+            session id. Ids, not grants: there is nothing here that could
+            authorize anything.
+        kind:
+          type: string
+          enum: [api_key, session]
+        user_id: { type: string, format: uuid }
+        reason: { type: string }
+        revoked_at: { type: string, format: date-time }
 
     TenantSummary:
       type: object

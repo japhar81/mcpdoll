@@ -9,6 +9,8 @@ export interface RouteBinding {
 }
 
 export const ROUTE_BINDINGS: RouteBinding[] = [
+  { path: "/login", operation: "login" },
+  { path: "/logout", operation: "logout" },
   { path: "/registry", operation: "getRegistry" },
   { path: "/registry/servers", operation: "listServers" },
   { path: "/registry/servers/:serverId", operation: "getServer" },
@@ -22,6 +24,8 @@ export const ROUTE_BINDINGS: RouteBinding[] = [
   { path: "/snapshots/keys", operation: "generateSigningKey" },
   { path: "/gateway", operation: "getGatewayStatus" },
   { path: "/gateway/backends", operation: "listBackends" },
+  { path: "/session", operation: "getSession" },
+  { path: "/gateway/revocations", operation: "getRevocations" },
   { path: "/tenants", operation: "listTenants" },
   { path: "/tenants/new", operation: "createTenant" },
   { path: "/tenants/:tenantId/delete", operation: "deleteTenant" },

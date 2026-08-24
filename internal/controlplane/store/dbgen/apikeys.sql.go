@@ -83,6 +83,27 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const getAPIKey = `-- name: GetAPIKey :one
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at FROM api_keys WHERE id = $1
+`
+
+func (q *Queries) GetAPIKey(ctx context.Context, id uuid.UUID) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, getAPIKey, id)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Prefix,
+		&i.Hash,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
 SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at FROM api_keys WHERE prefix = $1
 `
@@ -130,6 +151,30 @@ func (q *Queries) ListAPIKeyGrants(ctx context.Context, apiKeyID uuid.UUID) ([]A
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAPIKeyIDsByUser = `-- name: ListAPIKeyIDsByUser :many
+SELECT id FROM api_keys WHERE user_id = $1
+`
+
+func (q *Queries) ListAPIKeyIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listAPIKeyIDsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

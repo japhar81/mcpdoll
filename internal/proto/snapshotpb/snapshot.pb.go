@@ -515,6 +515,166 @@ func (x *SignedSnapshot) GetAlgorithm() string {
 	return ""
 }
 
+// SignedRevocationList is the second signed artifact the data plane loads.
+//
+// It exists because everything else in this system takes effect at snapshot
+// latency, and a leaked credential is the one case where that is the wrong
+// answer (ADR 0023). It can only *subtract*: a principal named here is refused
+// whatever the snapshot says, and there is nothing in it that could widen
+// anything. That is what keeps "why was this allowed?" answerable from the
+// snapshot alone.
+type SignedRevocationList struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Serialized RevocationList message.
+	ListBytes []byte `protobuf:"bytes,1,opt,name=list_bytes,json=listBytes,proto3" json:"list_bytes,omitempty"`
+	KeyId     string `protobuf:"bytes,2,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
+	// Ed25519 signature over REVOCATION_SIGNING_CONTEXT || list_bytes.
+	//
+	// A *different* context from the snapshot's, and that is load-bearing:
+	// without it a signature minted over one artifact would verify against the
+	// other, so anyone who could get a snapshot signed could present its bytes
+	// as a revocation list.
+	Signature     []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
+	Algorithm     string `protobuf:"bytes,4,opt,name=algorithm,proto3" json:"algorithm,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignedRevocationList) Reset() {
+	*x = SignedRevocationList{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignedRevocationList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignedRevocationList) ProtoMessage() {}
+
+func (x *SignedRevocationList) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignedRevocationList.ProtoReflect.Descriptor instead.
+func (*SignedRevocationList) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SignedRevocationList) GetListBytes() []byte {
+	if x != nil {
+		return x.ListBytes
+	}
+	return nil
+}
+
+func (x *SignedRevocationList) GetKeyId() string {
+	if x != nil {
+		return x.KeyId
+	}
+	return ""
+}
+
+func (x *SignedRevocationList) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *SignedRevocationList) GetAlgorithm() string {
+	if x != nil {
+		return x.Algorithm
+	}
+	return ""
+}
+
+// RevocationList is the set of principals the data plane must refuse.
+type RevocationList struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Monotonic. The data plane refuses a list no newer than the one it holds,
+	// for the same reason it refuses a stale snapshot.
+	Version  int64                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	IssuedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	// Principal ids to refuse. Ids, not grants — there is no scope, no role, and
+	// nothing here that could authorize anything.
+	PrincipalIds []string `protobuf:"bytes,3,rep,name=principal_ids,json=principalIds,proto3" json:"principal_ids,omitempty"`
+	// The snapshot version that already reflects everything pruned from this
+	// list. A data plane serving something older would lose denials it still
+	// needs, so it refuses the list and keeps its previous one — strictly more
+	// denials, and self-correcting once the newer snapshot lands.
+	PrunedThroughSnapshotVersion int64 `protobuf:"varint,4,opt,name=pruned_through_snapshot_version,json=prunedThroughSnapshotVersion,proto3" json:"pruned_through_snapshot_version,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
+}
+
+func (x *RevocationList) Reset() {
+	*x = RevocationList{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevocationList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevocationList) ProtoMessage() {}
+
+func (x *RevocationList) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevocationList.ProtoReflect.Descriptor instead.
+func (*RevocationList) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RevocationList) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *RevocationList) GetIssuedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return nil
+}
+
+func (x *RevocationList) GetPrincipalIds() []string {
+	if x != nil {
+		return x.PrincipalIds
+	}
+	return nil
+}
+
+func (x *RevocationList) GetPrunedThroughSnapshotVersion() int64 {
+	if x != nil {
+		return x.PrunedThroughSnapshotVersion
+	}
+	return 0
+}
+
 // Snapshot is the complete, self-contained serving configuration for one
 // organization at one point in time.
 //
@@ -556,7 +716,7 @@ type Snapshot struct {
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[1]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -568,7 +728,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[1]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -581,7 +741,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{1}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Snapshot) GetVersion() int64 {
@@ -690,7 +850,7 @@ type CatalogDefaults struct {
 
 func (x *CatalogDefaults) Reset() {
 	*x = CatalogDefaults{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[2]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -702,7 +862,7 @@ func (x *CatalogDefaults) String() string {
 func (*CatalogDefaults) ProtoMessage() {}
 
 func (x *CatalogDefaults) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[2]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -715,7 +875,7 @@ func (x *CatalogDefaults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogDefaults.ProtoReflect.Descriptor instead.
 func (*CatalogDefaults) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{2}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CatalogDefaults) GetTtlMs() int32 {
@@ -752,7 +912,7 @@ type Namespace struct {
 
 func (x *Namespace) Reset() {
 	*x = Namespace{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[3]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -764,7 +924,7 @@ func (x *Namespace) String() string {
 func (*Namespace) ProtoMessage() {}
 
 func (x *Namespace) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[3]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -777,7 +937,7 @@ func (x *Namespace) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Namespace.ProtoReflect.Descriptor instead.
 func (*Namespace) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{3}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Namespace) GetId() string {
@@ -853,7 +1013,7 @@ type Server struct {
 
 func (x *Server) Reset() {
 	*x = Server{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[4]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -865,7 +1025,7 @@ func (x *Server) String() string {
 func (*Server) ProtoMessage() {}
 
 func (x *Server) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[4]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -878,7 +1038,7 @@ func (x *Server) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server.ProtoReflect.Descriptor instead.
 func (*Server) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{4}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Server) GetId() string {
@@ -1014,7 +1174,7 @@ type TokenExchange struct {
 
 func (x *TokenExchange) Reset() {
 	*x = TokenExchange{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[5]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1026,7 +1186,7 @@ func (x *TokenExchange) String() string {
 func (*TokenExchange) ProtoMessage() {}
 
 func (x *TokenExchange) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[5]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1039,7 +1199,7 @@ func (x *TokenExchange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenExchange.ProtoReflect.Descriptor instead.
 func (*TokenExchange) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{5}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TokenExchange) GetTokenEndpoint() string {
@@ -1098,7 +1258,7 @@ type HealthPolicy struct {
 
 func (x *HealthPolicy) Reset() {
 	*x = HealthPolicy{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[6]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1110,7 +1270,7 @@ func (x *HealthPolicy) String() string {
 func (*HealthPolicy) ProtoMessage() {}
 
 func (x *HealthPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[6]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1123,7 +1283,7 @@ func (x *HealthPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthPolicy.ProtoReflect.Descriptor instead.
 func (*HealthPolicy) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{6}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *HealthPolicy) GetProbeIntervalMs() int32 {
@@ -1201,7 +1361,7 @@ type ToolDefinition struct {
 
 func (x *ToolDefinition) Reset() {
 	*x = ToolDefinition{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[7]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1213,7 +1373,7 @@ func (x *ToolDefinition) String() string {
 func (*ToolDefinition) ProtoMessage() {}
 
 func (x *ToolDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[7]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1226,7 +1386,7 @@ func (x *ToolDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolDefinition.ProtoReflect.Descriptor instead.
 func (*ToolDefinition) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{7}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ToolDefinition) GetDigest() string {
@@ -1357,7 +1517,7 @@ type Tenant struct {
 
 func (x *Tenant) Reset() {
 	*x = Tenant{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1369,7 +1529,7 @@ func (x *Tenant) String() string {
 func (*Tenant) ProtoMessage() {}
 
 func (x *Tenant) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1382,7 +1542,7 @@ func (x *Tenant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Tenant.ProtoReflect.Descriptor instead.
 func (*Tenant) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{8}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Tenant) GetId() string {
@@ -1432,7 +1592,7 @@ type Binding struct {
 
 func (x *Binding) Reset() {
 	*x = Binding{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1444,7 +1604,7 @@ func (x *Binding) String() string {
 func (*Binding) ProtoMessage() {}
 
 func (x *Binding) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1457,7 +1617,7 @@ func (x *Binding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Binding.ProtoReflect.Descriptor instead.
 func (*Binding) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{9}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Binding) GetTenantId() string {
@@ -1500,7 +1660,7 @@ type Toolset struct {
 
 func (x *Toolset) Reset() {
 	*x = Toolset{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1512,7 +1672,7 @@ func (x *Toolset) String() string {
 func (*Toolset) ProtoMessage() {}
 
 func (x *Toolset) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1525,7 +1685,7 @@ func (x *Toolset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Toolset.ProtoReflect.Descriptor instead.
 func (*Toolset) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{10}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Toolset) GetId() string {
@@ -1579,7 +1739,7 @@ type RBAC struct {
 
 func (x *RBAC) Reset() {
 	*x = RBAC{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1591,7 +1751,7 @@ func (x *RBAC) String() string {
 func (*RBAC) ProtoMessage() {}
 
 func (x *RBAC) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1604,7 +1764,7 @@ func (x *RBAC) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RBAC.ProtoReflect.Descriptor instead.
 func (*RBAC) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{11}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RBAC) GetRolePermissions() []*RolePermission {
@@ -1632,7 +1792,7 @@ type RolePermission struct {
 
 func (x *RolePermission) Reset() {
 	*x = RolePermission{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1644,7 +1804,7 @@ func (x *RolePermission) String() string {
 func (*RolePermission) ProtoMessage() {}
 
 func (x *RolePermission) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1657,7 +1817,7 @@ func (x *RolePermission) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RolePermission.ProtoReflect.Descriptor instead.
 func (*RolePermission) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{12}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RolePermission) GetRole() string {
@@ -1703,7 +1863,7 @@ type Principal struct {
 
 func (x *Principal) Reset() {
 	*x = Principal{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1715,7 +1875,7 @@ func (x *Principal) String() string {
 func (*Principal) ProtoMessage() {}
 
 func (x *Principal) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1728,7 +1888,7 @@ func (x *Principal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Principal.ProtoReflect.Descriptor instead.
 func (*Principal) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{13}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Principal) GetId() string {
@@ -1786,7 +1946,7 @@ type Grant struct {
 
 func (x *Grant) Reset() {
 	*x = Grant{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1798,7 +1958,7 @@ func (x *Grant) String() string {
 func (*Grant) ProtoMessage() {}
 
 func (x *Grant) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1811,7 +1971,7 @@ func (x *Grant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Grant.ProtoReflect.Descriptor instead.
 func (*Grant) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{14}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Grant) GetRole() string {
@@ -1840,7 +2000,7 @@ type Policy struct {
 
 func (x *Policy) Reset() {
 	*x = Policy{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1852,7 +2012,7 @@ func (x *Policy) String() string {
 func (*Policy) ProtoMessage() {}
 
 func (x *Policy) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1865,7 +2025,7 @@ func (x *Policy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Policy.ProtoReflect.Descriptor instead.
 func (*Policy) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{15}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Policy) GetId() string {
@@ -1918,7 +2078,7 @@ type PolicyRule struct {
 
 func (x *PolicyRule) Reset() {
 	*x = PolicyRule{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1930,7 +2090,7 @@ func (x *PolicyRule) String() string {
 func (*PolicyRule) ProtoMessage() {}
 
 func (x *PolicyRule) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1943,7 +2103,7 @@ func (x *PolicyRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PolicyRule.ProtoReflect.Descriptor instead.
 func (*PolicyRule) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{16}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *PolicyRule) GetEffectClasses() []string {
@@ -2058,7 +2218,7 @@ type PluginManifest struct {
 
 func (x *PluginManifest) Reset() {
 	*x = PluginManifest{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2070,7 +2230,7 @@ func (x *PluginManifest) String() string {
 func (*PluginManifest) ProtoMessage() {}
 
 func (x *PluginManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2083,7 +2243,7 @@ func (x *PluginManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginManifest.ProtoReflect.Descriptor instead.
 func (*PluginManifest) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{17}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PluginManifest) GetId() string {
@@ -2228,7 +2388,18 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x0esnapshot_bytes\x18\x01 \x01(\fR\rsnapshotBytes\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x1c\n" +
-	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"\xcc\x05\n" +
+	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"\x88\x01\n" +
+	"\x14SignedRevocationList\x12\x1d\n" +
+	"\n" +
+	"list_bytes\x18\x01 \x01(\fR\tlistBytes\x12\x15\n" +
+	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12\x1c\n" +
+	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x1c\n" +
+	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"\xcf\x01\n" +
+	"\x0eRevocationList\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x03R\aversion\x127\n" +
+	"\tissued_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x12#\n" +
+	"\rprincipal_ids\x18\x03 \x03(\tR\fprincipalIds\x12E\n" +
+	"\x1fpruned_through_snapshot_version\x18\x04 \x01(\x03R\x1cprunedThroughSnapshotVersion\"\xcc\x05\n" +
 	"\bSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x125\n" +
@@ -2443,7 +2614,7 @@ func file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP() []byte {
 }
 
 var file_mcpdoll_snapshot_v1_snapshot_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_mcpdoll_snapshot_v1_snapshot_proto_goTypes = []any{
 	(EffectClass)(0),              // 0: mcpdoll.snapshot.v1.EffectClass
 	(ServingMode)(0),              // 1: mcpdoll.snapshot.v1.ServingMode
@@ -2453,59 +2624,62 @@ var file_mcpdoll_snapshot_v1_snapshot_proto_goTypes = []any{
 	(RolloutState)(0),             // 5: mcpdoll.snapshot.v1.RolloutState
 	(FailureMode)(0),              // 6: mcpdoll.snapshot.v1.FailureMode
 	(*SignedSnapshot)(nil),        // 7: mcpdoll.snapshot.v1.SignedSnapshot
-	(*Snapshot)(nil),              // 8: mcpdoll.snapshot.v1.Snapshot
-	(*CatalogDefaults)(nil),       // 9: mcpdoll.snapshot.v1.CatalogDefaults
-	(*Namespace)(nil),             // 10: mcpdoll.snapshot.v1.Namespace
-	(*Server)(nil),                // 11: mcpdoll.snapshot.v1.Server
-	(*TokenExchange)(nil),         // 12: mcpdoll.snapshot.v1.TokenExchange
-	(*HealthPolicy)(nil),          // 13: mcpdoll.snapshot.v1.HealthPolicy
-	(*ToolDefinition)(nil),        // 14: mcpdoll.snapshot.v1.ToolDefinition
-	(*Tenant)(nil),                // 15: mcpdoll.snapshot.v1.Tenant
-	(*Binding)(nil),               // 16: mcpdoll.snapshot.v1.Binding
-	(*Toolset)(nil),               // 17: mcpdoll.snapshot.v1.Toolset
-	(*RBAC)(nil),                  // 18: mcpdoll.snapshot.v1.RBAC
-	(*RolePermission)(nil),        // 19: mcpdoll.snapshot.v1.RolePermission
-	(*Principal)(nil),             // 20: mcpdoll.snapshot.v1.Principal
-	(*Grant)(nil),                 // 21: mcpdoll.snapshot.v1.Grant
-	(*Policy)(nil),                // 22: mcpdoll.snapshot.v1.Policy
-	(*PolicyRule)(nil),            // 23: mcpdoll.snapshot.v1.PolicyRule
-	(*PluginManifest)(nil),        // 24: mcpdoll.snapshot.v1.PluginManifest
-	nil,                           // 25: mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
-	nil,                           // 26: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
-	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
+	(*SignedRevocationList)(nil),  // 8: mcpdoll.snapshot.v1.SignedRevocationList
+	(*RevocationList)(nil),        // 9: mcpdoll.snapshot.v1.RevocationList
+	(*Snapshot)(nil),              // 10: mcpdoll.snapshot.v1.Snapshot
+	(*CatalogDefaults)(nil),       // 11: mcpdoll.snapshot.v1.CatalogDefaults
+	(*Namespace)(nil),             // 12: mcpdoll.snapshot.v1.Namespace
+	(*Server)(nil),                // 13: mcpdoll.snapshot.v1.Server
+	(*TokenExchange)(nil),         // 14: mcpdoll.snapshot.v1.TokenExchange
+	(*HealthPolicy)(nil),          // 15: mcpdoll.snapshot.v1.HealthPolicy
+	(*ToolDefinition)(nil),        // 16: mcpdoll.snapshot.v1.ToolDefinition
+	(*Tenant)(nil),                // 17: mcpdoll.snapshot.v1.Tenant
+	(*Binding)(nil),               // 18: mcpdoll.snapshot.v1.Binding
+	(*Toolset)(nil),               // 19: mcpdoll.snapshot.v1.Toolset
+	(*RBAC)(nil),                  // 20: mcpdoll.snapshot.v1.RBAC
+	(*RolePermission)(nil),        // 21: mcpdoll.snapshot.v1.RolePermission
+	(*Principal)(nil),             // 22: mcpdoll.snapshot.v1.Principal
+	(*Grant)(nil),                 // 23: mcpdoll.snapshot.v1.Grant
+	(*Policy)(nil),                // 24: mcpdoll.snapshot.v1.Policy
+	(*PolicyRule)(nil),            // 25: mcpdoll.snapshot.v1.PolicyRule
+	(*PluginManifest)(nil),        // 26: mcpdoll.snapshot.v1.PluginManifest
+	nil,                           // 27: mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
+	nil,                           // 28: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
+	(*timestamppb.Timestamp)(nil), // 29: google.protobuf.Timestamp
 }
 var file_mcpdoll_snapshot_v1_snapshot_proto_depIdxs = []int32{
-	27, // 0: mcpdoll.snapshot.v1.Snapshot.built_at:type_name -> google.protobuf.Timestamp
-	10, // 1: mcpdoll.snapshot.v1.Snapshot.namespaces:type_name -> mcpdoll.snapshot.v1.Namespace
-	11, // 2: mcpdoll.snapshot.v1.Snapshot.servers:type_name -> mcpdoll.snapshot.v1.Server
-	14, // 3: mcpdoll.snapshot.v1.Snapshot.tools:type_name -> mcpdoll.snapshot.v1.ToolDefinition
-	22, // 4: mcpdoll.snapshot.v1.Snapshot.policies:type_name -> mcpdoll.snapshot.v1.Policy
-	24, // 5: mcpdoll.snapshot.v1.Snapshot.plugins:type_name -> mcpdoll.snapshot.v1.PluginManifest
-	9,  // 6: mcpdoll.snapshot.v1.Snapshot.catalog:type_name -> mcpdoll.snapshot.v1.CatalogDefaults
-	15, // 7: mcpdoll.snapshot.v1.Snapshot.tenants:type_name -> mcpdoll.snapshot.v1.Tenant
-	17, // 8: mcpdoll.snapshot.v1.Snapshot.toolsets:type_name -> mcpdoll.snapshot.v1.Toolset
-	18, // 9: mcpdoll.snapshot.v1.Snapshot.rbac:type_name -> mcpdoll.snapshot.v1.RBAC
-	1,  // 10: mcpdoll.snapshot.v1.Server.serving_mode:type_name -> mcpdoll.snapshot.v1.ServingMode
-	12, // 11: mcpdoll.snapshot.v1.Server.token_exchange:type_name -> mcpdoll.snapshot.v1.TokenExchange
-	13, // 12: mcpdoll.snapshot.v1.Server.health:type_name -> mcpdoll.snapshot.v1.HealthPolicy
-	16, // 13: mcpdoll.snapshot.v1.Server.bindings:type_name -> mcpdoll.snapshot.v1.Binding
-	25, // 14: mcpdoll.snapshot.v1.TokenExchange.claim_headers:type_name -> mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
-	0,  // 15: mcpdoll.snapshot.v1.ToolDefinition.effect_class:type_name -> mcpdoll.snapshot.v1.EffectClass
-	19, // 16: mcpdoll.snapshot.v1.RBAC.role_permissions:type_name -> mcpdoll.snapshot.v1.RolePermission
-	20, // 17: mcpdoll.snapshot.v1.RBAC.principals:type_name -> mcpdoll.snapshot.v1.Principal
-	21, // 18: mcpdoll.snapshot.v1.Principal.grants:type_name -> mcpdoll.snapshot.v1.Grant
-	23, // 19: mcpdoll.snapshot.v1.Policy.rules:type_name -> mcpdoll.snapshot.v1.PolicyRule
-	2,  // 20: mcpdoll.snapshot.v1.PolicyRule.decision:type_name -> mcpdoll.snapshot.v1.PolicyDecision
-	4,  // 21: mcpdoll.snapshot.v1.PluginManifest.runtime:type_name -> mcpdoll.snapshot.v1.PluginRuntime
-	3,  // 22: mcpdoll.snapshot.v1.PluginManifest.hooks:type_name -> mcpdoll.snapshot.v1.Hook
-	26, // 23: mcpdoll.snapshot.v1.PluginManifest.failure_policy:type_name -> mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
-	5,  // 24: mcpdoll.snapshot.v1.PluginManifest.rollout:type_name -> mcpdoll.snapshot.v1.RolloutState
-	6,  // 25: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry.value:type_name -> mcpdoll.snapshot.v1.FailureMode
-	26, // [26:26] is the sub-list for method output_type
-	26, // [26:26] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	29, // 0: mcpdoll.snapshot.v1.RevocationList.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 1: mcpdoll.snapshot.v1.Snapshot.built_at:type_name -> google.protobuf.Timestamp
+	12, // 2: mcpdoll.snapshot.v1.Snapshot.namespaces:type_name -> mcpdoll.snapshot.v1.Namespace
+	13, // 3: mcpdoll.snapshot.v1.Snapshot.servers:type_name -> mcpdoll.snapshot.v1.Server
+	16, // 4: mcpdoll.snapshot.v1.Snapshot.tools:type_name -> mcpdoll.snapshot.v1.ToolDefinition
+	24, // 5: mcpdoll.snapshot.v1.Snapshot.policies:type_name -> mcpdoll.snapshot.v1.Policy
+	26, // 6: mcpdoll.snapshot.v1.Snapshot.plugins:type_name -> mcpdoll.snapshot.v1.PluginManifest
+	11, // 7: mcpdoll.snapshot.v1.Snapshot.catalog:type_name -> mcpdoll.snapshot.v1.CatalogDefaults
+	17, // 8: mcpdoll.snapshot.v1.Snapshot.tenants:type_name -> mcpdoll.snapshot.v1.Tenant
+	19, // 9: mcpdoll.snapshot.v1.Snapshot.toolsets:type_name -> mcpdoll.snapshot.v1.Toolset
+	20, // 10: mcpdoll.snapshot.v1.Snapshot.rbac:type_name -> mcpdoll.snapshot.v1.RBAC
+	1,  // 11: mcpdoll.snapshot.v1.Server.serving_mode:type_name -> mcpdoll.snapshot.v1.ServingMode
+	14, // 12: mcpdoll.snapshot.v1.Server.token_exchange:type_name -> mcpdoll.snapshot.v1.TokenExchange
+	15, // 13: mcpdoll.snapshot.v1.Server.health:type_name -> mcpdoll.snapshot.v1.HealthPolicy
+	18, // 14: mcpdoll.snapshot.v1.Server.bindings:type_name -> mcpdoll.snapshot.v1.Binding
+	27, // 15: mcpdoll.snapshot.v1.TokenExchange.claim_headers:type_name -> mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
+	0,  // 16: mcpdoll.snapshot.v1.ToolDefinition.effect_class:type_name -> mcpdoll.snapshot.v1.EffectClass
+	21, // 17: mcpdoll.snapshot.v1.RBAC.role_permissions:type_name -> mcpdoll.snapshot.v1.RolePermission
+	22, // 18: mcpdoll.snapshot.v1.RBAC.principals:type_name -> mcpdoll.snapshot.v1.Principal
+	23, // 19: mcpdoll.snapshot.v1.Principal.grants:type_name -> mcpdoll.snapshot.v1.Grant
+	25, // 20: mcpdoll.snapshot.v1.Policy.rules:type_name -> mcpdoll.snapshot.v1.PolicyRule
+	2,  // 21: mcpdoll.snapshot.v1.PolicyRule.decision:type_name -> mcpdoll.snapshot.v1.PolicyDecision
+	4,  // 22: mcpdoll.snapshot.v1.PluginManifest.runtime:type_name -> mcpdoll.snapshot.v1.PluginRuntime
+	3,  // 23: mcpdoll.snapshot.v1.PluginManifest.hooks:type_name -> mcpdoll.snapshot.v1.Hook
+	28, // 24: mcpdoll.snapshot.v1.PluginManifest.failure_policy:type_name -> mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
+	5,  // 25: mcpdoll.snapshot.v1.PluginManifest.rollout:type_name -> mcpdoll.snapshot.v1.RolloutState
+	6,  // 26: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry.value:type_name -> mcpdoll.snapshot.v1.FailureMode
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_mcpdoll_snapshot_v1_snapshot_proto_init() }
@@ -2519,7 +2693,7 @@ func file_mcpdoll_snapshot_v1_snapshot_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc), len(file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

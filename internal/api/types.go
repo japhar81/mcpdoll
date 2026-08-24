@@ -289,6 +289,14 @@ type GatewayStatus struct {
 	Tenants int `json:"tenants" yaml:"tenants"`
 	// Tools admitted across every tenant.
 	Tools int `json:"tools" yaml:"tools"`
+
+	// RevocationsVersion and RevocationsAgeSeconds are the second signed
+	// artifact's state. The age is the exposure window for a revoked
+	// credential (ADR 0023), which is why it belongs on the status every
+	// surface already reads rather than only in a metric.
+	RevocationsVersion    int64   `json:"revocations_version" yaml:"revocations_version"`
+	RevocationsAgeSeconds float64 `json:"revocations_age_seconds" yaml:"revocations_age_seconds"`
+	RevokedPrincipals     int     `json:"revoked_principals" yaml:"revoked_principals"`
 }
 
 // TenantList is the listTenants response for the gateway.
@@ -420,6 +428,72 @@ type Role struct {
 type RoleCatalog struct {
 	Roles       []Role   `json:"roles" yaml:"roles"`
 	Permissions []string `json:"permissions" yaml:"permissions"`
+}
+
+// Session is a successful sign-in. Carries the token exactly once.
+type Session struct {
+	// Token is the credential. Stored only as a SHA-256 digest of CSPRNG
+	// output, so this response is the only place it will ever appear.
+	Token     string `json:"token" yaml:"token"`
+	ExpiresAt string `json:"expires_at" yaml:"expires_at"`
+	User      User   `json:"user" yaml:"user"`
+	// Grants the user holds. Returned at sign-in so a console can render from
+	// them immediately rather than making a second call to find out what to
+	// show.
+	Grants []Grant `json:"grants" yaml:"grants"`
+}
+
+// SessionInfo is who the caller is and what they may do.
+type SessionInfo struct {
+	// Kind is how they authenticated: session, api_key, or static.
+	Kind    string  `json:"kind" yaml:"kind"`
+	Subject string  `json:"subject" yaml:"subject"`
+	Tenant  string  `json:"tenant,omitempty" yaml:"tenant,omitempty"`
+	UserID  string  `json:"user_id,omitempty" yaml:"user_id,omitempty"`
+	Grants  []Grant `json:"grants" yaml:"grants"`
+	// Permissions the caller holds at global scope. What a console renders
+	// from: a button that 403s is worse than a button that is not there.
+	//
+	// Global scope only, deliberately. A tenant admin holds their permissions
+	// at `t/acme` and this list is empty for them — the console must ask about
+	// a specific scope for those, and a flattened union would claim more than
+	// they have.
+	Permissions []string `json:"permissions" yaml:"permissions"`
+}
+
+// RevocationReport is what the control plane published and what the gateway is
+// applying.
+//
+// Both, because the gap between them is the exposure. ADR 0023 does not
+// eliminate the leaked-credential window — failing closed on an unreachable
+// list would let a control-plane outage stop tool calls — it bounds it, and
+// this is where an operator sees the bound.
+type RevocationReport struct {
+	// Version the control plane last published.
+	Version int64 `json:"version" yaml:"version"`
+	// ServingVersion the gateway is applying. Behind Version means a revoked
+	// credential is still working.
+	ServingVersion    int64   `json:"serving_version" yaml:"serving_version"`
+	ServingAgeSeconds float64 `json:"serving_age_seconds" yaml:"serving_age_seconds"`
+	// InEffect is the one-line answer: has what was published reached the
+	// gateway?
+	InEffect bool `json:"in_effect" yaml:"in_effect"`
+	// PrunedThrough is the snapshot version that already reflects everything
+	// dropped from the list.
+	PrunedThrough int64 `json:"pruned_through" yaml:"pruned_through"`
+	// Path the list is written to. Empty means revocation waits for a snapshot.
+	Path        string       `json:"path,omitempty" yaml:"path,omitempty"`
+	Warning     string       `json:"warning,omitempty" yaml:"warning,omitempty"`
+	Revocations []Revocation `json:"revocations" yaml:"revocations"`
+}
+
+// Revocation is one refused principal.
+type Revocation struct {
+	PrincipalID string `json:"principal_id" yaml:"principal_id"`
+	Kind        string `json:"kind" yaml:"kind"`
+	UserID      string `json:"user_id,omitempty" yaml:"user_id,omitempty"`
+	Reason      string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	RevokedAt   string `json:"revoked_at" yaml:"revoked_at"`
 }
 
 // Catalog is the tool list one identity receives from one audience.

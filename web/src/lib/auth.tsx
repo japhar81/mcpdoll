@@ -8,7 +8,15 @@ import {
   type ReactNode,
 } from "react";
 
-import { probeCredential, setToken, setUnauthorizedHandler } from "./api.ts";
+import {
+  getSession,
+  login,
+  logout,
+  probeCredential,
+  setToken,
+  setUnauthorizedHandler,
+} from "./api.ts";
+import type { SessionInfo } from "./types.ts";
 
 /**
  * Who the console is talking to the control plane as.
@@ -24,9 +32,25 @@ export interface AuthContextValue {
   status: AuthStatus;
   /** The token in use. Empty when the server accepts anonymous requests. */
   token: string;
-  /** Verify a credential and adopt it. Returns the reason on failure. */
+  /**
+   * Who the control plane says the caller is, and what they may do.
+   *
+   * Null while checking, and after an anonymous start where there is nobody to
+   * be. Screens render from this: a button that 403s is worse than a button
+   * that is not there.
+   */
+  session: SessionInfo | null;
+  /** Sign in as a person. Returns the reason on failure. */
+  signInWithPassword: (
+    tenant: string,
+    email: string,
+    password: string,
+  ) => Promise<"ok" | "unauthorized" | "unreachable">;
+  /** Adopt a raw credential — an API key, or the deployment token. */
   signIn: (token: string) => Promise<"ok" | "unauthorized" | "unreachable">;
   signOut: () => void;
+  /** Does the caller hold this permission at global scope? */
+  can: (permission: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -36,6 +60,21 @@ const TOKEN_KEY = "mcpdoll.token";
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("checking");
   const [token, setTokenState] = useState("");
+  const [session, setSession] = useState<SessionInfo | null>(null);
+
+  // Asked after every successful adoption rather than derived from the
+  // credential's shape. The console cannot know what a token may do; only the
+  // control plane can, and guessing would mean rendering a button that 403s.
+  const loadSession = useCallback(async () => {
+    try {
+      setSession(await getSession());
+    } catch {
+      // A control plane too old to answer, or a transient failure. Rendering
+      // as if nothing is permitted would be worse than rendering everything
+      // and letting the server refuse — the server is the authority either way.
+      setSession(null);
+    }
+  }, []);
 
   const adopt = useCallback((next: string, nextStatus: AuthStatus) => {
     setToken(next);
@@ -44,7 +83,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(() => {
+    // Tell the server first: a session that is only forgotten locally is still
+    // a live credential, and the whole point of ADR 0023 is that revocation
+    // does not wait. A failure here still signs the user out of this browser.
+    void logout().catch(() => undefined);
     localStorage.removeItem(TOKEN_KEY);
+    setSession(null);
     adopt("", "signed-out");
   }, [adopt]);
 
@@ -65,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (result === "ok") {
         adopt(stored, stored ? "authenticated" : "anonymous");
+        void loadSession();
         return;
       }
 
@@ -90,6 +135,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, [adopt]);
 
+  const signInWithPassword = useCallback(
+    async (tenant: string, email: string, password: string) => {
+      try {
+        const result = await login(tenant, email, password);
+        localStorage.setItem(TOKEN_KEY, result.token);
+        adopt(result.token, "authenticated");
+        await loadSession();
+        return "ok" as const;
+      } catch (e) {
+        // 401 is a wrong credential; status 0 is a control plane that did not
+        // answer. Reporting the second as the first sends somebody to reset a
+        // password that is fine.
+        const status = (e as { status?: number }).status ?? 0;
+        return status === 0 ? ("unreachable" as const) : ("unauthorized" as const);
+      }
+    },
+    [adopt, loadSession],
+  );
+
   const signIn = useCallback(
     async (candidate: string) => {
       const trimmed = candidate.trim();
@@ -105,14 +169,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(TOKEN_KEY);
         adopt("", "anonymous");
       }
+      await loadSession();
       return "ok" as const;
     },
-    [adopt],
+    [adopt, loadSession],
+  );
+
+  const can = useCallback(
+    (permission: string) => {
+      // No session means the control plane could not say. Permissive, because
+      // the server refuses regardless and hiding everything would make a
+      // transient failure look like a lost account.
+      if (!session) return true;
+      return session.permissions.includes(permission);
+    },
+    [session],
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, token, signIn, signOut }),
-    [status, token, signIn, signOut],
+    () => ({ status, token, session, signInWithPassword, signIn, signOut, can }),
+    [status, token, session, signInWithPassword, signIn, signOut, can],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

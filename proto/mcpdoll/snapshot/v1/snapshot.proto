@@ -37,6 +37,50 @@ message SignedSnapshot {
   string algorithm = 4;
 }
 
+// SignedRevocationList is the second signed artifact the data plane loads.
+//
+// It exists because everything else in this system takes effect at snapshot
+// latency, and a leaked credential is the one case where that is the wrong
+// answer (ADR 0023). It can only *subtract*: a principal named here is refused
+// whatever the snapshot says, and there is nothing in it that could widen
+// anything. That is what keeps "why was this allowed?" answerable from the
+// snapshot alone.
+message SignedRevocationList {
+  // Serialized RevocationList message.
+  bytes list_bytes = 1;
+
+  string key_id = 2;
+
+  // Ed25519 signature over REVOCATION_SIGNING_CONTEXT || list_bytes.
+  //
+  // A *different* context from the snapshot's, and that is load-bearing:
+  // without it a signature minted over one artifact would verify against the
+  // other, so anyone who could get a snapshot signed could present its bytes
+  // as a revocation list.
+  bytes signature = 3;
+
+  string algorithm = 4;
+}
+
+// RevocationList is the set of principals the data plane must refuse.
+message RevocationList {
+  // Monotonic. The data plane refuses a list no newer than the one it holds,
+  // for the same reason it refuses a stale snapshot.
+  int64 version = 1;
+
+  google.protobuf.Timestamp issued_at = 2;
+
+  // Principal ids to refuse. Ids, not grants — there is no scope, no role, and
+  // nothing here that could authorize anything.
+  repeated string principal_ids = 3;
+
+  // The snapshot version that already reflects everything pruned from this
+  // list. A data plane serving something older would lose denials it still
+  // needs, so it refuses the list and keeps its previous one — strictly more
+  // denials, and self-correcting once the newer snapshot lands.
+  int64 pruned_through_snapshot_version = 4;
+}
+
 // Snapshot is the complete, self-contained serving configuration for one
 // organization at one point in time.
 //

@@ -140,10 +140,20 @@ func (p *Prober) ProbeAll(ctx context.Context) {
 		return
 	}
 
-	// The serving snapshot's age. A gauge nobody samples never appears, and
-	// this is the only loop that runs on a timer.
+	// The serving snapshot's age, and the revocation list's. A gauge nobody
+	// samples never appears, and this is the only loop that runs on a timer.
+	//
+	// The revocation age matters more than it looks: ADR 0023 bounds the
+	// leaked-credential exposure rather than eliminating it, and this gauge is
+	// the bound. A revoked credential keeps working for exactly as long as this
+	// number says the list is out of date.
 	if m := p.opts.Metrics; m != nil {
 		m.SnapshotAgeSecs.Record(ctx, view.Age().Seconds())
+
+		revocations := p.opts.Snapshot.Revocations()
+		m.RevocationsAgeSecs.Record(ctx, revocations.Age().Seconds())
+		m.RevocationsVersion.Record(ctx, revocations.Version)
+		m.RevocationsCount.Record(ctx, int64(revocations.Count()))
 	}
 
 	servers := view.Servers()

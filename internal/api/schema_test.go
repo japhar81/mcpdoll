@@ -64,6 +64,10 @@ var schemas = map[string]any{
 	"MintedAPIKey":          api.MintedAPIKey{},
 	"Role":                  api.Role{},
 	"RoleCatalog":           api.RoleCatalog{},
+	"Session":               api.Session{},
+	"SessionInfo":           api.SessionInfo{},
+	"RevocationReport":      api.RevocationReport{},
+	"Revocation":            api.Revocation{},
 	"BuildReport":           api.BuildReport{},
 	"BackendReport":         api.BackendReport{},
 	"VerifyReport":          api.VerifyReport{},
@@ -91,6 +95,7 @@ var schemas = map[string]any{
 	"UpdateUserRequest":         apiserver.UpdateUserRequest{},
 	"PutGrantsRequest":          apiserver.PutGrantsRequest{},
 	"MintAPIKeyRequest":         apiserver.MintAPIKeyRequest{},
+	"LoginRequest":              apiserver.LoginRequest{},
 }
 
 type openapiDoc struct {

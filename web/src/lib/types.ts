@@ -126,6 +126,11 @@ export interface GatewayStatus {
   snapshot_version: number;
   tenants: number;
   tools: number;
+  /** The revocation list this instance is applying. */
+  revocations_version: number;
+  /** The exposure window for a revoked credential (ADR 0023). */
+  revocations_age_seconds: number;
+  revoked_principals: number;
 }
 
 /**
@@ -228,6 +233,51 @@ export interface MintedAPIKey {
 export interface Role {
   name: string;
   permissions: string[];
+}
+
+/** A successful sign-in. Carries the token exactly once. */
+export interface Session {
+  token: string;
+  expires_at: string;
+  user: User;
+  grants: Grant[];
+}
+
+/** Who the caller is and what they may do. */
+export interface SessionInfo {
+  /** session | api_key | static. `static` holds everything. */
+  kind: string;
+  subject: string;
+  tenant?: string;
+  user_id?: string;
+  grants: Grant[];
+  /** Held at global scope only — a tenant admin's list is empty. */
+  permissions: string[];
+}
+
+export interface Revocation {
+  principal_id: string;
+  kind: string;
+  user_id?: string;
+  reason?: string;
+  revoked_at: string;
+}
+
+/**
+ * What was published and what the gateway is applying.
+ *
+ * The gap between them is the exposure: until `in_effect`, a revoked credential
+ * still works.
+ */
+export interface RevocationReport {
+  version: number;
+  serving_version: number;
+  serving_age_seconds: number;
+  in_effect: boolean;
+  pruned_through: number;
+  path?: string;
+  warning?: string;
+  revocations: Revocation[];
 }
 
 export interface RoleCatalog {

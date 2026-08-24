@@ -109,6 +109,8 @@ func New(opts Options) *cobra.Command {
 		newKeysCmd(env),
 		newGatewayCmd(env),
 		newRegistryCmd(env),
+		newAuthCmd(env),
+		newRevocationsCmd(env),
 		newTenantsCmd(env),
 		newUsersCmd(env),
 		newRolesCmd(env),

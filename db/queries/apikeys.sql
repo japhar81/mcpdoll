@@ -48,3 +48,9 @@ SELECT * FROM api_keys
 WHERE revoked_at IS NULL
   AND (expires_at IS NULL OR expires_at > now())
 ORDER BY created_at;
+
+-- name: ListAPIKeyIDsByUser :many
+SELECT id FROM api_keys WHERE user_id = $1;
+
+-- name: GetAPIKey :one
+SELECT * FROM api_keys WHERE id = $1;

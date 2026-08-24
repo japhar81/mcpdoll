@@ -3,7 +3,6 @@
 package apiserver
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +18,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/inspector"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/store"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 )
 
 // Config is what a control-plane API server needs to run.
@@ -45,6 +45,12 @@ type Config struct {
 	SigningKeyID   string
 	// KeyDir is where generateSigningKey writes new keypairs.
 	KeyDir string
+
+	// RevocationsPath is where the signed revocation list is written, for the
+	// data plane to pick up (ADR 0023). Empty means revocations still take
+	// effect — at snapshot latency, which is the thing this artifact exists to
+	// avoid — so [New] warns rather than failing.
+	RevocationsPath string
 
 	// Token is the bearer credential every operation except /healthz requires.
 	Token string
@@ -105,6 +111,13 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg, log: cfg.Logger}
 	s.routes()
 
+	if cfg.RevocationsPath == "" {
+		s.log.Warn("no revocation list path configured",
+			slog.String("detail",
+				"revoking a credential will not take effect until the next snapshot "+
+					"is published; set controlplane.revocations_path (ADR 0023)"))
+	}
+
 	if cfg.AllowAnonymous {
 		s.log.Warn("control-plane API is unauthenticated",
 			slog.String("detail",
@@ -131,47 +144,112 @@ func (s *Server) routes() {
 	// observing that the port accepts connections.
 	r.Get("/healthz", s.handleHealth)
 
+	// Outside the auth wall, necessarily: signing in cannot require being
+	// signed in. It was inside, and a test caught it — the comment claiming it
+	// was fine was wrong about how chi's Use applies to a group.
+	//
+	// An unauthenticated endpoint that touches the database is a brute-force
+	// target, and the rate limiting here is structural rather than a counter:
+	// verification runs Argon2id at 64 MiB and ~50ms per attempt (ADR 0021),
+	// so a few hundred guesses a second per instance is not reachable. That is
+	// the one place a memory-hard KDF is exactly right, which is why passwords
+	// kept it while key secrets did not.
+	r.Post("/api/v1/auth/login", s.handleLogin)
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(s.authenticate)
 
-		r.Get("/hooks", s.handleListHooks)
+		// Reading and ending your own session need no permission — the
+		// question is about the credential you already presented.
+		r.Get("/auth/session", s.handleGetSession)
+		r.Delete("/auth/session", s.handleLogout)
 
-		r.Get("/registry", s.handleGetRegistry)
-		r.Post("/registry:validate", s.handleValidateRegistry)
-		r.Get("/registry/servers", s.handleListServers)
-		r.Get("/registry/servers/{serverId}", s.handleGetServer)
+		// Every operation below states its permission and its scope here,
+		// beside the route. Reading this table answers "who can do this"
+		// without reading a handler, and a new route gets an explicit
+		// permission rather than whatever a pattern happened to match
+		// (ADR 0022).
+		global := authz.GlobalScope
 
-		r.Get("/plugins", s.handleListPlugins)
+		r.With(s.require(authz.PermRegistryRead, global)).
+			Get("/hooks", s.handleListHooks)
 
-		r.Get("/snapshots/current", s.handleGetCurrentSnapshot)
-		r.Post("/snapshots:inspect", s.handleInspectSnapshot)
-		r.Post("/snapshots:verify", s.handleVerifySnapshot)
-		r.Post("/snapshots:build", s.handleBuildSnapshot)
+		r.With(s.require(authz.PermRegistryRead, global)).Group(func(r chi.Router) {
+			r.Get("/registry", s.handleGetRegistry)
+			r.Post("/registry:validate", s.handleValidateRegistry)
+			r.Get("/registry/servers", s.handleListServers)
+			r.Get("/registry/servers/{serverId}", s.handleGetServer)
+			r.Get("/plugins", s.handleListPlugins)
 
-		r.Post("/keys:generate", s.handleGenerateSigningKey)
+			// Reading a snapshot is reading configuration. Building one is a
+			// different permission, below, because preparing a change and
+			// shipping it are the separation this permission set exists for.
+			r.Get("/snapshots/current", s.handleGetCurrentSnapshot)
+			r.Post("/snapshots:inspect", s.handleInspectSnapshot)
+			r.Post("/snapshots:verify", s.handleVerifySnapshot)
+		})
 
-		r.Get("/gateway/status", s.handleGatewayStatus)
-		r.Get("/gateway/backends", s.handleListBackends)
-		r.Get("/gateway/catalog", s.handleCatalog)
-		r.Post("/gateway/tools/{toolName}:call", s.handleCallTool)
+		r.With(s.require(authz.PermSnapshotBuild, global)).
+			Post("/snapshots:build", s.handleBuildSnapshot)
 
-		// Tenancy and RBAC. Everything below is backed by the database rather
-		// than by a file, and reports plainly when there is not one.
+		// The narrowest and most dangerous permission there is: it grants the
+		// ability to sign configuration every data-plane instance will accept.
+		r.With(s.require(authz.PermKeyGenerate, global)).
+			Post("/keys:generate", s.handleGenerateSigningKey)
+
+		r.With(s.require(authz.PermGatewayInspect, global)).Group(func(r chi.Router) {
+			r.Get("/gateway/status", s.handleGatewayStatus)
+			r.Get("/gateway/backends", s.handleListBackends)
+			r.Get("/gateway/catalog", s.handleCatalog)
+			r.Post("/gateway/tools/{toolName}:call", s.handleCallTool)
+		})
+
+		// Tenancy and RBAC.
+		//
+		// listTenants takes no permission check here: it filters to what the
+		// caller can see rather than refusing outright. A control plane that
+		// answers "forbidden" to a question the caller is partly entitled to
+		// ask is useless to anyone who is not a platform administrator.
 		r.Get("/tenants", s.handleListTenants)
-		r.Post("/tenants", s.handleCreateTenant)
-		r.Delete("/tenants/{tenantId}", s.handleDeleteTenant)
-		r.Get("/tenants/{tenantId}/users", s.handleListUsers)
-		r.Post("/tenants/{tenantId}/users", s.handleCreateUser)
+		r.With(s.require(authz.PermTenantManage, global)).
+			Post("/tenants", s.handleCreateTenant)
+		r.With(s.requireScoped("tenantId", authz.PermTenantManage, s.tenantScopeOf)).
+			Delete("/tenants/{tenantId}", s.handleDeleteTenant)
 
-		r.Get("/users/{userId}", s.handleGetUser)
-		r.Patch("/users/{userId}", s.handleUpdateUser)
-		r.Get("/users/{userId}/grants", s.handleListGrants)
-		r.Put("/users/{userId}/grants", s.handlePutGrants)
-		r.Get("/users/{userId}/keys", s.handleListAPIKeys)
-		r.Post("/users/{userId}/keys", s.handleMintAPIKey)
-		r.Delete("/keys/{keyId}", s.handleRevokeAPIKey)
+		r.With(s.requireScoped("tenantId", authz.PermUserManage, s.tenantScopeOf)).Group(func(r chi.Router) {
+			r.Get("/tenants/{tenantId}/users", s.handleListUsers)
+			r.Post("/tenants/{tenantId}/users", s.handleCreateUser)
+		})
 
-		r.Get("/roles", s.handleListRoles)
+		r.With(s.requireScoped("userId", authz.PermUserManage, s.userScopeOf)).Group(func(r chi.Router) {
+			r.Get("/users/{userId}", s.handleGetUser)
+			r.Patch("/users/{userId}", s.handleUpdateUser)
+		})
+
+		// Deciding what a user may do is not the same as creating one, and
+		// role:manage is separate from user:manage for exactly that reason: an
+		// operator who can onboard without it cannot promote themselves.
+		r.With(s.requireScoped("userId", authz.PermRoleManage, s.userScopeOf)).Group(func(r chi.Router) {
+			r.Get("/users/{userId}/grants", s.handleListGrants)
+			r.Put("/users/{userId}/grants", s.handlePutGrants)
+		})
+
+		r.With(s.requireScoped("userId", authz.PermKeyManage, s.userScopeOf)).Group(func(r chi.Router) {
+			r.Get("/users/{userId}/keys", s.handleListAPIKeys)
+			r.Post("/users/{userId}/keys", s.handleMintAPIKey)
+		})
+		// Revoking is keyed by the key, whose owner's tenant is the scope.
+		r.With(s.requireScoped("keyId", authz.PermKeyManage, s.keyScopeOf)).
+			Delete("/keys/{keyId}", s.handleRevokeAPIKey)
+
+		r.With(s.require(authz.PermRegistryRead, global)).
+			Get("/roles", s.handleListRoles)
+
+		// Reading the revocation state is an operational question — "is what I
+		// revoked actually in effect?" — so it sits with gateway inspection
+		// rather than with key management.
+		r.With(s.require(authz.PermGatewayInspect, global)).
+			Get("/revocations", s.handleGetRevocations)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -184,28 +262,6 @@ func (s *Server) routes() {
 	})
 
 	s.mux = r
-}
-
-// authenticate enforces the bearer token.
-func (s *Server) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AllowAnonymous {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		header := r.Header.Get("Authorization")
-		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-		// Constant time, so the comparison does not leak the token's prefix to
-		// somebody willing to make a few million requests.
-		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="mcpdoll"`)
-			writeError(w, s.log, http.StatusUnauthorized, CodeInvalidRequest,
-				"a bearer token is required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // cors permits exactly the configured origins.

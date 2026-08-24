@@ -117,6 +117,11 @@ func (c *Client) Status(ctx context.Context) (api.GatewayStatus, error) {
 		Version int64  `json:"snapshot_version"`
 		Tenants int    `json:"tenants"`
 		Tools   int    `json:"tools"`
+		// The second signed artifact's state (ADR 0023). The age is the
+		// exposure window for a revoked credential.
+		RevocationsVersion    int64   `json:"revocations_version"`
+		RevocationsAgeSeconds float64 `json:"revocations_age_seconds"`
+		RevokedPrincipals     int     `json:"revoked_principals"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return out, fmt.Errorf("%w: %s returned an unreadable body: %v", ErrUnavailable, url, err)
@@ -133,6 +138,9 @@ func (c *Client) Status(ctx context.Context) (api.GatewayStatus, error) {
 	out.SnapshotVersion = payload.Version
 	out.Tenants = payload.Tenants
 	out.Tools = payload.Tools
+	out.RevocationsVersion = payload.RevocationsVersion
+	out.RevocationsAgeSeconds = payload.RevocationsAgeSeconds
+	out.RevokedPrincipals = payload.RevokedPrincipals
 	return out, nil
 }
 

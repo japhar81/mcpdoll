@@ -72,7 +72,15 @@ type DataPlane struct {
 	// (load from disk — used by tests and by air-gapped deployments).
 	SnapshotSource string `yaml:"snapshot_source"`
 	SnapshotPath   string `yaml:"snapshot_path"`
-	ControlPlaneCP string `yaml:"control_plane_addr"`
+	// RevocationsPath is the signed revocation list (ADR 0023). Optional: a
+	// deployment that has never revoked anything has nothing to distribute, and
+	// an absent file means an empty list rather than a startup failure.
+	//
+	// Leaving it unset in production is a real exposure, not a preference — a
+	// revoked credential then works until the next snapshot — so [Validate]
+	// says so rather than letting it pass silently.
+	RevocationsPath string `yaml:"revocations_path"`
+	ControlPlaneCP  string `yaml:"control_plane_addr"`
 	// TrustedSigningKeys are the base64 Ed25519 public keys a snapshot may be
 	// signed with. More than one so a key rotation does not need lockstep
 	// restarts.
@@ -305,6 +313,15 @@ func (c *Config) Validate() error {
 		if c.DataPlane.SnapshotPath == "" {
 			errs = append(errs, "dataplane.snapshot_path is required when snapshot_source is \"file\"")
 		}
+		if c.DataPlane.RevocationsPath == "" && isProduction(c.Env) {
+			// Not an error: a deployment can legitimately choose to accept
+			// snapshot-latency revocation. But it must be a choice somebody
+			// made, and there is nowhere else this would be visible.
+			errs = append(errs,
+				"dataplane.revocations_path is required in production: without it a "+
+					"revoked credential keeps working until the next snapshot is "+
+					"published, which may be never (ADR 0023)")
+		}
 	default:
 		errs = append(errs, fmt.Sprintf("dataplane.snapshot_source %q must be \"grpc\" or \"file\"", c.DataPlane.SnapshotSource))
 	}
@@ -406,4 +423,16 @@ func floatingAlias(model string) string {
 		}
 	}
 	return ""
+}
+
+// isProduction reports whether an environment name means production.
+//
+// Matched in one place so a new spelling is a one-line change rather than a
+// drift between the checks that care.
+func isProduction(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "production", "prod":
+		return true
+	}
+	return false
 }

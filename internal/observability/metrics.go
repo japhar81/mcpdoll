@@ -47,6 +47,18 @@ type Metrics struct {
 	SnapshotSwaps   metric.Int64Counter
 	SnapshotRejects metric.Int64Counter
 
+	// ---- revocation -------------------------------------------------------
+	//
+	// RevocationsAgeSecs is the one to alert on. ADR 0023 does not eliminate
+	// the leaked-credential exposure — failing closed on an unreachable list
+	// would let a control-plane outage stop tool calls — it bounds it, and this
+	// is the bound: a revoked credential keeps working for exactly as long as
+	// this list is out of date.
+	RevocationsAgeSecs metric.Float64Gauge
+	RevocationsVersion metric.Int64Gauge
+	RevocationsCount   metric.Int64Gauge
+	RevocationRefusals metric.Int64Counter
+
 	// ---- drift ------------------------------------------------------------
 	DriftEvents metric.Int64Counter
 }
@@ -139,6 +151,22 @@ func NewMetrics(m metric.Meter) (*Metrics, error) {
 	track(err)
 	out.SnapshotRejects, err = m.Int64Counter("mcpdoll.snapshot.rejects",
 		metric.WithDescription("Snapshots refused, by reason (signature/version/validation)"))
+	track(err)
+
+	out.RevocationsAgeSecs, err = m.Float64Gauge("mcpdoll.revocations.age",
+		metric.WithDescription(
+			"Age of the revocation list in effect. This is the exposure window for a "+
+				"revoked credential, and the number to alert on"),
+		metric.WithUnit("s"))
+	track(err)
+	out.RevocationsVersion, err = m.Int64Gauge("mcpdoll.revocations.version",
+		metric.WithDescription("Version of the revocation list this instance is applying"))
+	track(err)
+	out.RevocationsCount, err = m.Int64Gauge("mcpdoll.revocations.principals",
+		metric.WithDescription("Principals the revocation list currently refuses"))
+	track(err)
+	out.RevocationRefusals, err = m.Int64Counter("mcpdoll.revocations.refusals",
+		metric.WithDescription("Requests refused because the credential was revoked"))
 	track(err)
 
 	out.DriftEvents, err = m.Int64Counter("mcpdoll.drift.events",

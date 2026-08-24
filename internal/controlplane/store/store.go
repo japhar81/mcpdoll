@@ -300,7 +300,7 @@ func (s *Store) SetGrants(ctx context.Context, userID uuid.UUID, want []authz.Gr
 	}
 	for g := range held {
 		if !wanted[g] {
-			if err := s.Revoke(ctx, userID, g); err != nil {
+			if err := s.RevokeGrant(ctx, userID, g); err != nil {
 				return err
 			}
 		}
@@ -389,9 +389,14 @@ func (s *Store) Grant(ctx context.Context, userID uuid.UUID, grant authz.Grant, 
 	return wrap(err, "granting %s @ %s", grant.Role, grant.Scope)
 }
 
-// Revoke removes a grant. Removing one that does not exist is not an error:
-// the caller's intent is that the user should not hold it, and they do not.
-func (s *Store) Revoke(ctx context.Context, userID uuid.UUID, grant authz.Grant) error {
+// RevokeGrant removes a grant. Removing one that does not exist is not an
+// error: the caller's intent is that the user should not hold it, and they do
+// not.
+//
+// Named for what it removes, because [Store.Revoke] now means something else
+// entirely — refusing a credential outright (ADR 0023) — and two methods called
+// `Revoke` on one type would be a genuinely dangerous ambiguity.
+func (s *Store) RevokeGrant(ctx context.Context, userID uuid.UUID, grant authz.Grant) error {
 	return wrap(s.q.RevokeGrant(ctx, dbgen.RevokeGrantParams{
 		UserID: userID, Role: grant.Role, Scope: grant.Scope,
 	}), "revoking %s @ %s", grant.Role, grant.Scope)
@@ -541,6 +546,15 @@ func (s *Store) ResolveAPIKey(ctx context.Context, presented string) (Resolved, 
 	effective := authz.Intersect(declared, ownerGrants)
 
 	return Resolved{User: user, Tenant: tenant, Key: &key, Grants: effective}, nil
+}
+
+// GetAPIKey reads one key by id, without its secret.
+func (s *Store) GetAPIKey(ctx context.Context, id uuid.UUID) (APIKey, error) {
+	row, err := s.q.GetAPIKey(ctx, id)
+	if err != nil {
+		return APIKey{}, wrap(err, "reading key %s", id)
+	}
+	return apiKeyFrom(row), nil
 }
 
 // ListAPIKeysByUser returns a user's keys, without secrets.

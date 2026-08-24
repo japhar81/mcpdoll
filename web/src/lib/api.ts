@@ -13,7 +13,10 @@ import type {
   Grant,
   GrantList,
   MintedAPIKey,
+  RevocationReport,
   RoleCatalog,
+  Session,
+  SessionInfo,
   Tenant,
   TenantList,
   User,
@@ -346,3 +349,48 @@ export const revokeAPIKey = (keyId: string) =>
   request<void>("DELETE", `/api/v1/keys/${encodeURIComponent(keyId)}`);
 
 export const listRoles = () => request<RoleCatalog>("GET", "/api/v1/roles");
+
+// ------------------------------------------------------------------- auth ---
+
+/**
+ * Sign in as a person.
+ *
+ * Deliberately not through `request`: the token under test must not be
+ * installed before it is known to work, and a failed sign-in must not trip the
+ * global unauthorized handler — the caller is *asking* about a 401, not
+ * suffering one.
+ */
+export async function login(
+  tenant: string,
+  email: string,
+  password: string,
+): Promise<Session> {
+  const response = await fetch("/api/v1/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tenant, email, password }),
+  });
+  const text = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      parsed as ApiErrorBody | undefined,
+      "sign-in failed",
+    );
+  }
+  return parsed as Session;
+}
+
+export const getSession = () =>
+  request<SessionInfo>("GET", "/api/v1/auth/session");
+
+export const logout = () => request<void>("DELETE", "/api/v1/auth/session");
+
+export const getRevocations = () =>
+  request<RevocationReport>("GET", "/api/v1/revocations");
