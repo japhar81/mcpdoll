@@ -254,11 +254,11 @@ func (l pluginList) Table() Table {
 
 // --------------------------------------------------------------- gateway -----
 
-func newGatewayAudiencesCmd(env *Env) *cobra.Command {
+func newGatewayTenantsCmd(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "audiences",
 		Short:       "List the audiences a data plane serves",
-		Annotations: map[string]string{annotationOperation: "listAudiences"},
+		Annotations: map[string]string{annotationOperation: "listTenants"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 			defer cancel()
@@ -276,8 +276,9 @@ func newGatewayAudiencesCmd(env *Env) *cobra.Command {
 			defer resp.Body.Close()
 
 			var payload struct {
-				Version   int64 `json:"snapshot_version"`
-				Audiences int   `json:"audiences"`
+				Version int64 `json:"snapshot_version"`
+				Tenants int   `json:"tenants"`
+				Tools   int   `json:"tools"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 				return unavailableError(fmt.Errorf("%s returned an unreadable body: %w", url, err))
@@ -286,36 +287,38 @@ func newGatewayAudiencesCmd(env *Env) *cobra.Command {
 				return unavailableError(fmt.Errorf("the data plane is not ready"))
 			}
 
-			// The readiness endpoint reports a count, not names: the data plane
-			// deliberately exposes no enumeration of its audiences, since that
-			// would tell an unauthenticated caller which endpoints exist. Names
-			// come from the snapshot, which is the authoritative source anyway.
-			return env.Emit(audienceListReport{
+			// A count, not names: the data plane deliberately exposes no
+			// enumeration of its tenants, since that would tell an
+			// unauthenticated caller who is hosted here. Names come from the
+			// snapshot, which is the authoritative source anyway.
+			return env.Emit(tenantListReport{
 				GatewayURL:      env.GatewayURL(),
 				SnapshotVersion: payload.Version,
-				Count:           payload.Audiences,
+				Tenants:         payload.Tenants,
+				Tools:           payload.Tools,
 			})
 		},
 	}
 	return cmd
 }
 
-type audienceListReport struct {
+type tenantListReport struct {
 	GatewayURL      string `json:"gateway_url" yaml:"gateway_url"`
 	SnapshotVersion int64  `json:"snapshot_version" yaml:"snapshot_version"`
-	Count           int    `json:"audiences" yaml:"audiences"`
+	Tenants         int    `json:"tenants" yaml:"tenants"`
+	Tools           int    `json:"tools" yaml:"tools"`
 }
 
-func (r audienceListReport) Table() Table {
+func (r tenantListReport) Table() Table {
 	return Table{
-		Columns: []string{"GATEWAY", "SNAPSHOT", "AUDIENCES"},
+		Columns: []string{"GATEWAY", "SNAPSHOT", "TENANTS", "ADMITTED TOOLS"},
 		Rows: [][]string{{
-			r.GatewayURL, strconv.FormatInt(r.SnapshotVersion, 10), strconv.Itoa(r.Count),
+			r.GatewayURL, strconv.FormatInt(r.SnapshotVersion, 10),
+			strconv.Itoa(r.Tenants), strconv.Itoa(r.Tools),
 		}},
 		Notes: []string{
-			"the data plane reports a count, not names — enumerating endpoints to an",
-			"unauthenticated caller would be an information leak. Use",
-			"`mcpdoll snapshot inspect` for the names.",
+			"a count, not names — enumerating tenants to an unauthenticated caller",
+			"would be an information leak. Use `mcpdoll snapshot inspect` for names.",
 		},
 	}
 }

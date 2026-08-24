@@ -13,6 +13,11 @@ export function ServersScreen() {
         refuses to serve a definition that has drifted from what was admitted,{" "}
         <code>advisory</code> serves it and records the drift.
       </p>
+      <p className="muted">
+        One backend serves many tenants: the tenant count is how many addresses
+        it is bound to. Same tools, different data per tenant, which is why the
+        addresses live on the backend&apos;s own page rather than in this list.
+      </p>
       <Table
         columns={[
           "Backend",
@@ -20,7 +25,7 @@ export function ServersScreen() {
           "Mode",
           "Default effect",
           "Classification",
-          "Endpoint",
+          "Tenants",
         ]}
         rows={(q.data?.servers ?? []).map((s) => [
           <Link className="link" to={`/registry/servers/${s.id}`}>
@@ -34,7 +39,7 @@ export function ServersScreen() {
           ),
           <EffectBadge effect={s.default_effect_class} />,
           s.data_classification ?? "—",
-          <code>{s.endpoint}</code>,
+          <span className="mono">{s.bindings.length}</span>,
         ])}
         empty="No backends registered."
       />

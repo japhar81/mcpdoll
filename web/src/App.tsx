@@ -9,7 +9,7 @@ import {
 
 import { ROUTES, SECTIONS } from "./routes.tsx";
 import { AuthProvider, useAuth } from "./lib/auth.tsx";
-import { IdentityProvider } from "./lib/identity.tsx";
+import { InspectionProvider } from "./lib/inspection.tsx";
 import { RequireAuth } from "./components/RequireAuth.tsx";
 import { LoginScreen } from "./screens/LoginScreen.tsx";
 import "./styles.css";
@@ -28,7 +28,7 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <IdentityProvider>
+          <InspectionProvider>
             <Routes>
               {/* Outside the shell and outside the guard, or signing in would
                   require being signed in. */}
@@ -42,7 +42,7 @@ export function App() {
                 }
               />
             </Routes>
-          </IdentityProvider>
+          </InspectionProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

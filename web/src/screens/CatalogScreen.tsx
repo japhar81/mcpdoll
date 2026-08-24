@@ -1,61 +1,52 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
-import { getAudienceCatalog } from "../lib/api.ts";
+import { Link } from "react-router-dom";
+
+import { getCatalog } from "../lib/api.ts";
 import { ErrorBlock, Screen, Stats, Table } from "../components/Screen.tsx";
-import { IdentityFields } from "../components/IdentityFields.tsx";
-import {
-  toGroupList,
-  useIdentity,
-  type IdentityValue,
-} from "../lib/identity.tsx";
+import { useInspection } from "../lib/inspection.tsx";
 
 /**
- * The tool list one identity actually receives.
+ * The tool list one credential actually receives.
  *
  * This is the answer to "which tools can this agent call?" that cannot be
- * wrong, because it is produced by making the same request the agent makes.
- * Re-deriving it from policy is how people get it wrong.
+ * wrong, because it is produced by presenting what the agent presents. There is
+ * no audience to pick and no subject to claim: with one endpoint and
+ * per-principal catalogs (ADR 0019), re-deriving what someone *should* see is
+ * exactly the mistake this screen exists to avoid.
  */
 export function CatalogScreen() {
-  const { slug = "" } = useParams();
-  const { identity } = useIdentity();
-  // `applied` is what was actually sent. Typing must not re-fire the request on
-  // every keystroke: each one opens an MCP session against the data plane.
-  const [applied, setApplied] = useState<IdentityValue | null>(null);
+  const { credential, setCredential } = useInspection();
+  const [applied, setApplied] = useState<string | null>(null);
   const [full, setFull] = useState(false);
 
   const q = useQuery({
-    queryKey: ["catalog", slug, applied?.subject, applied?.groups, full],
-    queryFn: () =>
-      getAudienceCatalog(
-        slug,
-        {
-          subject: applied?.subject,
-          groups: toGroupList(applied?.groups ?? ""),
-        },
-        full,
-      ),
-    enabled: applied !== null,
+    queryKey: ["catalog", applied, full],
+    queryFn: () => getCatalog(applied ?? "", full),
+    enabled: applied !== null && applied !== "",
     retry: false,
   });
 
   return (
     <Screen
-      title={`Catalog — ${slug}`}
+      title="Inspect a principal"
       actions={
-        <>
-          <Link className="link" to={`/gateway/audiences/${slug}/playground`}>
-            call a tool →
-          </Link>
-          <Link className="link" to="/gateway/audiences">
-            all audiences
-          </Link>
-        </>
+        <Link className="link" to="/gateway/playground">
+          call a tool →
+        </Link>
       }
     >
       <div className="card">
-        <IdentityFields />
+        <label className="field">
+          API key to inspect as
+          <input
+            type="password"
+            spellCheck={false}
+            placeholder="mcpd.…"
+            value={credential}
+            onChange={(e) => setCredential(e.target.value)}
+          />
+        </label>
         <div className="row">
           <label className="inline">
             <input
@@ -68,21 +59,24 @@ export function CatalogScreen() {
           <span className="spacer" />
           <button
             className="primary"
-            onClick={() => setApplied({ ...identity })}
+            disabled={!credential.trim()}
+            onClick={() => setApplied(credential.trim())}
           >
             {q.isFetching ? "Connecting…" : "Connect and list"}
           </button>
         </div>
         <p className="muted">
-          Connects to <code>/mcp/{slug}</code> as a real MCP client presenting
-          this identity, and shows exactly what comes back.
+          Connects to <code>/mcp</code> as a real MCP client presenting this
+          credential, and shows exactly what comes back. The tenant and the
+          toolset both come from the key.
         </p>
       </div>
 
       {applied === null && (
         <p className="muted">
-          Set an identity and connect. An empty subject is a legitimate thing to
-          try — it shows what an unidentified caller receives.
+          Paste an agent&apos;s key and connect. A key with no grants is a
+          legitimate thing to try — it shows an empty catalog, which is the
+          correct state for a user nobody has granted anything yet.
         </p>
       )}
 
@@ -92,34 +86,21 @@ export function CatalogScreen() {
         <>
           <Stats
             items={[
+              { k: "Tenant", v: q.data.tenant, small: true },
+              { k: "Subject", v: q.data.subject ?? "—", small: true },
               { k: "Tools", v: q.data.tools.length },
               { k: "TTL (ms)", v: q.data.ttl_ms },
-              {
-                k: "Cache scope",
-                v:
-                  q.data.cache_scope === "public" ? (
-                    <span className="badge badge-ok">public</span>
-                  ) : (
-                    <span className="badge">{q.data.cache_scope}</span>
-                  ),
-              },
+              { k: "Cache scope", v: <span className="badge">{q.data.cache_scope}</span> },
               { k: "Protocol", v: q.data.protocol_version, small: true },
-              { k: "Server", v: q.data.server_name, small: true },
             ]}
           />
 
-          {q.data.cache_scope === "public" &&
-            (applied?.subject || applied?.groups) && (
-              <div className="note warn">
-                <strong>
-                  This catalog was requested for a specific principal and came
-                  back <code>public</code>.
-                </strong>{" "}
-                If anything filtered it, that is a cross-tenant cache leak.
-                Check whether an identity-dependent plugin is enabled for this
-                audience.
-              </div>
-            )}
+          <div className="note">
+            <strong>Every catalog is private.</strong> It is derived from this
+            principal&apos;s grants, so no two principals necessarily see the
+            same list and none of it may be shared from a common cache. That is
+            the permanent cost of per-user access control (ADR 0016).
+          </div>
 
           <Table
             columns={["Tool", "Namespace", "Description"]}
@@ -128,7 +109,7 @@ export function CatalogScreen() {
               t.namespace,
               <span className="muted">{t.description ?? ""}</span>,
             ])}
-            empty="This identity receives no tools at all."
+            empty="This credential receives no tools at all — it holds no grants."
           />
         </>
       )}

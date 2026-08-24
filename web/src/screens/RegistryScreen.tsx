@@ -17,36 +17,10 @@ export function RegistryScreen() {
               { k: "Version", v: reg.version },
               { k: "Namespaces", v: reg.namespaces.length },
               { k: "Backends", v: reg.servers.length },
-              { k: "Bundles", v: reg.bundles.length },
-              { k: "Audiences", v: reg.audiences.length },
+              { k: "Toolsets", v: reg.toolsets.length },
               { k: "Policies", v: reg.policies?.length ?? 0 },
               { k: "Plugins", v: reg.plugins?.length ?? 0 },
             ]}
-          />
-
-          <h2>Audiences</h2>
-          <p className="muted">
-            One MCP endpoint each. The groups column is who may connect — blank
-            means any authenticated principal.
-          </p>
-          <Table
-            columns={["Slug", "Name", "Bundles", "Allowed groups", ""]}
-            rows={reg.audiences.map((a) => [
-              <code>{a.slug}</code>,
-              a.name ?? "",
-              a.bundles.join(", "),
-              a.allowed_idp_groups?.length ? (
-                a.allowed_idp_groups.join(", ")
-              ) : (
-                <span className="muted">any authenticated</span>
-              ),
-              <Link
-                className="link"
-                to={`/gateway/audiences/${a.slug}/catalog`}
-              >
-                inspect →
-              </Link>,
-            ])}
           />
 
           <h2>Namespaces</h2>
@@ -64,19 +38,26 @@ export function RegistryScreen() {
             ])}
           />
 
-          <h2>Bundles</h2>
+          <h2>Toolsets</h2>
+          <p className="muted">
+            The grantable unit. A toolset name appears verbatim in every grant
+            scope, so renaming one silently changes who can reach it — which is
+            why the name is part of the registry rather than a display label.
+            Priority breaks ties when two toolsets carry the same tool.
+          </p>
           <Table
             columns={["Name", "Priority", "Namespaces", "Token budget"]}
-            rows={reg.bundles.map((b) => [
-              b.name,
-              <span className="mono">{b.priority}</span>,
-              b.namespaces.join(", "),
-              b.token_budget ? (
-                <span className="mono">{b.token_budget}</span>
+            rows={reg.toolsets.map((ts) => [
+              <code>{ts.name}</code>,
+              <span className="mono">{ts.priority}</span>,
+              ts.namespaces.join(", "),
+              ts.token_budget ? (
+                <span className="mono">{ts.token_budget}</span>
               ) : (
                 <span className="muted">unbounded</span>
               ),
             ])}
+            empty="The registry declares no toolsets, so no grant can name one."
           />
 
           <h2>Backends</h2>
@@ -84,6 +65,7 @@ export function RegistryScreen() {
             columns={[
               "Backend",
               "Namespace",
+              "Tenants",
               "Mode",
               "Default effect",
               "Classification",
@@ -93,6 +75,7 @@ export function RegistryScreen() {
                 {s.name}
               </Link>,
               s.namespace,
+              <span className="mono">{s.bindings.length}</span>,
               s.serving_mode,
               <EffectBadge effect={s.default_effect_class} />,
               s.data_classification ?? "—",

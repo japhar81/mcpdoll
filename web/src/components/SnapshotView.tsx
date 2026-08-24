@@ -27,7 +27,7 @@ export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
           },
           { k: "Signed by", v: snapshot.key_id || "—", small: true },
           { k: "Algorithm", v: snapshot.algorithm || "—", small: true },
-          { k: "Audiences", v: snapshot.audiences.length },
+          { k: "Tenants", v: snapshot.tenants.length },
         ]}
       />
 
@@ -39,32 +39,21 @@ export function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
         </p>
       )}
 
-      <h2>Audiences</h2>
+      <h2>Tenants</h2>
       <p className="muted">
-        Cache scope is worth a glance: a catalog that has been filtered for a
-        principal must never come back <code>public</code>.
+        Tools admitted per tenant. What any one principal sees is a subset of
+        their tenant&apos;s column, decided by their grants — so these counts
+        are the ceiling, not the catalog anybody receives.
       </p>
       <Table
-        columns={[
-          "Audience",
-          "Name",
-          "Tools",
-          "TTL (ms)",
-          "Cache scope",
-          "Tokens",
-        ]}
-        rows={snapshot.audiences.map((a) => [
-          <code>{a.slug}</code>,
-          a.name,
-          <span className="mono">{a.tools}</span>,
-          <span className="mono">{a.ttl_ms}</span>,
-          a.cache_scope === "public" ? (
-            <span className="badge badge-ok">public</span>
-          ) : (
-            <span className="badge">{a.cache_scope}</span>
-          ),
-          <span className="mono">{a.token_estimate}</span>,
+        columns={["Tenant", "Name", "Tools admitted", "Tokens"]}
+        rows={snapshot.tenants.map((t) => [
+          <code>{t.slug}</code>,
+          t.name,
+          <span className="mono">{t.tools}</span>,
+          <span className="mono">{t.token_estimate}</span>,
         ])}
+        empty="This snapshot admits nothing for any tenant."
       />
 
       {snapshot.tools && snapshot.tools.length > 0 && (

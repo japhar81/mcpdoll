@@ -9,7 +9,7 @@
  * Pure module — no React, so it is usable from a script or a test.
  */
 import type {
-  AudienceList,
+  TenantList,
   BackendHealthReport,
   BuildReport,
   CallResult,
@@ -113,8 +113,9 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...extraHeaders };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -230,44 +231,39 @@ export const getGatewayStatus = () =>
 export const listBackends = () =>
   request<BackendHealthReport>("GET", "/api/v1/gateway/backends");
 
-export const listAudiences = () =>
-  request<AudienceList>("GET", "/api/v1/gateway/audiences");
+export const listTenants = () =>
+  request<TenantList>("GET", "/api/v1/gateway/tenants");
 
-export interface Identity {
-  subject?: string;
-  groups?: string[];
-}
+/**
+ * What one credential can see.
+ *
+ * A credential, not an audience and a subject: with one endpoint and
+ * per-principal catalogs, the only trustworthy way to see what a principal sees
+ * is to present what they present (ADR 0019).
+ */
+export const getCatalog = (credential: string, full = false) =>
+  request<Catalog>("GET", "/api/v1/gateway/catalog" + query({ full }), undefined, {
+    "X-MCPDoll-Inspect-Credential": credential,
+  });
 
-export const getAudienceCatalog = (
-  slug: string,
-  identity: Identity,
-  full = false,
-) =>
-  request<Catalog>(
-    "GET",
-    `/api/v1/gateway/audiences/${encodeURIComponent(slug)}/catalog` +
-      query({
-        subject: identity.subject,
-        groups: identity.groups?.join(","),
-        full,
-      }),
-  );
-
-export interface CallToolInput extends Identity {
+export interface CallToolInput {
+  /** The API key to act as. */
+  credential: string;
   arguments?: Record<string, unknown>;
   request_state?: string;
   /** Keyed by input-request id: accept | decline | cancel | text:<value> */
   responses?: Record<string, string>;
 }
 
-export const callTool = (
-  slug: string,
-  toolName: string,
-  input: CallToolInput,
-) =>
+/**
+ * Call one tool as one credential.
+ *
+ * No slug in the path: the tenant and the toolset are properties of the key,
+ * not of the URL. Naming them separately would let the two disagree.
+ */
+export const callTool = (toolName: string, input: CallToolInput) =>
   request<CallResult>(
     "POST",
-    `/api/v1/gateway/audiences/${encodeURIComponent(slug)}` +
-      `/tools/${encodeURIComponent(toolName)}:call`,
+    `/api/v1/gateway/tools/${encodeURIComponent(toolName)}:call`,
     input,
   );

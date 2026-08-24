@@ -42,7 +42,6 @@ export function ServerDetailScreen() {
                 small: true,
               },
               { k: "Criticality", v: s.criticality ?? "—", small: true },
-              { k: "Endpoint", v: <code>{s.endpoint}</code>, small: true },
             ]}
           />
 
@@ -51,6 +50,32 @@ export function ServerDetailScreen() {
               <strong>Compliance scope:</strong> {s.compliance_scope.join(", ")}
             </div>
           ) : null}
+
+          <h2>Tenant bindings</h2>
+          <p className="muted">
+            One backend, one address per tenant. The same tools with different
+            data behind them — which is the whole reason a tenant is a routing
+            fact and not just a label (ADR 0017).
+          </p>
+          <p className="muted">
+            Only the primary is discovered. Replicas serve traffic but never
+            define the catalog: a replica whose tools have drifted is a routing
+            problem, and admitting from it would silently change what every
+            principal in that tenant can see.
+          </p>
+          <Table
+            columns={["Tenant", "Primary", "Replicas"]}
+            rows={s.bindings.map((b) => [
+              <code>{b.tenant}</code>,
+              <code>{b.primary}</code>,
+              b.replicas?.length ? (
+                <span className="mono">{b.replicas.join(", ")}</span>
+              ) : (
+                <span className="muted">none</span>
+              ),
+            ])}
+            empty="No tenant is bound to this backend, so it serves nobody."
+          />
 
           <h2>Tool classification</h2>
           <p className="muted">
@@ -72,7 +97,7 @@ export function ServerDetailScreen() {
             <>
               <h2>Withheld tools</h2>
               <p className="muted">
-                Never admitted, for any audience. An exclusion is not an
+                Never admitted, for any tenant. An exclusion is not an
                 override with a blank class: the tool does not reach the
                 snapshot at all.
               </p>

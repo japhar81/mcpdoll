@@ -84,12 +84,13 @@ export function SnapshotVerifyScreen() {
               { k: "Version", v: m.data.version },
               { k: "Signed by", v: m.data.key_id, small: true },
               { k: "Tools", v: m.data.tools },
-              { k: "Audiences", v: m.data.audiences.length },
+              { k: "Tenants", v: m.data.tenants.length },
             ]}
           />
           <Table
-            columns={["Audience"]}
-            rows={m.data.audiences.map((a) => [<code>{a}</code>])}
+            columns={["Tenant"]}
+            rows={m.data.tenants.map((t) => [<code>{t}</code>])}
+            empty="This snapshot names no tenants, so it would serve nobody."
           />
         </div>
       )}

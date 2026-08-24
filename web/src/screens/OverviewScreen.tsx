@@ -42,14 +42,15 @@ export function OverviewScreen() {
   });
 
   const summary = backends.data?.summary;
-  const toolCount = snapshot.data?.audiences.reduce((n, a) => n + a.tools, 0);
+  const toolCount = snapshot.data?.tenants.reduce((n, t) => n + t.tools, 0);
 
   return (
     <Screen title="Overview">
       <p className="muted">
-        MCPDoll fronts many MCP backends and publishes one endpoint per
-        audience. It is split into two planes that fail independently — that
-        split is the architecture, not an implementation detail.
+        MCPDoll fronts many MCP backends behind one MCP endpoint. Who you are
+        decides what you see: a principal's grants are their catalog. It is
+        split into two planes that fail independently — that split is the
+        architecture, not an implementation detail.
       </p>
 
       <div className="topology">
@@ -57,7 +58,7 @@ export function OverviewScreen() {
           role="Agents connect here"
           name="Data plane"
           url="http://localhost:8080"
-          urlNote="/mcp/<audience> — one MCP endpoint per audience"
+          urlNote="/mcp — one endpoint; the credential decides the catalog"
           state={
             gateway.data?.ready
               ? { label: "serving", tone: "ok" }
@@ -76,7 +77,7 @@ export function OverviewScreen() {
               "Snapshot",
               gateway.data ? String(gateway.data.snapshot_version) : "—",
             ],
-            ["Audiences", gateway.data ? String(gateway.data.audiences) : "—"],
+            ["Tenants", gateway.data ? String(gateway.data.tenants) : "—"],
             ["Tools served", toolCount === undefined ? "—" : String(toolCount)],
           ]}
           link={{ to: "/gateway", label: "data plane status →" }}
@@ -151,8 +152,9 @@ export function OverviewScreen() {
       <h2>How a tool call flows</h2>
       <ol className="flow">
         <li>
-          An agent connects to <code>/mcp/&lt;audience&gt;</code> on the data
-          plane and lists tools. It receives <strong>admitted</strong>{" "}
+          An agent connects to <code>/mcp</code> with its credential. The
+          gateway resolves that to a principal, composes the catalog from that
+          principal&apos;s grants, and serves <strong>admitted</strong>{" "}
           definitions from the snapshot — never whatever a backend currently
           reports.
         </li>

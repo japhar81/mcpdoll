@@ -109,12 +109,13 @@ describe("query strings", () => {
     expect(calls[0]!.url).toBe("/api/v1/snapshots/current");
   });
 
-  it("encode a slug that contains a slash", async () => {
+  it("encode a tool name that contains a slash", async () => {
     const calls = stubFetch(() => json({ audience: "x", tools: [] }));
-    const { getAudienceCatalog } = await import("./api.ts");
-    await getAudienceCatalog("a/b", { subject: "alice@example.com" });
+    const { callTool } = await import("./api.ts");
+    await callTool("crm.lookup/weird", { credential: "mcpd.a.b" });
 
-    expect(calls[0]!.url).toContain("/audiences/a%2Fb/catalog");
-    expect(calls[0]!.url).toContain("subject=alice%40example.com");
+    // A tool name is operator-supplied and reaches a URL path; without
+    // encoding, one containing a slash would address a different route.
+    expect(calls[0]!.url).toContain("/tools/crm.lookup%2Fweird:call");
   });
 });

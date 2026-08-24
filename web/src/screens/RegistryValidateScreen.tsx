@@ -61,8 +61,7 @@ export function RegistryValidateScreen() {
               { k: "Version", v: m.data.version },
               { k: "Namespaces", v: m.data.namespaces },
               { k: "Backends", v: m.data.servers },
-              { k: "Bundles", v: m.data.bundles },
-              { k: "Audiences", v: m.data.audiences },
+              { k: "Toolsets", v: m.data.toolsets },
               { k: "Policies", v: m.data.policies },
               { k: "Plugins", v: m.data.plugins },
             ]}

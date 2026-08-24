@@ -32,7 +32,7 @@ export interface Server {
   id: string;
   name: string;
   namespace: string;
-  endpoint: string;
+  bindings: Binding[];
   /** Resolved, never empty: an unset serving_mode means "strict". */
   serving_mode: string;
   criticality?: string;
@@ -46,21 +46,23 @@ export interface Server {
   excluded_tools?: string[];
 }
 
-export interface Bundle {
+/** A named, grantable group of tools. Its name appears in every grant scope. */
+export interface Toolset {
   id: string;
   name: string;
   priority: number;
   token_budget?: number;
   namespaces: string[];
+  tools?: string[];
+  exclude?: string[];
 }
 
-export interface Audience {
-  id: string;
-  slug: string;
-  name?: string;
-  bundles: string[];
-  policies?: string[];
-  allowed_idp_groups?: string[];
+/** One tenant's hosts for a backend. */
+export interface Binding {
+  tenant: string;
+  /** The definition source; replicas are compared against it. */
+  primary: string;
+  replicas?: string[];
 }
 
 export interface Policy {
@@ -92,8 +94,7 @@ export interface Registry {
   version: number;
   namespaces: Namespace[];
   servers: Server[];
-  bundles: Bundle[];
-  audiences: Audience[];
+  toolsets: Toolset[];
   policies?: Policy[];
   plugins?: Plugin[];
 }
@@ -113,8 +114,7 @@ export interface RegistrySummary {
   version: number;
   namespaces: number;
   servers: number;
-  bundles: number;
-  audiences: number;
+  toolsets: number;
   policies: number;
   plugins: number;
 }
@@ -124,12 +124,20 @@ export interface GatewayStatus {
   status: string;
   ready: boolean;
   snapshot_version: number;
-  audiences: number;
+  tenants: number;
+  tools: number;
 }
 
-export interface AudienceList extends GatewayStatus {
+export interface TenantSummary {
+  slug: string;
+  name: string;
+  status: string;
+  tools: number;
+}
+
+export interface TenantList extends GatewayStatus {
   /** What the registry declares — not necessarily what is being served now. */
-  registered: Audience[];
+  registered: TenantSummary[];
 }
 
 export interface CatalogTool {
@@ -140,9 +148,9 @@ export interface CatalogTool {
 }
 
 export interface Catalog {
-  audience: string;
+  /** There is no audience: the principal is the audience (ADR 0016). */
+  tenant: string;
   subject?: string;
-  groups?: string[];
   protocol_version: string;
   server_name: string;
   /** A filtered catalog that came back `public` is a cross-tenant leak. */
@@ -153,7 +161,6 @@ export interface Catalog {
 
 export interface CallResult {
   tool: string;
-  audience: string;
   is_error: boolean;
   /** An MRTR deferral: the call did not fail, it is waiting for a human. */
   needs_input: boolean;
@@ -165,12 +172,11 @@ export interface CallResult {
   request_state?: string;
 }
 
-export interface AudienceSummary {
+/** One tenant's slice of a snapshot. Each principal sees a subset of it. */
+export interface TenantSnapshotSummary {
   slug: string;
   name: string;
   tools: number;
-  ttl_ms: number;
-  cache_scope: string;
   token_estimate: number;
 }
 
@@ -195,7 +201,7 @@ export interface Snapshot {
   /** Whether it would actually activate. Signature validity is a separate question. */
   servable: boolean;
   unservable_reason?: string;
-  audiences: AudienceSummary[];
+  tenants: TenantSnapshotSummary[];
   tools?: ToolSummary[];
 }
 
@@ -220,8 +226,7 @@ export interface BuildReport {
   namespaces: number;
   servers: number;
   tools: number;
-  bundles: number;
-  audiences: number;
+  toolsets: number;
   plugins: number;
   backends: BackendReport[];
   warnings?: string[];
@@ -234,7 +239,7 @@ export interface VerifyReport {
   valid: boolean;
   version: number;
   key_id: string;
-  audiences: string[];
+  tenants: string[];
   tools: number;
 }
 

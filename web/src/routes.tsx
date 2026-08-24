@@ -28,7 +28,7 @@ import { SnapshotVerifyScreen } from "./screens/SnapshotVerifyScreen.tsx";
 import { KeysScreen } from "./screens/KeysScreen.tsx";
 import { GatewayScreen } from "./screens/GatewayScreen.tsx";
 import { BackendsScreen } from "./screens/BackendsScreen.tsx";
-import { AudiencesScreen } from "./screens/AudiencesScreen.tsx";
+import { TenantsScreen } from "./screens/TenantsScreen.tsx";
 import { CatalogScreen } from "./screens/CatalogScreen.tsx";
 import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
 
@@ -149,21 +149,25 @@ export const ROUTES: RouteDef[] = [
     section: "Data plane",
   },
   {
-    path: "/gateway/audiences",
-    operation: "listAudiences",
-    component: AudiencesScreen,
-    nav: "Audiences",
+    path: "/gateway/tenants",
+    operation: "listTenants",
+    component: TenantsScreen,
+    nav: "Tenants",
     section: "Data plane",
   },
   {
-    path: "/gateway/audiences/:slug/catalog",
-    operation: "getAudienceCatalog",
+    path: "/gateway/catalog",
+    operation: "getCatalog",
     component: CatalogScreen,
+    nav: "Inspect a principal",
+    section: "Data plane",
   },
   {
-    path: "/gateway/audiences/:slug/playground",
+    path: "/gateway/playground",
     operation: "callTool",
     component: PlaygroundScreen,
+    nav: "Call a tool",
+    section: "Data plane",
   },
 
   {

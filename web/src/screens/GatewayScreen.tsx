@@ -25,7 +25,8 @@ export function GatewayScreen() {
                 ),
               },
               { k: "Snapshot", v: q.data.snapshot_version },
-              { k: "Audiences", v: q.data.audiences },
+              { k: "Tenants", v: q.data.tenants },
+              { k: "Tools", v: q.data.tools },
               { k: "URL", v: <code>{q.data.gateway_url}</code>, small: true },
             ]}
           />

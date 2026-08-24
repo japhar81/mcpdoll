@@ -22,8 +22,8 @@ export const ROUTE_BINDINGS: RouteBinding[] = [
   { path: "/snapshots/keys", operation: "generateSigningKey" },
   { path: "/gateway", operation: "getGatewayStatus" },
   { path: "/gateway/backends", operation: "listBackends" },
-  { path: "/gateway/audiences", operation: "listAudiences" },
-  { path: "/gateway/audiences/:slug/catalog", operation: "getAudienceCatalog" },
-  { path: "/gateway/audiences/:slug/playground", operation: "callTool" },
+  { path: "/gateway/tenants", operation: "listTenants" },
+  { path: "/gateway/catalog", operation: "getCatalog" },
+  { path: "/gateway/playground", operation: "callTool" },
   { path: "/system/health", operation: "getHealth" },
 ];

@@ -14,8 +14,6 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
-
-	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
 )
 
 // The gateway commands are the CLI half of the console's inspector: connect to a
@@ -36,7 +34,7 @@ func newGatewayCmd(env *Env) *cobra.Command {
 		newGatewayStatusCmd(env),
 		newGatewayCatalogCmd(env),
 		newGatewayCallCmd(env),
-		newGatewayAudiencesCmd(env),
+		newGatewayTenantsCmd(env),
 		newGatewayBackendsCmd(env),
 	)
 	return cmd
@@ -68,9 +66,10 @@ func newGatewayStatusCmd(env *Env) *cobra.Command {
 			defer resp.Body.Close()
 
 			var payload struct {
-				Status    string `json:"status"`
-				Version   int64  `json:"snapshot_version"`
-				Audiences int    `json:"audiences"`
+				Status  string `json:"status"`
+				Version int64  `json:"snapshot_version"`
+				Tenants int    `json:"tenants"`
+				Tools   int    `json:"tools"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 				return unavailableError(fmt.Errorf("%s returned an unreadable body: %w", url, err))
@@ -90,7 +89,8 @@ func newGatewayStatusCmd(env *Env) *cobra.Command {
 				Status:          payload.Status,
 				Ready:           true,
 				SnapshotVersion: payload.Version,
-				Audiences:       payload.Audiences,
+				Tenants:         payload.Tenants,
+				Tools:           payload.Tools,
 			})
 		},
 	}
@@ -102,17 +102,19 @@ type statusReport struct {
 	Status          string `json:"status" yaml:"status"`
 	Ready           bool   `json:"ready" yaml:"ready"`
 	SnapshotVersion int64  `json:"snapshot_version" yaml:"snapshot_version"`
-	Audiences       int    `json:"audiences" yaml:"audiences"`
+	Tenants         int    `json:"tenants" yaml:"tenants"`
+	Tools           int    `json:"tools" yaml:"tools"`
 }
 
 func (r statusReport) Table() Table {
 	return Table{
-		Columns: []string{"GATEWAY", "READY", "SNAPSHOT", "AUDIENCES"},
+		Columns: []string{"GATEWAY", "READY", "SNAPSHOT", "TENANTS", "TOOLS"},
 		Rows: [][]string{{
 			r.GatewayURL,
 			strconv.FormatBool(r.Ready),
 			strconv.FormatInt(r.SnapshotVersion, 10),
-			strconv.Itoa(r.Audiences),
+			strconv.Itoa(r.Tenants),
+			strconv.Itoa(r.Tools),
 		}},
 	}
 }
@@ -121,10 +123,8 @@ func (r statusReport) Table() Table {
 
 func newGatewayCatalogCmd(env *Env) *cobra.Command {
 	var (
-		audience string
-		subject  string
-		groups   []string
-		full     bool
+		credential string
+		full       bool
 	)
 
 	cmd := &cobra.Command{
@@ -134,12 +134,12 @@ func newGatewayCatalogCmd(env *Env) *cobra.Command {
 			"prints the catalog it receives — including ttlMs and cacheScope.\n\n" +
 			"This is the answer to \"which tools can this agent call?\" that cannot be wrong,\n" +
 			"because it is the same request the agent makes.",
-		Example: "  mcpdoll gateway catalog --audience platform-agents --subject alice@example.com --groups support",
+		Example: "  mcpdoll gateway catalog --as $MCPDOLL_AGENT_KEY ",
 		Annotations: map[string]string{
-			annotationOperation: "getAudienceCatalog",
+			annotationOperation: "getCatalog",
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			session, err := env.connectMCP(cmd.Context(), audience, subject, groups)
+			session, err := env.connectMCP(cmd.Context(), credential)
 			if err != nil {
 				return err
 			}
@@ -151,9 +151,6 @@ func newGatewayCatalogCmd(env *Env) *cobra.Command {
 			}
 
 			report := catalogReport{
-				Audience:   audience,
-				Subject:    subject,
-				Groups:     groups,
 				TTLMs:      res.TTLMs,
 				CacheScope: res.CacheScope,
 				full:       full,
@@ -177,18 +174,16 @@ func newGatewayCatalogCmd(env *Env) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&audience, "audience", "", "audience slug to connect as")
-	cmd.Flags().StringVar(&subject, "subject", "", "principal subject to present")
-	cmd.Flags().StringArrayVar(&groups, "groups", nil, "IdP groups to present (repeatable)")
+	cmd.Flags().StringVar(&credential, "as", "",
+		"API key to inspect as; inspection presents what the principal presents")
 	cmd.Flags().BoolVar(&full, "full", false, "print full descriptions rather than the first line")
-	_ = cmd.MarkFlagRequired("audience")
+	_ = cmd.MarkFlagRequired("as")
 	return cmd
 }
 
 type catalogReport struct {
-	Audience        string         `json:"audience" yaml:"audience"`
+	Tenant          string         `json:"tenant" yaml:"tenant"`
 	Subject         string         `json:"subject,omitempty" yaml:"subject,omitempty"`
-	Groups          []string       `json:"groups,omitempty" yaml:"groups,omitempty"`
 	ProtocolVersion string         `json:"protocol_version" yaml:"protocol_version"`
 	ServerName      string         `json:"server_name" yaml:"server_name"`
 	TTLMs           int            `json:"ttl_ms" yaml:"ttl_ms"`
@@ -211,7 +206,7 @@ func (r catalogReport) Table() Table {
 		rows = append(rows, []string{t.Name, t.Namespace, t.Description})
 	}
 	notes := []string{
-		fmt.Sprintf("%d tool(s) for audience %q via %s", len(r.Tools), r.Audience, r.ProtocolVersion),
+		fmt.Sprintf("%d tool(s) for tenant %q via %s", len(r.Tools), r.Tenant, r.ProtocolVersion),
 		fmt.Sprintf("ttlMs=%d cacheScope=%s", r.TTLMs, r.CacheScope),
 	}
 	if r.CacheScope == "private" {
@@ -229,9 +224,7 @@ func (r catalogReport) Table() Table {
 
 func newGatewayCallCmd(env *Env) *cobra.Command {
 	var (
-		audience     string
-		subject      string
-		groups       []string
+		credential   string
 		argsJSON     string
 		requestState string
 		respond      []string
@@ -243,12 +236,12 @@ func newGatewayCallCmd(env *Env) *cobra.Command {
 		Long: "Invokes a tool as a real MCP client would, so what you see is what an agent\n" +
 			"would see — including a policy denial or a grace-window unavailability, both of\n" +
 			"which arrive as tool errors rather than transport failures.",
-		Example: `  mcpdoll gateway call crm.lookup_customer --audience platform-agents \
+		Example: `  mcpdoll gateway call crm.lookup_customer --as $MCPDOLL_AGENT_KEY \
       --args '{"customer_id":"cus_1"}'
 
   # A tool that needs confirmation returns resultType input_required plus an
   # opaque requestState. Answer it and retry with both:
-  mcpdoll gateway call dep.promote_release --audience platform-agents \
+  mcpdoll gateway call dep.promote_release --as $MCPDOLL_AGENT_KEY \
       --args '{"build":"v1"}' --respond confirm=accept --request-state "$STATE"`,
 		Args: cobra.ExactArgs(1),
 		Annotations: map[string]string{
@@ -276,7 +269,7 @@ func newGatewayCallCmd(env *Env) *cobra.Command {
 						"answer to the call it was asked about"))
 			}
 
-			session, err := env.connectMCP(cmd.Context(), audience, subject, groups)
+			session, err := env.connectMCP(cmd.Context(), credential)
 			if err != nil {
 				return err
 			}
@@ -296,7 +289,6 @@ func newGatewayCallCmd(env *Env) *cobra.Command {
 
 			report := callReport{
 				Tool:       args[0],
-				Audience:   audience,
 				IsError:    res.IsError,
 				NeedsInput: res.NeedsInput(),
 				DurationMS: elapsed.Milliseconds(),
@@ -327,15 +319,14 @@ func newGatewayCallCmd(env *Env) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&audience, "audience", "", "audience slug to connect as")
-	cmd.Flags().StringVar(&subject, "subject", "", "principal subject to present")
-	cmd.Flags().StringArrayVar(&groups, "groups", nil, "IdP groups to present (repeatable)")
+	cmd.Flags().StringVar(&credential, "as", "",
+		"API key to inspect as; inspection presents what the principal presents")
 	cmd.Flags().StringVar(&argsJSON, "args", "", "tool arguments as a JSON object")
 	cmd.Flags().StringVar(&requestState, "request-state", "",
 		"opaque requestState from a previous input_required result")
 	cmd.Flags().StringArrayVar(&respond, "respond", nil,
 		"answer an input request as id=accept|decline|cancel, or id=text:<value> (repeatable)")
-	_ = cmd.MarkFlagRequired("audience")
+	_ = cmd.MarkFlagRequired("as")
 	return cmd
 }
 
@@ -374,7 +365,6 @@ func parseResponses(flags []string) (sdk.InputResponseMap, error) {
 
 type callReport struct {
 	Tool          string          `json:"tool" yaml:"tool"`
-	Audience      string          `json:"audience" yaml:"audience"`
 	IsError       bool            `json:"is_error" yaml:"is_error"`
 	NeedsInput    bool            `json:"needs_input" yaml:"needs_input"`
 	DurationMS    int64           `json:"duration_ms" yaml:"duration_ms"`
@@ -415,36 +405,28 @@ func (r callReport) outcome() string {
 // --------------------------------------------------------------- plumbing ----
 
 // connectMCP opens a real MCP client session against the data plane.
-func (e *Env) connectMCP(
-	ctx context.Context,
-	audience, subject string,
-	groups []string,
-) (*sdk.ClientSession, error) {
-	if audience == "" {
-		return nil, usageError(fmt.Errorf("--audience is required"))
+func (e *Env) connectMCP(ctx context.Context, credential string) (*sdk.ClientSession, error) {
+	if credential == "" {
+		return nil, usageError(fmt.Errorf(
+			"--as is required: inspection presents the principal's own credential " +
+				"rather than re-deriving what they should see"))
 	}
 
 	header := http.Header{}
-	if subject != "" {
-		header.Set(edge.HeaderSubject, subject)
-	}
-	if len(groups) > 0 {
-		header.Set(edge.HeaderGroups, strings.Join(groups, ","))
-	}
-	if token := e.Token(); token != "" {
-		header.Set("Authorization", "Bearer "+token)
-	}
+	header.Set("Authorization", "Bearer "+credential)
 
 	client := sdk.NewClient(&sdk.Implementation{
 		Name: "mcpdoll-cli", Title: "MCPDoll CLI", Version: Version,
 	}, &sdk.ClientOptions{
 		// The CLI shows the raw MRTR result rather than fulfilling it: an
-		// operator inspecting an interactive tool wants to see that it asked, not
-		// to have the CLI answer on their behalf.
+		// operator inspecting an interactive tool wants to see that it asked,
+		// not to have the CLI answer on their behalf.
 		MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true},
 	})
 
-	endpoint := strings.TrimRight(e.GatewayURL(), "/") + "/mcp/" + audience
+	// One endpoint. The tenant and the toolset both come from the credential
+	// (ADR 0019).
+	endpoint := strings.TrimRight(e.GatewayURL(), "/") + "/mcp"
 	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{
 		Endpoint:             endpoint,
 		HTTPClient:           headerClient(header),

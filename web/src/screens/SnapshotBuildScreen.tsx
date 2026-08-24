@@ -100,7 +100,7 @@ export function SnapshotBuildScreen() {
               { k: "Version", v: m.data.version },
               { k: "Tools", v: m.data.tools },
               { k: "Backends", v: m.data.servers },
-              { k: "Audiences", v: m.data.audiences },
+              { k: "Toolsets", v: m.data.toolsets },
               { k: "Plugins", v: m.data.plugins },
               { k: "Signed by", v: m.data.key_id, small: true },
             ]}
