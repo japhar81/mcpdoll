@@ -77,7 +77,7 @@ func NewMetrics(m metric.Meter) (*Metrics, error) {
 		metric.WithDescription("Tool calls that returned an error, by error kind"))
 	track(err)
 	out.CatalogLists, err = m.Int64Counter("mcpdoll.catalog.lists",
-		metric.WithDescription("tools/list requests served, by audience and cache result"))
+		metric.WithDescription("tools/list requests served, by tenant and cache result"))
 	track(err)
 	out.CatalogSize, err = m.Int64Histogram("mcpdoll.catalog.size",
 		metric.WithDescription("Number of tools in a served catalog, after filtering"),

@@ -70,9 +70,12 @@ var ErrMismatchedRequestState = errors.New("edge: requestState does not match th
 // stateEnvelope is the signed payload.
 type stateEnvelope struct {
 	Version string `json:"v"`
-	// Audience, Tool and Principal bind the state to who may redeem it and for
+	// Tenant, Tool and Principal bind the state to who may redeem it and for
 	// what.
-	Audience  string `json:"aud"`
+	// The JSON key stays `aud`. It is the conventional name for this claim,
+	// and it is inside a signature — renaming it would invalidate every
+	// envelope in flight for no gain.
+	Tenant    string `json:"aud"`
 	Tool      string `json:"tool"`
 	Principal string `json:"sub"`
 	// ArgsDigest binds the state to the specific arguments, so an approval
@@ -242,7 +245,7 @@ func argsDigest(arguments any) string {
 // client can safely act on.
 //
 // The backend's `requestState` goes inside the gateway's signed envelope, bound
-// to the tool, the principal, the audience, and the argument digest. The client
+// to the tool, the principal, the tenant, and the argument digest. The client
 // cannot forge the envelope and cannot redeem it against a different call — and
 // the backend, on retry, gets back exactly the bytes it produced.
 //
@@ -252,7 +255,7 @@ func argsDigest(arguments any) string {
 func (e *Edge) wrapBackendInputRequest(
 	tool *snapshot.Tool,
 	principal string,
-	audience string,
+	tenant string,
 	arguments any,
 	res *mcp.CallToolResult,
 ) (*mcp.CallToolResult, error) {
@@ -262,7 +265,7 @@ func (e *Edge) wrapBackendInputRequest(
 				"an unsigned state would let a client forge its own approval")
 	}
 	token, err := e.opts.StateSigner.Wrap(stateEnvelope{
-		Audience:   audience,
+		Tenant:     tenant,
 		Tool:       tool.Def.QualifiedName,
 		Principal:  principal,
 		ArgsDigest: argsDigest(arguments),
@@ -288,7 +291,7 @@ func (e *Edge) wrapBackendInputRequest(
 func (e *Edge) UnwrapForRetry(
 	tool *snapshot.Tool,
 	principal string,
-	audience string,
+	tenant string,
 	arguments any,
 	token string,
 ) (retry Retry, err error) {
@@ -306,13 +309,13 @@ func (e *Edge) UnwrapForRetry(
 		return Retry{}, fmt.Errorf("%w: issued for %q, presented for %q",
 			ErrMismatchedRequestState, env.Tool, tool.Def.QualifiedName)
 	}
-	// Subject and audience are checked only when the envelope carries them, so
+	// Subject and tenant are checked only when the envelope carries them, so
 	// a backend-only wrap (which has no principal binding) still round-trips.
 	if env.Principal != "" && env.Principal != principal {
 		return Retry{}, fmt.Errorf("%w: issued for a different principal", ErrMismatchedRequestState)
 	}
-	if env.Audience != "" && env.Audience != audience {
-		return Retry{}, fmt.Errorf("%w: issued for a different audience", ErrMismatchedRequestState)
+	if env.Tenant != "" && env.Tenant != tenant {
+		return Retry{}, fmt.Errorf("%w: issued for a different tenant", ErrMismatchedRequestState)
 	}
 	if env.ArgsDigest != "" && env.ArgsDigest != argsDigest(arguments) {
 		return Retry{}, fmt.Errorf("%w: the arguments differ from those approved",
@@ -344,14 +347,14 @@ func (r Retry) AnswersPlugin() bool { return r.Source == SourcePlugin }
 
 // IssuePluginDeferral wraps a deferring plugin's state, binding it to the call.
 //
-// Unlike a backend wrap this binds the principal, audience, and arguments,
+// Unlike a backend wrap this binds the principal, tenant, and arguments,
 // because a plugin deferral is usually an authorization decision about a
 // specific action by a specific person — exactly the thing that must not be
 // replayable.
 func (e *Edge) IssuePluginDeferral(
 	tool *snapshot.Tool,
 	principal string,
-	audience string,
+	tenant string,
 	arguments any,
 	pluginState string,
 ) (string, error) {
@@ -360,7 +363,7 @@ func (e *Edge) IssuePluginDeferral(
 			"edge: a plugin deferred but no requestState signer is configured")
 	}
 	return e.opts.StateSigner.Wrap(stateEnvelope{
-		Audience:   audience,
+		Tenant:     tenant,
 		Tool:       tool.Def.QualifiedName,
 		Principal:  principal,
 		ArgsDigest: argsDigest(arguments),

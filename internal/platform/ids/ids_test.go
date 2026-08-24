@@ -82,24 +82,24 @@ func TestParseRejects(t *testing.T) {
 func TestIsRejectsWrongKind(t *testing.T) {
 	server := New(KindServer)
 	require.True(t, Is(server, KindServer))
-	require.False(t, Is(server, KindBundle))
+	require.False(t, Is(server, KindToolset))
 	require.False(t, Is("not-an-id", KindServer))
 	require.False(t, Is("", KindServer))
 }
 
 // TestParseAuditEventKind: "aud_ev" contains the separator, so a naive first
-// cut yields the audience kind. Both must round-trip correctly.
+// cut yields the meaningless prefix "aud". It must round-trip anyway.
 func TestParseAuditEventKind(t *testing.T) {
 	audit := New(KindAudit)
 	kind, _, err := Parse(audit)
 	require.NoError(t, err)
 	require.Equal(t, KindAudit, kind)
 	require.True(t, Is(audit, KindAudit))
-	require.False(t, Is(audit, KindAudience), "an audit id must not read as an audience id")
+	require.False(t, Is(audit, KindTenant), "an audit id must not read as a tenant id")
 
-	audience := New(KindAudience)
-	require.True(t, Is(audience, KindAudience))
-	require.False(t, Is(audience, KindAudit))
+	tenant := New(KindTenant)
+	require.True(t, Is(tenant, KindTenant))
+	require.False(t, Is(tenant, KindAudit))
 }
 
 // TestKindPrefixesAreDistinct guards against two entity kinds sharing a
@@ -107,7 +107,7 @@ func TestParseAuditEventKind(t *testing.T) {
 func TestKindPrefixesAreDistinct(t *testing.T) {
 	all := []Kind{
 		KindOrg, KindProject, KindTeam, KindNamespace, KindServer, KindVersion,
-		KindToolDef, KindBundle, KindAudience, KindPolicy, KindPlugin,
+		KindToolDef, KindToolset, KindTenant, KindPolicy, KindPlugin,
 		KindSnapshot, KindAdmission, KindDrift, KindAudit, KindRequest,
 		KindPrincipal, KindGrant, KindProbe, KindRequestState,
 	}

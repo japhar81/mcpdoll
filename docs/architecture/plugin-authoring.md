@@ -90,7 +90,7 @@ func handle(inv *sdk.Invocation) *sdk.Verdict {
 | `Hook` | always | which of the seven hooks |
 | `Shadow` | always | your verdict will be recorded, not acted on |
 | `Principal` | always | subject, groups, claims |
-| `Audience` | always | the endpoint slug |
+| `Tenant` | always | the tenant slug, resolved from the credential |
 | `Tool` | call and result hooks | name, effect class, backend, digest |
 | `Arguments` | `on_tool_call` | the call's arguments |
 | `Result` | `on_tool_result` | the backend's result |

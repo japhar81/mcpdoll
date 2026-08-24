@@ -43,7 +43,7 @@ const (
 	AttrNamespace       = attribute.Key("mcpdoll.namespace")
 	AttrServer          = attribute.Key("mcpdoll.server")
 	AttrBackend         = attribute.Key("mcpdoll.backend")
-	AttrAudience        = attribute.Key("mcpdoll.audience")
+	AttrTenant          = attribute.Key("mcpdoll.tenant")
 	AttrBundle          = attribute.Key("mcpdoll.bundle")
 	AttrSnapshot        = attribute.Key("mcpdoll.snapshot.version")
 	AttrHook            = attribute.Key("mcpdoll.hook")

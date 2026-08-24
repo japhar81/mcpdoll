@@ -2,18 +2,22 @@
 # Bring up the MCPDoll local stack.
 #
 # What this starts, in order:
-#   1. The LGTM observability stack (Grafana on :3300), via Docker.
-#   2. Five fixture MCP backends on :9101-:9105.
-#   3. A signed snapshot built by discovering those backends.
-#   4. The data plane on :8080, serving from that snapshot.
+#   1. The LGTM observability stack (Grafana on :3300) and Postgres, via Docker.
+#   2. Six fixture MCP backends on :9101-:9106.
+#   3. The control plane on :3001, which migrates the database and seeds the
+#      first administrator.
+#   4. Demo tenants, users, grants, and API keys, through the CLI.
+#   5. A signed snapshot built by discovering those backends and carrying that
+#      tenancy.
+#   6. The data plane on :8080, serving from that snapshot.
 #
-# Everything except the LGTM container runs as a local process, so `make dev`
-# works without building images and a code change is one `make dev` away from
-# being live. Logs land in deploy/local/logs/.
+# The control plane comes *before* the snapshot because the snapshot carries
+# tenants and principals, and those live in the database. Building first is the
+# cycle this ordering exists to avoid.
 #
-# Postgres and Redis are deliberately absent: nothing in this build needs them
-# yet (the control plane's durable side is not implemented — see
-# docs/deferred.md), and starting a database nothing talks to would be theatre.
+# Everything except the containers runs as a local process, so `make dev` works
+# without building images and a code change is one `make dev` away from being
+# live. Logs land in deploy/local/logs/.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -123,6 +127,27 @@ else
   warn "traces and metrics will be created but not exported"
 fi
 
+# ------------------------------------------------------------- postgres -----
+
+# No longer optional. Tenants, users, grants, and API keys live here, and a
+# snapshot that carries none of them serves nobody — so a stack without a
+# database is not a smaller stack, it is a broken one.
+if compose version >/dev/null 2>&1; then
+  info "starting Postgres"
+  compose up -d postgres >/dev/null \
+    || die "could not start Postgres; the control plane cannot run without it"
+  for _ in $(seq 1 60); do
+    if compose exec -T postgres pg_isready -U mcpdoll -d mcpdoll >/dev/null 2>&1; then
+      break
+    fi
+    printf '.'
+    sleep 0.5
+  done
+  echo
+else
+  die "docker compose is unavailable, and Postgres is required: tenants, users, and grants live there"
+fi
+
 # --------------------------------------------------------------- fixtures ----
 
 : > "${PID_FILE}"
@@ -141,6 +166,11 @@ start_fixture() {
 }
 
 start_fixture modern      9101
+# Globex's own CRM deployment. A second container rather than a second binding
+# to the first: pointing two tenants at one host would render correctly and
+# demonstrate nothing, since the claim of ADR 0017 is that the data behind a
+# toolset differs per tenant.
+start_fixture modern      9106
 start_fixture legacy      9102
 # The warehouse fixture is deliberately a little slow and fails one call in
 # seven, so the health board and the circuit breaker have something real to show.
@@ -186,8 +216,99 @@ open(path, "w").write("\n".join(lines))
 PYEOF
 done
 
+# ---------------------------------------------------------- control plane ----
+
+export MCPDOLL_DATABASE_URL="${MCPDOLL_DATABASE_URL:-postgres://mcpdoll:mcpdoll@localhost:5432/mcpdoll?sslmode=disable}"
+
+info "starting the control plane on :3001"
+# A fixed development token rather than --allow-anonymous. Anonymous mode exists
+# and works, but running the dev stack the way production runs means the console
+# exercises the auth path every day rather than discovering it at deploy time.
+export MCPDOLL_CP_TOKEN="${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}"
+export MCPDOLL_TOKEN="${MCPDOLL_CP_TOKEN}"
+./bin/mcpdoll-cp -config "${LOCAL_DIR}/dataplane.yaml" \
+  > "${LOG_DIR}/mcpdoll-cp.log" 2>&1 &
+CP_PID=$!
+record_pid "${CP_PID}"
+wait_http http://localhost:3001/healthz mcpdoll-cp "${CP_PID}" \
+  || die "the control plane failed to start"
+echo
+
+# ------------------------------------------------------------------ seed ----
+
+# Through the CLI against the API, not the database. The same path an operator
+# uses, so a broken command fails here rather than the first time somebody types
+# it.
+info "seeding demo tenancy"
+KEYS="${LOCAL_DIR}/demo-keys.txt"
+
+have_tenant() {
+  # A tenant the registry merely *binds* is listed too, with status
+  # "unregistered" and no id. Matching on the slug alone would see that row and
+  # skip creating the record — leaving a tenant nothing can authenticate into.
+  ./bin/mcpdoll tenants list --output json 2>/dev/null | tr -d ' \n' \
+    | grep -q "\"slug\":\"$1\",\"name\":[^}]*\"status\":\"active\""
+}
+
+have_user() {
+  ./bin/mcpdoll users list --tenant "$1" --output json 2>/dev/null \
+    | grep -q "\"email\": \"$2\""
+}
+
+for tenant in acme globex; do
+  have_tenant "${tenant}" \
+    || ./bin/mcpdoll tenants create "${tenant}" --name "${tenant^^}" --quiet >/dev/null
+done
+
+MINTED=""
+seed_user() {
+  local tenant=$1 email=$2 label=$3
+  shift 3
+  if have_user "${tenant}" "${email}"; then
+    return 0
+  fi
+  ./bin/mcpdoll users create "${email}" --tenant "${tenant}" --name "${label}" \
+    --password demo-password-not-a-secret --quiet >/dev/null
+  # Grants come second and separately, because a new user holding nothing is
+  # the correct starting state.
+  ./bin/mcpdoll users grants set "${email}" --tenant "${tenant}" "$@" --quiet >/dev/null
+  MINTED="${MINTED}${tenant} ${email}"$'\n'
+}
+
+seed_user acme support@acme.example "Support Agent" \
+  --grant "tool_user@t/acme/ts/support"
+seed_user acme platform@acme.example "Platform Operator" \
+  --grant "tool_user@t/acme/ts/support" --grant "tool_user@t/acme/ts/platform"
+seed_user acme research@acme.example "Threat Researcher" \
+  --grant "tool_user@t/acme/ts/untrusted"
+seed_user globex support@globex.example "Support Agent" \
+  --grant "tool_user@t/globex/ts/support"
+
+if [[ -n "${MINTED}" ]]; then
+  {
+    echo "# MCPDoll demo credentials, minted $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "# Every secret here is shown once and nothing keeps it."
+    echo
+  } > "${KEYS}"
+  while read -r tenant email; do
+    [[ -n "${tenant}" ]] || continue
+    secret="$(./bin/mcpdoll users keys mint "${email}" --tenant "${tenant}" \
+      --name agent --output json --quiet \
+      | sed -n 's/.*"secret": "\([^"]*\)".*/\1/p')"
+    [[ -n "${secret}" ]] || die "minting a key for ${email} produced no secret"
+    printf '%-30s %s\n' "${tenant}/${email}" "${secret}" >> "${KEYS}"
+  done <<< "${MINTED}"
+  info "credentials written to ${KEYS}"
+else
+  info "every demo user already existed; no keys minted"
+fi
+echo
+
 # --------------------------------------------------------------- snapshot ----
 
+# After the seeding, because the snapshot carries the tenants and the API key
+# digests those lines just created. The version is assigned by the build — a
+# Unix timestamp, monotonic without anybody coordinating.
 info "building a signed snapshot from ${LOCAL_DIR}/registry.yaml"
 ./bin/mcpdoll snapshot build \
   --registry "${LOCAL_DIR}/registry.yaml" \
@@ -208,21 +329,6 @@ DP_PID=$!
 record_pid "${DP_PID}"
 wait_http http://localhost:8080/readyz mcpdoll-dp "${DP_PID}" \
   || die "the data plane failed to start"
-echo
-
-# ---------------------------------------------------------- control plane ----
-
-info "starting the control plane on :3001"
-# A fixed development token rather than --allow-anonymous. Anonymous mode exists
-# and works, but running the dev stack the way production runs means the console
-# exercises the auth path every day rather than discovering it at deploy time.
-export MCPDOLL_CP_TOKEN="${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}"
-./bin/mcpdoll-cp -config "${LOCAL_DIR}/dataplane.yaml" \
-  > "${LOG_DIR}/mcpdoll-cp.log" 2>&1 &
-CP_PID=$!
-record_pid "${CP_PID}"
-wait_http http://localhost:3001/healthz mcpdoll-cp "${CP_PID}" \
-  || die "the control plane failed to start"
 echo
 
 # ---------------------------------------------------------------- console ----
@@ -248,38 +354,58 @@ cat <<BANNER
 
 MCPDoll is up.
 
-  Data plane      http://localhost:8080
-  Control plane   http://localhost:3001   (token: ${MCPDOLL_CP_TOKEN})
+  Data plane      http://localhost:8080/mcp   (one endpoint; the key names the tenant)
+  Control plane   http://localhost:3001       (token: ${MCPDOLL_CP_TOKEN})
   Console         http://localhost:5173
-  Audiences       /mcp/support-agents  /mcp/platform-agents  /mcp/threat-research
-  Grafana         http://localhost:3300   (folder: MCPDoll)
+  Grafana         http://localhost:3300       (folder: MCPDoll)
+  Credentials     ${KEYS}
   Logs            ${LOG_DIR}/
 
-Try it:
+Try it. Everything below presents an agent key — there is no audience to pick and
+no subject to claim, because the tenant and the toolset both come from the key:
 
-  # What a support agent sees
-  ./bin/mcpdoll gateway catalog --audience support-agents --subject alice@example.com
+  ACME=\$(awk '/acme\/support/ {print \$2}' ${KEYS})
+  GLOBEX=\$(awk '/globex\/support/ {print \$2}' ${KEYS})
+
+  # What a support agent sees. Eight tools: CRM, HR, warehouse.
+  ./bin/mcpdoll gateway catalog --as "\${ACME}"
+
+  # The same toolset name in another tenant: four tools, from a different
+  # backend deployment. That is ADR 0017 in one command.
+  ./bin/mcpdoll gateway catalog --as "\${GLOBEX}"
 
   # Call a tool across two backends
-  ./bin/mcpdoll gateway call crm.lookup_customer --audience support-agents \\
+  ./bin/mcpdoll gateway call crm.lookup_customer --as "\${ACME}" \\
       --args '{"customer_id":"cus_1"}'
-  ./bin/mcpdoll gateway call hr.lookup_employee --audience support-agents \\
+  ./bin/mcpdoll gateway call hr.lookup_employee --as "\${ACME}" \\
       --args '{"staff_number":"E-1"}'
 
-  # A destructive tool: the platform audience's policy asks for confirmation
-  ./bin/mcpdoll gateway call dep.promote_release --audience platform-agents \\
-      --subject ops@example.com --groups eng-platform \\
+  # A destructive tool: policy asks for confirmation, and the envelope binds
+  # the tenant, so the approval cannot be replayed anywhere else.
+  PLATFORM=\$(awk '/platform@acme/ {print \$2}' ${KEYS})
+  ./bin/mcpdoll gateway call dep.promote_release --as "\${PLATFORM}" \\
       --args '{"build":"v1"}' --output json
 
   # The redact plugin at work: the backend returns a card number, the model does not see it
-  ./bin/mcpdoll gateway call crm.get_payment_method --audience support-agents \\
+  ./bin/mcpdoll gateway call crm.get_payment_method --as "\${ACME}" \\
       --args '{"customer_id":"cus_1"}'
+
+  # Who can reach what, and change it. A grant takes effect at the next
+  # snapshot, so the rebuild is part of the operation rather than a follow-up.
+  ./bin/mcpdoll tenants list
+  ./bin/mcpdoll users grants support@acme.example --tenant acme
+  ./bin/mcpdoll users grants set support@acme.example --tenant acme \\
+      --grant tool_user@t/acme/ts/support/lookup_customer
+  ./bin/mcpdoll snapshot build -r ${LOCAL_DIR}/registry.yaml \\
+      --key ${LOCAL_DIR}/${KEY_ID}.key --key-id ${KEY_ID} \\
+      --out ${LOCAL_DIR}/snapshot.pb
+  ./bin/mcpdoll gateway catalog --as "\${ACME}"   # one tool now
 
   # The entitlements plugin ships in SHADOW: it records what it would hide
   # without hiding it. Watch it decide, then promote it:
   grep "shadow verdict diverged" ${LOG_DIR}/mcpdoll-dp.log
-  #   ... then set \`rollout: enforce\` on plg_entitlements in registry.yaml,
-  #   bump \`version\`, rebuild the snapshot, and the catalog changes.
+  #   ... then set \`rollout: enforce\` on plg_entitlements in registry.yaml
+  #   and rebuild the snapshot; the catalog changes.
 
   # What is actually in the snapshot
   ./bin/mcpdoll snapshot inspect ${LOCAL_DIR}/snapshot.pb --tools
@@ -288,7 +414,8 @@ Try it:
   curl -s -H "Authorization: Bearer ${MCPDOLL_CP_TOKEN}" \\
       http://localhost:3001/api/v1/registry | jq .
 
-Republish after editing ${LOCAL_DIR}/registry.yaml (bump \`version\` first):
+Republish after editing ${LOCAL_DIR}/registry.yaml, or after changing a grant.
+The version is assigned by the build, so there is nothing to bump:
 
   ./bin/mcpdoll snapshot build -r ${LOCAL_DIR}/registry.yaml \\
       --key ${LOCAL_DIR}/${KEY_ID}.key --out ${LOCAL_DIR}/snapshot.pb

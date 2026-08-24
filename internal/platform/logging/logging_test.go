@@ -137,7 +137,7 @@ func TestIsSensitiveKey(t *testing.T) {
 		"authenticated", "authority", "author", "auth_method", "keyspace",
 		"key_id", "keys_rotated", "signing_key_id",
 		"tool_name", "backend", "duration_ms", "namespace", "verdict",
-		"snapshot_version", "principal", "audience", "hook", "plugin",
+		"snapshot_version", "principal", "tenant", "hook", "plugin",
 	}
 	for _, k := range safe {
 		require.False(t, IsSensitiveKey(k), "%q should not be sensitive", k)

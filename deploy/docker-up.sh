@@ -59,15 +59,16 @@ MCPDoll is up, in Docker. Serving snapshot ${snapshot}, ${backends} healthy back
 
 Two planes, and which is which matters:
 
-  Data plane      http://localhost:8080   agents connect here
-                  /mcp/support-agents  /mcp/platform-agents  /mcp/threat-research
-                  Serves from one signed snapshot. Does not need the control
-                  plane to answer a tool call.
+  Data plane      http://localhost:8080/mcp   agents connect here
+                  One endpoint for everyone. The tenant and the toolset both
+                  come from the API key, so there is nothing to pick and
+                  nothing to claim. Serves from one signed snapshot, and does
+                  not need the control plane to answer a tool call.
 
   Control plane   http://localhost:3001   operators and tooling connect here
                   token: ${TOKEN}
-                  Reads the registry, builds and signs snapshots. Never in an
-                  agent's request path.
+                  Owns the registry, the tenants, and the grants; builds and
+                  signs snapshots. Never in an agent's request path.
 
   Admin           http://localhost:8081/admin/backends   operators only
                   What the prober knows. A separate port because it lists every
@@ -76,14 +77,29 @@ Two planes, and which is which matters:
   Console         http://localhost:5173   start here — /overview explains the rest
   Grafana         http://localhost:3300   folder: MCPDoll
 
+Demo credentials were minted into the state volume. Read them with:
+
+  docker exec mcpdoll-cp cat /srv/state/demo-keys.txt
+
 Try it:
 
-  # What a support agent sees, asked as a real MCP client
-  ./bin/mcpdoll gateway catalog --audience support-agents --subject alice@example.com
+  ACME=\$(docker exec mcpdoll-cp awk '/acme\/support/ {print \$3}' /srv/state/demo-keys.txt)
+  GLOBEX=\$(docker exec mcpdoll-cp awk '/globex\/support/ {print \$3}' /srv/state/demo-keys.txt)
+
+  # What a support agent sees, asked as a real MCP client. Eight tools.
+  ./bin/mcpdoll gateway catalog --as "\${ACME}"
+
+  # The same toolset name in another tenant: four tools, from a different
+  # backend deployment behind identical tool names.
+  ./bin/mcpdoll gateway catalog --as "\${GLOBEX}"
 
   # The redact plugin at work: the backend returns a card number, the model does not
-  ./bin/mcpdoll gateway call crm.get_payment_method --audience support-agents \\
+  ./bin/mcpdoll gateway call crm.get_payment_method --as "\${ACME}" \\
       --args '{"customer_id":"cus_1"}'
+
+  # Who exists, and what they hold
+  ./bin/mcpdoll tenants list
+  ./bin/mcpdoll users grants support@acme.example --tenant acme
 
   # What the prober knows. Exits 5 if drift is blocking anything.
   ./bin/mcpdoll gateway backends

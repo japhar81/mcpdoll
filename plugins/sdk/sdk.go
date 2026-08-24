@@ -46,8 +46,10 @@ type Invocation struct {
 	// shadow mode; a plugin that is merely computing does not need to care.
 	Shadow bool `json:"shadow"`
 
-	// Audience and Principal identify who is asking.
-	Audience  string    `json:"audience,omitempty"`
+	// Tenant and Principal identify who is asking. There is no audience: the
+	// principal is the audience, and the tenant comes from their credential
+	// (ADR 0016, ADR 0019).
+	Tenant    string    `json:"tenant,omitempty"`
 	Principal Principal `json:"principal,omitzero"`
 
 	// Tool is the tool being called, for the call and result hooks.

@@ -35,7 +35,7 @@ import (
 // here keeps that decision out of the transport layer.
 var ErrUnavailable = errors.New("data plane unavailable")
 
-// ErrInvalidRequest marks a malformed request — an empty audience, an argument
+// ErrInvalidRequest marks a malformed request — an absent credential, an argument
 // blob that is not an object.
 var ErrInvalidRequest = errors.New("invalid request")
 

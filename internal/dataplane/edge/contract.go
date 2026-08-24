@@ -18,8 +18,8 @@ import (
 
 // CatalogRequest is an ON_CATALOG invocation.
 type CatalogRequest struct {
-	Audience  *snapshot.PrincipalView
-	Principal backends.Principal
+	PrincipalView *snapshot.PrincipalView
+	Principal     backends.Principal
 	// Tools as the snapshot would serve them, in the stable order.
 	Tools []*mcp.Tool
 }
@@ -42,11 +42,11 @@ type CatalogDecision struct {
 
 // ToolCallRequest is an ON_TOOL_CALL invocation.
 type ToolCallRequest struct {
-	Audience  *snapshot.PrincipalView
-	Tool      *snapshot.Tool
-	Principal backends.Principal
-	Arguments any
-	Meta      map[string]any
+	PrincipalView *snapshot.PrincipalView
+	Tool          *snapshot.Tool
+	Principal     backends.Principal
+	Arguments     any
+	Meta          map[string]any
 
 	// RequestState and InputResponses are set when this is an MRTR retry, so a
 	// plugin that deferred can pick up where it left off.
@@ -84,10 +84,10 @@ func (d *ToolCallDecision) Deferred() bool {
 
 // ToolResultRequest is an ON_TOOL_RESULT invocation.
 type ToolResultRequest struct {
-	Audience  *snapshot.PrincipalView
-	Tool      *snapshot.Tool
-	Principal backends.Principal
-	Result    *mcp.CallToolResult
+	PrincipalView *snapshot.PrincipalView
+	Tool          *snapshot.Tool
+	Principal     backends.Principal
+	Result        *mcp.CallToolResult
 }
 
 // ToolResultDecision is the pipeline's answer after dispatch.

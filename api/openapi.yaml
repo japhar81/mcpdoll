@@ -936,7 +936,8 @@ components:
     Toolset:
       type: object
       description: |
-        A named, grantable group of tools. Replaces Bundle: a bundle grouped
+        A named, grantable group of tools. It replaced the old bundle, and the
+        rename carries meaning: a bundle grouped
         namespaces for publication, whereas a toolset is the unit an
         administrator hands to a user — and its name appears inside every grant
         scope, `t/<tenant>/ts/<toolset>`. See ADR 0016.

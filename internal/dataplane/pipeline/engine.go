@@ -154,7 +154,7 @@ func New(opts Options) (*Engine, error) {
 func (e *Engine) Run(ctx context.Context, req *HookRequest) (*HookResult, error) {
 	hookStart := time.Now()
 
-	plugins := req.Audience.PluginsFor(req.Hook)
+	plugins := req.PrincipalView.PluginsFor(req.Hook)
 	hookTrace := HookTrace{
 		Hook:     hookName(req.Hook),
 		BudgetMS: float64(e.hookBudget(req).Milliseconds()),
@@ -169,7 +169,7 @@ func (e *Engine) Run(ctx context.Context, req *HookRequest) (*HookResult, error)
 	ctx, span := e.opts.Telemetry.Tracer.Start(ctx, "pipeline."+hookName(req.Hook),
 		trace.WithAttributes(
 			observability.AttrHook.String(hookName(req.Hook)),
-			observability.AttrAudience.String(req.Audience.Tenant.Slug),
+			observability.AttrTenant.String(req.PrincipalView.Tenant.Slug),
 		))
 	defer span.End()
 
@@ -563,10 +563,10 @@ func hashSample(requestID string, percent int32) bool {
 
 // HookRequest is one hook invocation's input.
 type HookRequest struct {
-	RequestID   string
-	Audience    *snapshot.PrincipalView
-	Hook        snapshotpb.Hook
-	EffectClass snapshotpb.EffectClass
+	RequestID     string
+	PrincipalView *snapshot.PrincipalView
+	Hook          snapshotpb.Hook
+	EffectClass   snapshotpb.EffectClass
 
 	// Payload is the request state plugins see and may patch. Canonical JSON.
 	Payload []byte

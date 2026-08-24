@@ -122,14 +122,14 @@ func (h *harness) install(id string, host pipeline.Host) { h.hosts[id] = host }
 
 func (h *harness) run(t *testing.T, hook snapshotpb.Hook, payload string) (*pipeline.HookResult, *pipeline.Trace) {
 	t.Helper()
-	trace := &pipeline.Trace{RequestID: "req_test", Audience: "agents", StartedAt: time.Now()}
+	trace := &pipeline.Trace{RequestID: "req_test", Tenant: "agents", StartedAt: time.Now()}
 	req := &pipeline.HookRequest{
-		RequestID:   "req_test",
-		Audience:    h.audience,
-		Hook:        hook,
-		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
-		Payload:     []byte(payload),
-		Trace:       trace,
+		RequestID:     "req_test",
+		PrincipalView: h.audience,
+		Hook:          hook,
+		EffectClass:   snapshotpb.EffectClass_EFFECT_CLASS_READ,
+		Payload:       []byte(payload),
+		Trace:         trace,
 	}
 	result, err := h.engine.Run(context.Background(), req)
 	require.NoError(t, err)
@@ -450,9 +450,9 @@ func TestRequestBudgetIsSharedAcrossHooks(t *testing.T) {
 	h.install("plg_b", second)
 
 	// One request, two hooks, one budget.
-	trace := &pipeline.Trace{RequestID: "req_shared", Audience: "agents"}
+	trace := &pipeline.Trace{RequestID: "req_shared", Tenant: "agents"}
 	req := &pipeline.HookRequest{
-		RequestID: "req_shared", Audience: h.audience,
+		RequestID: "req_shared", PrincipalView: h.audience,
 		Hook:    snapshotpb.Hook_HOOK_ON_TOOL_CALL,
 		Payload: []byte(`{}`), Trace: trace,
 	}
@@ -498,7 +498,7 @@ func TestFailureFailsClosedWhenConfigured(t *testing.T) {
 	// The same failure on a destructive call denies.
 	trace := &pipeline.Trace{RequestID: "req_d"}
 	result, err := h.engine.Run(context.Background(), &pipeline.HookRequest{
-		RequestID: "req_d", Audience: h.audience,
+		RequestID: "req_d", PrincipalView: h.audience,
 		Hook:        snapshotpb.Hook_HOOK_ON_TOOL_CALL,
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_DESTRUCTIVE,
 		Payload:     []byte(`{}`), Trace: trace,

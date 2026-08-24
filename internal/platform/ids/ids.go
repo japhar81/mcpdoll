@@ -32,8 +32,8 @@ const (
 	KindServer       Kind = "srv"
 	KindVersion      Kind = "ver"
 	KindToolDef      Kind = "tool"
-	KindBundle       Kind = "bnd"
-	KindAudience     Kind = "aud"
+	KindToolset      Kind = "ts"
+	KindTenant       Kind = "tnt"
 	KindPolicy       Kind = "pol"
 	KindPlugin       Kind = "plg"
 	KindSnapshot     Kind = "snap"
@@ -100,8 +100,9 @@ func Parse(id string) (Kind, string, error) {
 	if !ok || prefix == "" || body == "" {
 		return "", "", fmt.Errorf("ids: %q is not a prefixed identifier", id)
 	}
-	// The audit-event kind contains an underscore, so the first cut is wrong
-	// for it; re-cut from the right when the leading segment is ambiguous.
+	// The audit-event kind contains an underscore, so the first cut splits it
+	// in the wrong place and yields the meaningless prefix "aud". Re-cut when
+	// the leading segment looks like that.
 	if prefix == "aud" && strings.HasPrefix(body, "ev_") {
 		prefix, body = "aud_ev", strings.TrimPrefix(body, "ev_")
 	}

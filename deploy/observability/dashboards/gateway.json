@@ -432,7 +432,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "Busiest tools",
-      "description": "By call rate, per audience.",
+      "description": "By call rate, per tenant.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -449,8 +449,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10, sum by (mcp_tool_name, mcpdoll_audience) (rate(mcpdoll_tool_calls_total[$__rate_interval])))",
-          "legendFormat": "{{mcpdoll_audience}} \u00b7 {{mcp_tool_name}}",
+          "expr": "topk(10, sum by (mcp_tool_name, mcpdoll_tenant) (rate(mcpdoll_tool_calls_total[$__rate_interval])))",
+          "legendFormat": "{{mcpdoll_tenant}} \u00b7 {{mcp_tool_name}}",
           "refId": "A",
           "range": true
         }
@@ -640,8 +640,8 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "Catalog size by audience",
-      "description": "Tools served per audience after filtering. A step change means a publish or a plugin that started hiding things.",
+      "title": "Catalog size by tenant",
+      "description": "Tools served per principal, grouped by tenant. Every catalog is now per-principal, so a wide spread here is expected — a step change in the whole band means a publish or a plugin that started hiding things.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -658,8 +658,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, mcpdoll_audience) (rate(mcpdoll_catalog_size_bucket[$__rate_interval])))",
-          "legendFormat": "{{mcpdoll_audience}}",
+          "expr": "histogram_quantile(0.50, sum by (le, mcpdoll_tenant) (rate(mcpdoll_catalog_size_bucket[$__rate_interval])))",
+          "legendFormat": "{{mcpdoll_tenant}}",
           "refId": "A",
           "range": true
         }

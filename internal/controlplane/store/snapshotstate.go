@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
+	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
 // The database's contribution to a snapshot.

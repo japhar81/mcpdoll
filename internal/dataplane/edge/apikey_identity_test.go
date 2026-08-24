@@ -12,8 +12,8 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
-	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
+	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
 // The gateway authenticates against the snapshot, with no database and no call

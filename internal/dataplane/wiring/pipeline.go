@@ -49,12 +49,12 @@ var _ edge.Pipeline = (*EdgePipeline)(nil)
 // OnCatalog runs the catalog hook.
 func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) (*edge.CatalogDecision, error) {
 	payload := catalogPayload{
-		Audience:  req.Audience.Tenant.Slug,
+		Tenant:    req.PrincipalView.Tenant.Slug,
 		Principal: principalOf(req.Principal),
 		Catalog:   make([]toolPayload, 0, len(req.Tools)),
 	}
 	for _, tool := range req.Tools {
-		payload.Catalog = append(payload.Catalog, toolPayloadFrom(req.Audience, tool.Name, tool))
+		payload.Catalog = append(payload.Catalog, toolPayloadFrom(req.PrincipalView, tool.Name, tool))
 	}
 
 	raw, err := json.Marshal(payload)
@@ -62,11 +62,11 @@ func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) 
 		return nil, fmt.Errorf("wiring: encoding the catalog: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, "")
+	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, "")
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
-		RequestID: trace.RequestID,
-		Audience:  req.Audience,
-		Hook:      snapshotpb.Hook_HOOK_ON_CATALOG,
+		RequestID:     trace.RequestID,
+		PrincipalView: req.PrincipalView,
+		Hook:          snapshotpb.Hook_HOOK_ON_CATALOG,
 		// A catalog is a read by construction, so a fail-closed plugin here is
 		// governed by the read policy.
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
@@ -126,7 +126,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 	}
 
 	payload := callPayload{
-		Audience:       req.Audience.Tenant.Slug,
+		Tenant:         req.PrincipalView.Tenant.Slug,
 		Principal:      principalOf(req.Principal),
 		Tool:           toolPayloadFromSnapshot(req.Tool),
 		Arguments:      arguments,
@@ -138,14 +138,14 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 		return nil, fmt.Errorf("wiring: encoding the call: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
-		RequestID:   trace.RequestID,
-		Audience:    req.Audience,
-		Hook:        snapshotpb.Hook_HOOK_ON_TOOL_CALL,
-		EffectClass: req.Tool.Def.EffectClass,
-		Payload:     raw,
-		Trace:       trace,
+		RequestID:     trace.RequestID,
+		PrincipalView: req.PrincipalView,
+		Hook:          snapshotpb.Hook_HOOK_ON_TOOL_CALL,
+		EffectClass:   req.Tool.Def.EffectClass,
+		Payload:       raw,
+		Trace:         trace,
 	})
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 // OnToolResult runs the post-dispatch hook.
 func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultRequest) (*edge.ToolResultDecision, error) {
 	payload := resultPayload{
-		Audience:  req.Audience.Tenant.Slug,
+		Tenant:    req.PrincipalView.Tenant.Slug,
 		Principal: principalOf(req.Principal),
 		Tool:      toolPayloadFromSnapshot(req.Tool),
 		Result:    resultOf(req.Result),
@@ -190,14 +190,14 @@ func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultReq
 		return nil, fmt.Errorf("wiring: encoding the result: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	hookResult, err := p.engine.Run(ctx, &pipeline.HookRequest{
-		RequestID:   trace.RequestID,
-		Audience:    req.Audience,
-		Hook:        snapshotpb.Hook_HOOK_ON_TOOL_RESULT,
-		EffectClass: req.Tool.Def.EffectClass,
-		Payload:     raw,
-		Trace:       trace,
+		RequestID:     trace.RequestID,
+		PrincipalView: req.PrincipalView,
+		Hook:          snapshotpb.Hook_HOOK_ON_TOOL_RESULT,
+		EffectClass:   req.Tool.Def.EffectClass,
+		Payload:       raw,
+		Trace:         trace,
 	})
 	if err != nil {
 		return nil, err
@@ -243,10 +243,10 @@ func (p *EdgePipeline) finish(ctx context.Context, trace *pipeline.Trace, result
 	}
 }
 
-func newTrace(audience, principal, tool string) *pipeline.Trace {
+func newTrace(tenant, principal, tool string) *pipeline.Trace {
 	return &pipeline.Trace{
 		RequestID: ids.New(ids.KindRequest),
-		Audience:  audience,
+		Tenant:    tenant,
 		Principal: principal,
 		Tool:      tool,
 	}
@@ -259,13 +259,13 @@ func newTrace(audience, principal, tool string) *pipeline.Trace {
 // must compile for wasip1 with no dependency on this repository's internals.
 
 type catalogPayload struct {
-	Audience  string           `json:"audience,omitempty"`
+	Tenant    string           `json:"tenant,omitempty"`
 	Principal principalPayload `json:"principal"`
 	Catalog   []toolPayload    `json:"catalog"`
 }
 
 type callPayload struct {
-	Audience       string           `json:"audience,omitempty"`
+	Tenant         string           `json:"tenant,omitempty"`
 	Principal      principalPayload `json:"principal"`
 	Tool           toolPayload      `json:"tool"`
 	Arguments      map[string]any   `json:"arguments,omitempty"`
@@ -274,7 +274,7 @@ type callPayload struct {
 }
 
 type resultPayload struct {
-	Audience  string           `json:"audience,omitempty"`
+	Tenant    string           `json:"tenant,omitempty"`
 	Principal principalPayload `json:"principal"`
 	Tool      toolPayload      `json:"tool"`
 	Result    resultBody       `json:"result"`

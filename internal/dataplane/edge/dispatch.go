@@ -43,7 +43,7 @@ func (e *Edge) toolHandler(
 			observability.AttrToolDigest.String(tool.Def.Digest),
 			observability.AttrNamespace.String(tool.Namespace.Prefix),
 			observability.AttrBackend.String(tool.Server.Name),
-			observability.AttrAudience.String(av.Tenant.Slug),
+			observability.AttrTenant.String(av.Tenant.Slug),
 			observability.AttrEffectClass.String(tool.Def.EffectClass.String()),
 			observability.AttrSnapshot.Int64(view.Version),
 		)
@@ -53,7 +53,7 @@ func (e *Edge) toolHandler(
 		defer func() {
 			e.opts.Metrics.ToolCalls.Add(ctx, 1, metricAttrs(
 				observability.AttrToolName.String(tool.Def.QualifiedName),
-				observability.AttrAudience.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.Tenant.Slug),
 				observability.AttrOutcome.String(outcome),
 			))
 			e.opts.Metrics.ToolLatency.Record(ctx, float64(time.Since(start).Microseconds())/1000.0,
@@ -124,7 +124,7 @@ func (e *Edge) toolHandler(
 		// ---- ON_TOOL_CALL ------------------------------------------------
 		if e.opts.Pipeline != nil {
 			decision, err := e.opts.Pipeline.OnToolCall(ctx, &ToolCallRequest{
-				Audience:       av,
+				PrincipalView:  av,
 				Tool:           tool,
 				Principal:      principal,
 				Arguments:      arguments,
@@ -238,10 +238,10 @@ func (e *Edge) toolHandler(
 		// ---- ON_TOOL_RESULT ----------------------------------------------
 		if e.opts.Pipeline != nil {
 			decision, err := e.opts.Pipeline.OnToolResult(ctx, &ToolResultRequest{
-				Audience:  av,
-				Tool:      tool,
-				Principal: principal,
-				Result:    res,
+				PrincipalView: av,
+				Tool:          tool,
+				Principal:     principal,
+				Result:        res,
 			})
 			if err != nil {
 				outcome = "pipeline_error"
@@ -399,7 +399,7 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 
 			ctx, span := e.startSpan(ctx, "mcp.tools/list",
 				observability.AttrMethod.String("tools/list"),
-				observability.AttrAudience.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.Tenant.Slug),
 				observability.AttrSnapshot.Int64(view.Version),
 			)
 			defer span.End()
@@ -421,9 +421,9 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 			// ---- ON_CATALOG ----------------------------------------------
 			if e.opts.Pipeline != nil {
 				decision, err := e.opts.Pipeline.OnCatalog(ctx, &CatalogRequest{
-					Audience:  av,
-					Principal: principal,
-					Tools:     list.Tools,
+					PrincipalView: av,
+					Principal:     principal,
+					Tools:         list.Tools,
 				})
 				if err != nil {
 					recordSpanError(span, err)
@@ -448,14 +448,14 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 				attribute.String("mcpdoll.catalog.cache_scope", list.CacheScope),
 			)
 			e.opts.Metrics.CatalogLists.Add(ctx, 1, metricAttrs(
-				observability.AttrAudience.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.Tenant.Slug),
 				observability.AttrCacheResult.String(list.CacheScope),
 			))
 			e.opts.Metrics.CatalogSize.Record(ctx, int64(len(list.Tools)), metricAttrs(
-				observability.AttrAudience.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.Tenant.Slug),
 			))
 			e.log.DebugContext(ctx, "served catalog",
-				logging.FieldAudience, av.Tenant.Slug,
+				logging.FieldTenant, av.Tenant.Slug,
 				logging.FieldPrincipal, principal.Subject,
 				"tools", len(list.Tools),
 				"cache_scope", list.CacheScope,

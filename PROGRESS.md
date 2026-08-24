@@ -167,7 +167,7 @@ whitelisted to the three W3C keys in both directions.
   domain-separated. Multi-key verifier for overlapping rotation.
 - Indexed view built once per activation: the serving path does map lookups and
   reads a pre-sorted slice.
-- Stable catalog order `(bundle priority, namespace prefix, tool name)`, tested
+- Stable catalog order `(toolset priority, namespace prefix, tool name)`, tested
   to not perturb existing entries when a tool or a namespace is added.
 - `cacheScope` computed at build time; exactly one expression in the codebase can
   return `public`.
@@ -187,10 +187,10 @@ ADRs: [0009](docs/adr/0009-snapshot-signing-and-distribution.md),
 - Backend pool: lifetime-scoped sessions, per-backend negotiation, consecutive-
   failure circuit breaker with a half-open probe, RFC 8693 token-exchange seam
   with no passthrough path.
-- Edge: stateless streamable HTTP, per-audience MCP server rebuilt on snapshot
+- Edge: stateless streamable HTTP, per-principal MCP server rebuilt on snapshot
   swap, namespace-prefixed catalog, dispatch with grace-window behaviour, catalog
   middleware owning `ttlMs`/`cacheScope`.
-- MRTR: signed `requestState` envelope binding tool, principal, audience, and
+- MRTR: signed `requestState` envelope binding tool, principal, tenant, and
   argument digest, with source-routed input responses.
 
 **39 tests** in the edge package, all over real HTTP against live backends:
@@ -204,7 +204,7 @@ ADRs: [0003](docs/adr/0003-protocol-version-strategy.md),
 `internal/controlplane/{registry,snapshotter}`, `internal/cli`, `cmd/` · surfaces: CLI + HTTP
 
 - **registry**: a reviewable YAML document declaring backends, tool effect
-  classes, bundles, audiences, policies and plugins. Unknown keys rejected, every
+  classes, toolsets, policies and plugins. Unknown keys rejected, every
   cross-reference validated, all problems reported at once. Enums that gate
   behaviour refuse to default; the two that do — `serving_mode` → strict,
   `rollout` → shadow — default in the safe direction.

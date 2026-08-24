@@ -33,7 +33,7 @@ not exist yet.
 ### Progressive tool discovery meta-tool surface
 
 **Designed for, not built.** The catalog layer is structured so it can be added:
-`AudienceView` already carries `TokenEstimate`, bundles already carry
+`PrincipalView` already carries `TokenEstimate`, toolsets already carry
 `token_budget`, and ordering is a stable contract (ADR 0010) rather than an
 accident. A discovery meta-tool would be a synthetic tool at `ON_CATALOG` that
 replaces the full list — the hook and the ordering guarantees it needs are both
@@ -213,7 +213,7 @@ parts — are complete and tested.
 
 ### Redis-backed caching and idempotency
 
-The catalog cache key design is settled (`(entitlement_set, bundle,
+The catalog cache key design is settled (`(entitlement_set, toolset,
 snapshot_version)`) and the snapshot marks which tools require an idempotency key
 (`requires_idempotency_key`, derived from effect class at build time). Neither
 cache is implemented.

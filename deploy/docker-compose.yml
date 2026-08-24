@@ -160,8 +160,8 @@ services:
   fixture-websearch:
     <<: *fixture
     container_name: mcpdoll-fixture-websearch
-    # Poisoned descriptions and injected results. Registered but bundled only
-    # into the threat-research audience.
+    # Poisoned descriptions and injected results. Registered, but in its own
+    # toolset, so it reaches only a principal granted `ts/untrusted` by name.
     command: ["fixture-backend", "-kind", "hostile", "-addr", ":9104"]
     healthcheck:
       <<: *fixture-health
@@ -213,7 +213,7 @@ services:
       # refused after one. A real deployment takes it from a secret store.
       MCPDOLL_REQUEST_STATE_KEY: local-dev-request-state-key-32-bytes!!
     ports:
-      - "8080:8080"   # MCP endpoints -> /mcp/<audience>
+      - "8080:8080"   # the MCP endpoint: one /mcp, tenant from the key
       - "8081:8081"   # admin: backend health
     volumes:
       - state:/srv/state:ro

@@ -14,7 +14,7 @@ package edge
 
 // TestEnvelope is a readable view of a verified requestState envelope.
 type TestEnvelope struct {
-	Audience   string
+	Tenant     string
 	Tool       string
 	Principal  string
 	ArgsDigest string
@@ -24,12 +24,12 @@ type TestEnvelope struct {
 
 // WrapForTest mints an envelope with explicit bindings.
 func (s *StateSigner) WrapForTest(
-	audience, tool, principal string,
+	tenant, tool, principal string,
 	arguments any,
 	backendState, pluginState string,
 ) (string, error) {
 	env := stateEnvelope{
-		Audience:  audience,
+		Tenant:    tenant,
 		Tool:      tool,
 		Principal: principal,
 		Backend:   backendState,
@@ -48,7 +48,7 @@ func (s *StateSigner) UnwrapForTest(token string) (TestEnvelope, error) {
 		return TestEnvelope{}, err
 	}
 	return TestEnvelope{
-		Audience:   env.Audience,
+		Tenant:     env.Tenant,
 		Tool:       env.Tool,
 		Principal:  env.Principal,
 		ArgsDigest: env.ArgsDigest,

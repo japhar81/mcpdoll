@@ -436,7 +436,7 @@ func traceSink(log *slog.Logger) func(*pipeline.Trace) {
 		}
 		log.Debug("pipeline trace",
 			logging.FieldRequestID, t.RequestID,
-			logging.FieldAudience, t.Audience,
+			logging.FieldTenant, t.Tenant,
 			logging.FieldPrincipal, t.Principal,
 			logging.FieldToolName, t.Tool,
 			"summary", t.Summary())

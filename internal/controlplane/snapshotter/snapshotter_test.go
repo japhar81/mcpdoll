@@ -379,9 +379,9 @@ policies:
 	require.Equal(t, "hide", registry.DecisionName(rule.Decision))
 	require.EqualValues(t, 60_000, rule.MaxTtlMs)
 
-	// Policies apply snapshot-wide now: with audiences gone there is nothing
-	// to attach one to, and a policy that applied to some principals and not
-	// others would be a second access-control mechanism beside grants.
+	// Policies apply snapshot-wide now. With audiences gone there is nothing
+	// left to attach one to, and a policy that applied to some principals and
+	// not others would be a second access-control mechanism beside grants.
 	view, err := snapshot.Build(result.Snapshot)
 	require.NoError(t, err)
 	require.Len(t, view.Proto().Policies, 1)

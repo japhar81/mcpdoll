@@ -195,7 +195,7 @@ const (
 // touched this request" is itself the answer to a common question.
 type Trace struct {
 	RequestID string    `json:"request_id"`
-	Audience  string    `json:"audience"`
+	Tenant    string    `json:"tenant"`
 	Principal string    `json:"principal"`
 	Tool      string    `json:"tool,omitempty"`
 	StartedAt time.Time `json:"started_at"`
