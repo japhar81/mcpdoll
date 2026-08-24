@@ -641,7 +641,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Catalog size by tenant",
-      "description": "Tools served per principal, grouped by tenant. Every catalog is now per-principal, so a wide spread here is expected — a step change in the whole band means a publish or a plugin that started hiding things.",
+      "description": "Tools served per principal, grouped by tenant. Every catalog is now per-principal, so a wide spread here is expected \u2014 a step change in the whole band means a publish or a plugin that started hiding things.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -965,6 +965,86 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 103,
+      "type": "timeseries",
+      "title": "Revocation list age",
+      "description": "The exposure window for a revoked credential. A revoked key keeps working for exactly as long as the gateway's list is out of date.\n\nThe control plane republishes every 30s whether or not anything changed, so a healthy deployment sits under a minute. A *rising* line means the data plane has stopped receiving the artifact, and a revocation issued now would not take effect. Alert above 150s.\n\nIt cannot be driven to zero: failing closed on an unreachable list would let a control-plane outage stop tool calls, which is the failure the whole architecture exists to prevent (ADR 0023).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 150
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "max(mcpdoll_revocations_age_seconds)",
+          "legendFormat": "list age",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "timeseries",
+      "title": "Revoked principals, and refusals",
+      "description": "How many principals the list names, and how many requests it turned away.\n\nRefusals climbing long after a revocation means an agent is still presenting a credential somebody took away \u2014 which is either a deployment nobody updated, or the reason the key was revoked.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "max(mcpdoll_revocations_principals)",
+          "legendFormat": "refused principals",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(mcpdoll_revocations_refusals_total[$__rate_interval]))",
+          "legendFormat": "refusals/s",
+          "refId": "B"
+        }
+      ]
     }
   ]
 }

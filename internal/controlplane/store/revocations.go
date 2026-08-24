@@ -98,6 +98,20 @@ func (s *Store) RevokeUser(ctx context.Context, userID uuid.UUID, reason string)
 	return revocationStateFrom(row), nil
 }
 
+// BumpRevocationVersion advances the published version without changing the
+// set.
+//
+// Used by the heartbeat: republishing an unchanged list is what keeps its age
+// bounded, and the data plane refuses anything not newer — so a heartbeat that
+// did not bump would publish a file nobody applies.
+func (s *Store) BumpRevocationVersion(ctx context.Context) (RevocationState, error) {
+	row, err := s.q.BumpRevocationVersion(ctx)
+	if err != nil {
+		return RevocationState{}, wrap(err, "bumping the revocation version")
+	}
+	return revocationStateFrom(row), nil
+}
+
 // ListRevocations returns everything still in effect.
 func (s *Store) ListRevocations(ctx context.Context) ([]Revocation, error) {
 	rows, err := s.q.ListActiveRevocations(ctx)

@@ -18,6 +18,59 @@ import (
 // the file would mean an operator who revokes a leaked key and immediately
 // checks sees "revoked" while the credential still works.
 
+// RevocationHeartbeat is how often the list is republished with nothing new.
+//
+// Without it, "how old is the list I hold" grows forever in a healthy system —
+// a deployment that revoked something last Tuesday would show an eight-day-old
+// list and there would be nothing to alert on. Republishing on a timer makes
+// the age bounded when distribution is working, so a *growing* age means the
+// data plane has stopped receiving the artifact.
+//
+// That is the number ADR 0023 promised: the maximum staleness of the gateway's
+// revocation knowledge, which is exactly the window in which a revocation
+// issued now would not yet be enforced.
+const RevocationHeartbeat = 30 * time.Second
+
+// RunRevocationHeartbeat republishes the list until ctx is cancelled.
+//
+// It bumps the version each time. The version has no meaning beyond
+// monotonicity — the data plane refuses anything not newer than what it holds —
+// so using it as a heartbeat counter costs nothing and avoids a second
+// freshness field with its own comparison rules.
+func (s *Server) RunRevocationHeartbeat(ctx context.Context) {
+	if s.cfg.Store == nil || s.cfg.RevocationsPath == "" {
+		return
+	}
+
+	// Once at startup, so a data plane that restarts is not waiting a full
+	// interval for its first list — and so a deployment that has never revoked
+	// anything still publishes an empty, signed one. A list that exists and is
+	// empty proves the pipeline works before anybody needs it to.
+	if problem := s.bumpAndPublish(ctx); problem != "" {
+		s.log.Warn("initial revocation publish failed", "problem", problem)
+	}
+
+	ticker := time.NewTicker(RevocationHeartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if problem := s.bumpAndPublish(ctx); problem != "" {
+				s.log.Warn("revocation heartbeat failed", "problem", problem)
+			}
+		}
+	}
+}
+
+func (s *Server) bumpAndPublish(ctx context.Context) string {
+	if _, err := s.cfg.Store.BumpRevocationVersion(ctx); err != nil {
+		return err.Error()
+	}
+	return s.publishRevocations(ctx)
+}
+
 // publishRevocations rebuilds, signs, and writes the list.
 //
 // Returns a problem string rather than an error, because the caller has already

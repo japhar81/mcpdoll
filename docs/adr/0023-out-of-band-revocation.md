@@ -62,10 +62,30 @@ outage stops tool calls, which reverses ADR 0002 — the property the entire
 architecture exists to provide.
 
 So the exposure is not eliminated, it is **bounded and measurable**: it equals
-the age of the last list the data plane loaded. That age is a gauge
-(`mcpdoll.revocations.age_seconds`), it is on the gateway status every surface
-reports, and it is the thing to alert on. An exposure you can see on a dashboard
-is a different kind of problem from one nobody can measure.
+the age of the last list the data plane loaded — the window in which a
+revocation issued now would not yet be enforced. That age is a gauge
+(`mcpdoll.revocations.age`), it is on the gateway status every surface reports,
+and it is the thing to alert on.
+
+### The list is republished on a timer, and that is what makes the age mean
+something
+
+Publishing only when something is revoked was the first design, and it does not
+work. A deployment that revoked something last Tuesday would report an
+eight-day-old list, and an operator could not tell that from a data plane that
+had stopped receiving the file — the number would look identical in both cases.
+It was measurable and not actionable, which is a worse failure than not
+measuring it, because it looks like a control.
+
+So the control plane republishes every thirty seconds whether or not anything
+changed, bumping the version each time. In a working deployment the age stays
+under a minute; a *growing* age means distribution has broken, which is the only
+failure this artifact has. The alert is `age > 5 × heartbeat`, and it fires on
+the thing that actually matters.
+
+The version doubles as the heartbeat counter. It has no meaning beyond
+monotonicity — the data plane refuses anything not newer — so reusing it costs
+nothing and avoids a second freshness field with its own comparison rules.
 
 ### Pruning, so the list does not grow forever
 

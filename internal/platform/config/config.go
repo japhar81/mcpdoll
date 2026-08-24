@@ -116,6 +116,16 @@ type ControlPlane struct {
 	// AllowedOrigins are the browser origins permitted to call the API. No
 	// wildcard is accepted; the console's origin is named explicitly.
 	AllowedOrigins []string `yaml:"allowed_origins"`
+	// RevocationsPath is where the signed revocation list is written, for the
+	// data plane to read (ADR 0023). It must be the same file
+	// `dataplane.revocations_path` points at — a shared volume, an object
+	// store, whatever the deployment uses to move the snapshot.
+	//
+	// Empty means revoking still works and takes effect at snapshot latency,
+	// which is the thing this artifact exists to avoid. The API server warns at
+	// startup rather than refusing, because a control plane that only reads has
+	// no business writing one.
+	RevocationsPath string `yaml:"revocations_path"`
 }
 
 type SnapshotConfig struct {

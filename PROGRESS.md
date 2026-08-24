@@ -272,6 +272,37 @@ ADRs: [0014](docs/adr/0014-tenancy-and-principals.md),
 [0020](docs/adr/0020-pluggable-identity-and-authz.md),
 [0021](docs/adr/0021-offline-credential-verification.md)
 
+### Slice 9 — the control plane authenticates, and revocation stops waiting
+
+Two corrections to things I had recorded as done or deferred.
+
+The control plane compared a bearer token against one value and ran everything
+past it unchecked, so every console user was the same principal — the most
+privileged one. I had recorded that as blocked on an identity provider, and it
+was not: a local password *is* a principal, and grants compile to the same
+decider the data plane uses. Sessions, three resolvable credentials, and a
+permission plus a scope declared at every route, so reading the route table
+answers "who can do this" without reading a handler.
+
+The check that earns its own test: `putGrants` requires role:manage at the scope
+of each grant being *issued*, not only at the target user's tenant. Without it a
+tenant admin could grant themselves platform_admin at `*` and the permission set
+would be decoration.
+
+And a revoked key kept working until somebody republished. ADR 0018 named the
+fix and deferred it; ADR 0023 builds it. A signed revocation list with its own
+signing context, distributed the way the snapshot is, that can only subtract —
+which is what answers 0018's own objection, since an allowed action is still
+explained by the snapshot alone. It is republished on a timer whether or not
+anything changed, because otherwise its age grows forever in a healthy system
+and there is nothing to alert on.
+
+Verified live: revoking a key stopped it in about a second, with the snapshot
+version unchanged.
+
+ADRs: [0022](docs/adr/0022-control-plane-sessions-and-permissions.md),
+[0023](docs/adr/0023-out-of-band-revocation.md)
+
 ## Blockers
 
 - **`mcp-gateway-architecture.md` was never supplied.** The brief names it as the
@@ -282,30 +313,28 @@ ADRs: [0014](docs/adr/0014-tenancy-and-principals.md),
 
 ## Next, in priority order
 
-1. **A real identity provider, and the control plane enforcing its own RBAC.**
-   These are one piece of work. The role model exists and separation of duties
-   is expressible, but the control-plane API checks a single bearer token and no
-   permission — so every console user is the same principal. Closing it needs a
-   session that resolves to a person, which needs OIDC (ADR 0020).
-2. **A revocation path that does not wait for a snapshot.** The one place where
-   snapshot latency is an exposure rather than a trade: a leaked key stays valid
-   until somebody republishes. ADR 0018 named the fix — a signed revocation list
-   loaded out of band — and said it must be an explicit second mechanism rather
-   than an optimization hidden inside snapshot loading.
-3. **A grants-only rebuild that skips discovery.** Every grant change currently
+1. **The console rendering from `getSession`.** The control plane enforces RBAC
+   per operation now, and the console still shows every control to everyone —
+   so a tenant admin finds out they cannot mint a signing key by clicking. The
+   data is already on the session; nothing reads it.
+2. **A grants-only rebuild that skips discovery.** Every grant change currently
    re-probes every tenant's backends. Toggling ten grants is ten discovery
    sweeps, which is exactly the shape ADR 0018 warned about.
+3. **OIDC.** No longer a prerequisite for anything — it produces a `User` and
+   joins the path local passwords already take (ADR 0022). It is the largest
+   remaining gap for an enterprise deployment all the same.
 4. **Admission + the job queue.** The snapshotter is already the piece admission
    would feed.
 5. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-6. **A control-plane dashboard and alert rules.** The gateway dashboard is
-   provisioned as code; `mcpdoll.drift.events` and `mcpdoll.snapshot.rejects`
-   are the two metrics that most obviously want an alert.
+6. **Alert rules, starting with `mcpdoll.revocations.age`.** It is the exposure
+   window for a revoked credential and the one number in this system that is
+   meaningless without an alert on it. `mcpdoll.drift.events` and
+   `mcpdoll.snapshot.rejects` are the next two.
 
 ## The tri-surface law
 
-`make parity` is green: **29 operations, 29 CLI commands, 29 console routes.**
+`make parity` is green: **33 operations, 33 CLI commands, 33 console routes.**
 
 It checks three real artifacts, never a hand-maintained list — the spec, the
 built binary's `__commands --json`, and a route manifest generated from the

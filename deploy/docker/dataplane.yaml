@@ -26,6 +26,9 @@ dataplane:
   admin_addr: ":8081"
   snapshot_source: file
   snapshot_path: /srv/state/snapshot.pb
+  # The second signed artifact (ADR 0023). Without it a revoked credential
+  # keeps working until the next snapshot is published, which may be never.
+  revocations_path: /srv/state/revocations.pb
   snapshot_history: 5
 
 controlplane:
@@ -36,6 +39,9 @@ controlplane:
   signing_key_path: /srv/state/dev.key
   signing_key_id: dev
   key_dir: /srv/state
+  # Written here by every operation that revokes something, and read by the
+  # data plane from the same shared volume.
+  revocations_path: /srv/state/revocations.pb
   # The console's origin. Named explicitly — this API mints signing keys, so no
   # wildcard is acceptable even in development.
   allowed_origins:

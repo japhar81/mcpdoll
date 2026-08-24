@@ -21,6 +21,7 @@ dataplane:
   # as trustworthy because the signature is verified either way.
   snapshot_source: file
   snapshot_path: deploy/local/snapshot.pb
+  revocations_path: deploy/local/revocations.pb
   snapshot_history: 5
 
 controlplane:
@@ -31,6 +32,7 @@ controlplane:
   signing_key_path: deploy/local/dev.key
   signing_key_id: dev
   key_dir: deploy/local
+  revocations_path: deploy/local/revocations.pb
   # The console's dev server. Named explicitly — this API mints signing keys,
   # so no wildcard origin is acceptable even locally.
   allowed_origins:

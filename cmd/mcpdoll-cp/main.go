@@ -161,19 +161,20 @@ func run() int {
 	}
 
 	server, err := apiserver.New(apiserver.Config{
-		RegistryPath:   registry,
-		SnapshotPath:   cfg.DataPlane.SnapshotPath,
-		GatewayURL:     cfg.ControlPlane.GatewayURL,
-		AdminURL:       cfg.ControlPlane.AdminURL,
-		SigningKeyPath: cfg.ControlPlane.SigningKeyPath,
-		SigningKeyID:   cfg.ControlPlane.SigningKeyID,
-		KeyDir:         cfg.ControlPlane.KeyDir,
-		Token:          token,
-		AllowAnonymous: *allowAnonymous,
-		AllowedOrigins: cfg.ControlPlane.AllowedOrigins,
-		Version:        Version,
-		Logger:         log,
-		Store:          db,
+		RegistryPath:    registry,
+		SnapshotPath:    cfg.DataPlane.SnapshotPath,
+		GatewayURL:      cfg.ControlPlane.GatewayURL,
+		AdminURL:        cfg.ControlPlane.AdminURL,
+		SigningKeyPath:  cfg.ControlPlane.SigningKeyPath,
+		SigningKeyID:    cfg.ControlPlane.SigningKeyID,
+		KeyDir:          cfg.ControlPlane.KeyDir,
+		RevocationsPath: cfg.ControlPlane.RevocationsPath,
+		Token:           token,
+		AllowAnonymous:  *allowAnonymous,
+		AllowedOrigins:  cfg.ControlPlane.AllowedOrigins,
+		Version:         Version,
+		Logger:          log,
+		Store:           db,
 	})
 	if err != nil {
 		// A refusal here is a configuration problem, and the message says which
@@ -206,6 +207,13 @@ func run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Republishing the revocation list on a timer is what makes its age
+	// meaningful: without it, "how old is the list the gateway holds" grows
+	// forever in a healthy deployment and there is nothing to alert on. With
+	// it, a growing age means the data plane has stopped receiving the
+	// artifact — which is the only failure that matters here (ADR 0023).
+	go server.RunRevocationHeartbeat(ctx)
 
 	select {
 	case err := <-errs:

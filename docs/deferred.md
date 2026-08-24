@@ -85,46 +85,50 @@ Consequence: a publish today is programmatic, not reviewed. The gateway serves
 admitted definitions (ADR 0006) but "admitted" currently means "built into the
 snapshot" rather than "approved by a human who is not the publisher".
 
-### The restructure has landed; three pieces of it have not
+### The restructure has landed; two pieces of it have not
 
-ADRs 0014–0021 are the design of record, and the system now matches them.
+ADRs 0014–0023 are the design of record, and the system now matches them.
 Built: `internal/platform/authz` (scopes, roles, two engines, conformance),
 `internal/controlplane/store` (tenancy, credentials, grants), toolsets replacing
 bundles and audiences, per-tenant bindings with a declared primary, a
 tenant-partitioned snapshot carrying grants and credentials, the single `/mcp`
 endpoint with lazily-composed `PrincipalView`s, tenant/user/grant/key management
-on all three surfaces, and offline credential verification in the data plane.
+on all three surfaces, offline credential verification in the data plane,
+control-plane sessions with RBAC enforced per operation, and out-of-band signed
+revocation.
 
 What is still missing from the design:
 
 - **Identity providers and the gRPC SPI** (ADR 0020). Local passwords and API
-  keys work; OIDC, SAML, and the pluggable authn/authz transport do not exist.
-  This is the largest remaining gap: an enterprise deployment authenticates
-  people through its IdP, and today a human signs in with a local password.
-- **A revocation path that does not wait for a snapshot** — see below. It is the
-  one place where snapshot latency is a real exposure rather than a trade.
+  keys work, the control plane authenticates people with them and enforces
+  their grants (ADR 0022), and OIDC slots in as another way to produce a `User`
+  behind the same decider. SAML, SCIM, and the pluggable transport do not
+  exist. This is the largest remaining gap for an enterprise deployment, and it
+  is now an addition rather than a prerequisite.
 - **A grants-only rebuild that skips discovery.** ADR 0018 called this out as a
   consequence and it is not addressed: every grant change triggers a full
   republish, which re-probes every tenant's backends. Toggling ten grants is ten
   discovery sweeps. The fix is to cache the last discovery pass and reuse it
   when the registry digest is unchanged.
 
-### A leaked API key stays valid until the next snapshot
+### Revocation is built; short-lived credentials are not
 
-Everything in this system takes effect at snapshot latency, and ADR 0018 argues
-that is right. A leaked credential is the exception, and this is where it is
-recorded rather than hidden in that ADR's consequences.
+A leaked key used to stay valid until the next snapshot. It no longer does:
+`revokeAPIKey`, disabling a user, and deleting a tenant all publish a signed
+revocation list the data plane applies within a couple of seconds
+(ADR 0023).
 
-`revokeAPIKey` writes to the database immediately. The data plane verifies
-against the snapshot it holds (ADR 0021), so the key keeps working until a new
-snapshot is built and swapped — seconds if somebody publishes, indefinitely if
-nobody does. The console's key screen says so at the moment of revoking and
-offers the publish button beside it, which is mitigation rather than a fix.
+What remains is the residual risk that design accepts and states. The list is
+distributed, not pushed, and failing closed on an unreachable one would let a
+control-plane outage stop tool calls — so the exposure is the gateway's list
+age, bounded by a thirty-second heartbeat and visible as
+`mcpdoll.revocations.age`, on `/readyz`, and on the console's revocations
+screen. Alert on `age > 5 × heartbeat`.
 
-The fix ADR 0018 named: a signed revocation list the data plane loads out of
-band. It has to be signed, and it has to be a distinct mechanism rather than an
-optimization inside snapshot loading, or "why was this denied?" stops having one
-auditable answer.
+Short-lived credentials would shrink that window rather than closing it, and
+they are the better long-run answer: an agent key that expires every few minutes
+makes revocation latency mostly irrelevant. It needs a refresh path this system
+does not have, and it is orthogonal to what is built rather than blocked by it.
 
 ### The console: built, but read-and-inspect only
 
@@ -218,20 +222,20 @@ snapshot_version)`) and the snapshot marks which tools require an idempotency ke
 (`requires_idempotency_key`, derived from effect class at build time). Neither
 cache is implemented.
 
-### Separation of duties is expressible but not enforced end to end
+### Separation of duties is enforced; the console does not yet render from it
 
-The role model exists (`internal/platform/authz`), the permission set is closed,
-and `snapshot:build` is deliberately separate from `snapshot:publish` so that
-"the person who prepares a change is not the person who ships it" is
-*expressible*. It is not yet *enforced*: the control-plane API authenticates
-with a single bearer token and checks no permission on any operation.
+The control plane resolves every request to a principal and checks every
+operation against their grants (ADR 0022). `snapshot:build` is separate from
+`snapshot:publish`, a tenant admin's scope stops at their tenant, and
+`putGrants` refuses a grant the caller does not themselves hold — so
+"the person who prepares a change is not the person who ships it" is enforced
+rather than merely expressible.
 
-So today an operator who can reach the API can do everything, and the grants in
-the database govern only what the data plane serves. Closing this means the
-control plane resolving a session to a principal and running each operation
-through a `Decider` — which is a small change to `apiserver` and a large one to
-how the console signs in, and it wants the identity provider above to land
-first.
+What is missing is the console reading `getSession` to decide what to *show*.
+It has the data — `permissions` is on the session — and every screen still
+renders every control. A button that 403s is worse than a button that is not
+there, and a tenant admin currently sees the signing-key screen and finds out
+by clicking.
 
 ### Real identity provider
 
@@ -243,7 +247,10 @@ bypass, so that is a constructor error rather than a documented caveat. It is
 also chained strictly behind the API key resolver outside production, so a valid
 key always wins over a claimed subject.
 
-OIDC/JWT validation, SAML, SCIM, and the gRPC SPI of ADR 0020 are not built.
+People sign in with a local password and the control plane enforces their
+grants (ADR 0022). OIDC/JWT validation, SAML, SCIM, and the gRPC SPI of ADR 0020
+are not built — and OIDC in particular is now an addition rather than a
+prerequisite, because it produces a `User` and joins the same path.
 
 ### Deployment: no Helm chart
 
