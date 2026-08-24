@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted
+Accepted. **Amended by [ADR 0016](./0016-toolsets-replace-audiences.md):
+`cacheScopeFor` now returns `private` unconditionally.** Every catalog is
+derived from a principal's grants, so the condition that once permitted `public`
+— nothing identity-specific applied — is never true. The function is kept rather
+than inlined so the invariant retains a name and a test, and so any future
+public case has to be argued for in one place. Everything below about *why*
+`public` on a filtered catalog is a cross-tenant leak still stands; there is now
+simply no filtered-or-not distinction left to get wrong.
 
 ## Context
 

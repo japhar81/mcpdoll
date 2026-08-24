@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted. **Amended by [ADR 0016](./0016-toolsets-replace-audiences.md):**
+the sort key is `(toolset priority, namespace prefix, tool name)` — `bundle`
+became `toolset` — and ordering is now computed over each principal's *filtered*
+set rather than over an audience's shared one. Filtering before sorting keeps
+the cost proportional to what the principal can actually see; the determinism
+requirement below is unchanged and now applies per principal.
 
 ## Context
 

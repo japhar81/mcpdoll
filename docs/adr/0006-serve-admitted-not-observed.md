@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted. **Amended by [ADR 0017](./0017-per-tenant-backends-and-pools.md):**
+"admitted" is now per `(toolset, tenant)`, sourced from that tenant's declared
+primary backend. A replica that diverges from the primary leaves the routable
+pool; what is *served* does not change, which is this ADR's principle applied to
+a case it did not originally anticipate.
 
 ## Context
 

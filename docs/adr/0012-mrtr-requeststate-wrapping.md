@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted. **Amended by [ADR 0019](./0019-single-mcp-endpoint.md):** the
+envelope binds `(tool, principal, tenant, argument digest)`. The `audience` slug
+it previously bound no longer exists; the tenant replaces it and is bound
+explicitly rather than inferred from the principal, so a confirmation cannot be
+replayed across a tenant boundary and so the envelope is self-describing in an
+audit trail.
 
 ## Context
 

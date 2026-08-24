@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted. **Amended by [ADR 0017](./0017-per-tenant-backends-and-pools.md):**
+a digest now identifies a `(tenant, tool)` pair rather than a tool. The same
+vendor tool published by two tenants' separately-deployed backends legitimately
+has two different digests, and drift is measured against the tenant's own
+admitted definition.
 
 ## Context
 
