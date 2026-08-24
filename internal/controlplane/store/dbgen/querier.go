@@ -13,6 +13,10 @@ import (
 type Querier interface {
 	AddAPIKeyGrant(ctx context.Context, arg AddAPIKeyGrantParams) (ApiKeyGrant, error)
 	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error
+	// CountUsersByTenant answers the tenant list in one query rather than one per
+	// tenant. A tenant list is the first screen an operator opens, and N+1 there is
+	// N+1 forever.
+	CountUsersByTenant(ctx context.Context) ([]CountUsersByTenantRow, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateGrant(ctx context.Context, arg CreateGrantParams) (Grant, error)
 	CreateIdentityProvider(ctx context.Context, arg CreateIdentityProviderParams) (IdentityProvider, error)

@@ -152,9 +152,26 @@ func (s *Server) routes() {
 
 		r.Get("/gateway/status", s.handleGatewayStatus)
 		r.Get("/gateway/backends", s.handleListBackends)
-		r.Get("/gateway/tenants", s.handleListTenants)
 		r.Get("/gateway/catalog", s.handleCatalog)
 		r.Post("/gateway/tools/{toolName}:call", s.handleCallTool)
+
+		// Tenancy and RBAC. Everything below is backed by the database rather
+		// than by a file, and reports plainly when there is not one.
+		r.Get("/tenants", s.handleListTenants)
+		r.Post("/tenants", s.handleCreateTenant)
+		r.Delete("/tenants/{tenantId}", s.handleDeleteTenant)
+		r.Get("/tenants/{tenantId}/users", s.handleListUsers)
+		r.Post("/tenants/{tenantId}/users", s.handleCreateUser)
+
+		r.Get("/users/{userId}", s.handleGetUser)
+		r.Patch("/users/{userId}", s.handleUpdateUser)
+		r.Get("/users/{userId}/grants", s.handleListGrants)
+		r.Put("/users/{userId}/grants", s.handlePutGrants)
+		r.Get("/users/{userId}/keys", s.handleListAPIKeys)
+		r.Post("/users/{userId}/keys", s.handleMintAPIKey)
+		r.Delete("/keys/{keyId}", s.handleRevokeAPIKey)
+
+		r.Get("/roles", s.handleListRoles)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +218,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin != "" && s.originAllowed(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Max-Age", "600")
 			// The response varies by Origin, so a cache that ignored this would
@@ -371,22 +388,6 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.log, http.StatusOK, report)
-}
-
-func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	out := api.TenantList{Registered: []api.TenantSummary{}}
-
-	// A gateway that cannot be reached is not a failure of this operation: the
-	// registered audiences are still the useful answer, and the zero status
-	// says the gateway is not ready.
-	if status, err := s.inspectorClient(r).Status(r.Context()); err == nil {
-		out.GatewayStatus = status
-	} else {
-		out.GatewayStatus = status
-		s.log.Warn("listing audiences without live gateway state",
-			slog.String("error", err.Error()))
-	}
-	writeJSON(w, s.log, http.StatusOK, out)
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {

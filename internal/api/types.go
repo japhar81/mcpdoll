@@ -300,12 +300,126 @@ type TenantList struct {
 	Registered []TenantSummary `json:"registered" yaml:"registered"`
 }
 
-// TenantSummary is one tenant as the gateway reports it.
+// TenantSummary is one tenant, joined across the three places a tenant exists.
+//
+// A tenant is a record in the database, a set of bindings in the registry, and
+// a slice of the serving snapshot, and those three drift apart in ways that are
+// individually invisible. A tenant with users and no bindings has nobody to
+// serve; a binding for a tenant nobody created has nothing to authenticate
+// against. Reporting them together is what makes either mistake findable.
 type TenantSummary struct {
+	// ID is empty for a tenant that appears only in the registry.
+	ID     string `json:"id,omitempty" yaml:"id,omitempty"`
 	Slug   string `json:"slug" yaml:"slug"`
 	Name   string `json:"name" yaml:"name"`
 	Status string `json:"status" yaml:"status"`
-	Tools  int    `json:"tools" yaml:"tools"`
+	// Users in this tenant. Zero for a tenant that exists only as a binding.
+	Users int `json:"users" yaml:"users"`
+	// Backends bound to this tenant in the registry. Zero means no tool can
+	// reach it, whatever grants its users hold.
+	Backends int `json:"backends" yaml:"backends"`
+	// Tools admitted for this tenant by the serving snapshot.
+	Tools     int    `json:"tools" yaml:"tools"`
+	CreatedAt string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+}
+
+// Tenant is one tenant record.
+type Tenant struct {
+	ID        string `json:"id" yaml:"id"`
+	Slug      string `json:"slug" yaml:"slug"`
+	Name      string `json:"name" yaml:"name"`
+	Status    string `json:"status" yaml:"status"`
+	CreatedAt string `json:"created_at" yaml:"created_at"`
+}
+
+// User is one identity inside a tenant.
+type User struct {
+	ID       string `json:"id" yaml:"id"`
+	TenantID string `json:"tenant_id" yaml:"tenant_id"`
+	// Tenant is the slug, carried alongside the id because every scope string
+	// this user appears in is written with the slug, not the uuid.
+	Tenant      string `json:"tenant" yaml:"tenant"`
+	Email       string `json:"email" yaml:"email"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+	Status      string `json:"status" yaml:"status"`
+	// HasPassword, never the hash. Whether local sign-in is possible is the
+	// only thing any caller needs, and it is the only thing safe to say.
+	HasPassword bool   `json:"has_password" yaml:"has_password"`
+	CreatedAt   string `json:"created_at" yaml:"created_at"`
+}
+
+// UserList is every user in one tenant.
+type UserList struct {
+	Tenant string `json:"tenant" yaml:"tenant"`
+	Users  []User `json:"users" yaml:"users"`
+}
+
+// Grant is one role held at one scope.
+type Grant struct {
+	Role  string `json:"role" yaml:"role"`
+	Scope string `json:"scope" yaml:"scope"`
+}
+
+// GrantList is what a user holds directly.
+//
+// Directly: a key's effective grants are the intersection of what the key
+// declares with this set, recomputed at every resolution, which is what makes
+// suspending a user suspend every key they hold (ADR 0014).
+type GrantList struct {
+	UserID string  `json:"user_id" yaml:"user_id"`
+	Grants []Grant `json:"grants" yaml:"grants"`
+}
+
+// APIKey is an agent credential's metadata. Never the secret.
+type APIKey struct {
+	ID     string `json:"id" yaml:"id"`
+	UserID string `json:"user_id" yaml:"user_id"`
+	Name   string `json:"name" yaml:"name"`
+	// Prefix is the lookup half of the key. Public by construction: it is what
+	// identifies the row before anything is verified.
+	Prefix string `json:"prefix" yaml:"prefix"`
+	// Declared is what the key asks for. Its effective grants are this
+	// intersected with the owner's, so a key can narrow but never widen.
+	Declared []Grant `json:"declared_grants" yaml:"declared_grants"`
+	// Active is the resolved answer to "would this key authenticate right now",
+	// which is not derivable from any single field below.
+	Active     bool   `json:"active" yaml:"active"`
+	CreatedAt  string `json:"created_at" yaml:"created_at"`
+	LastUsedAt string `json:"last_used_at,omitempty" yaml:"last_used_at,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	RevokedAt  string `json:"revoked_at,omitempty" yaml:"revoked_at,omitempty"`
+}
+
+// APIKeyList is every key one user holds, revoked ones included.
+type APIKeyList struct {
+	UserID string   `json:"user_id" yaml:"user_id"`
+	Keys   []APIKey `json:"keys" yaml:"keys"`
+}
+
+// MintedAPIKey is a new key, the one time its secret is knowable.
+type MintedAPIKey struct {
+	Key APIKey `json:"key" yaml:"key"`
+	// Secret is stored only as an Argon2id hash, so this response is the only
+	// place it will ever appear. A caller that does not capture it has to mint
+	// another key.
+	Secret string `json:"secret" yaml:"secret"`
+}
+
+// Role is one role and everything it permits.
+type Role struct {
+	Name        string   `json:"name" yaml:"name"`
+	Permissions []string `json:"permissions" yaml:"permissions"`
+}
+
+// RoleCatalog is the whole role model, plus every permission that exists.
+//
+// Permissions is the closed set, not just the ones some role happens to use:
+// a UI that offered only the permissions already in play could never grant a
+// new one, and the set being closed is the property that keeps it reviewable
+// (ADR 0015).
+type RoleCatalog struct {
+	Roles       []Role   `json:"roles" yaml:"roles"`
+	Permissions []string `json:"permissions" yaml:"permissions"`
 }
 
 // Catalog is the tool list one identity receives from one audience.

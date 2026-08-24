@@ -341,20 +341,351 @@ paths:
               schema: { $ref: "#/components/schemas/BackendHealthReport" }
         "502": { $ref: "#/components/responses/Unavailable" }
 
-  /api/v1/gateway/tenants:
+  /api/v1/tenants:
     get:
       operationId: listTenants
-      summary: List the tenants a data plane serves
-      tags: [gateway]
+      summary: Every tenant, joined across the three places a tenant exists
+      description: |
+        A tenant is a record in the database, a set of bindings in the registry,
+        and a slice of the serving snapshot. Those drift apart in ways that are
+        individually invisible: a tenant with users and no bindings has nothing
+        to serve, and a binding for a tenant nobody created has nothing to
+        authenticate against. Reporting all three together is what makes either
+        mistake findable.
+
+        A slug that appears only in the registry is listed with status
+        `unregistered` and no id.
+      tags: [tenancy]
       x-mcpdoll-surfaces:
-        cli: mcpdoll gateway tenants
-        ui: /gateway/tenants
+        cli: mcpdoll tenants list
+        ui: /tenants
       responses:
         "200":
           description: The tenants
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TenantList" }
+
+    post:
+      operationId: createTenant
+      summary: Create a tenant
+      description: |
+        The slug appears verbatim in every scope string this tenant's grants
+        use, so it is immutable once created. There is no rename operation for
+        exactly that reason: renaming would orphan every grant naming it.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll tenants create
+        ui: /tenants/new
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTenantRequest" }
+      responses:
+        "201":
+          description: The tenant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/tenants/{tenantId}:
+    delete:
+      operationId: deleteTenant
+      summary: Delete a tenant and everything it owns
+      description: |
+        Cascades to the tenant's users, their grants, and their API keys. The
+        cascade is the schema's, which is what makes the deletion complete
+        without anybody having to remember every table.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll tenants delete
+        ui: /tenants/:tenantId/delete
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/tenants/{tenantId}/users:
+    get:
+      operationId: listUsers
+      summary: Every user in one tenant
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users list
+        ui: /tenants/:tenantId/users
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The users
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+    post:
+      operationId: createUser
+      summary: Add a user to a tenant
+      description: |
+        The password is optional: a user who signs in through an identity
+        provider has none, and a service identity that only ever holds API keys
+        does not need one.
+
+        A new user holds no grants. That is the correct starting state rather
+        than an omission — an account that could see tools the moment it existed
+        would make onboarding the thing that grants access.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users create
+        ui: /tenants/:tenantId/users/new
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/users/{userId}:
+    get:
+      operationId: getUser
+      summary: One user
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users show
+        ui: /users/:userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+    patch:
+      operationId: updateUser
+      summary: Change a user's display name or status
+      description: |
+        Setting the status to `disabled` stops the user's API keys too, because
+        a key's effective grants are recomputed from its owner at every
+        resolution. That is what makes offboarding one operation rather than a
+        hunt through credentials.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users update
+        ui: /users/:userId/edit
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/users/{userId}/grants:
+    get:
+      operationId: listGrants
+      summary: What a user holds directly
+      description: |
+        Directly: an API key's effective grants are the intersection of what the
+        key declares with this set, recomputed at every resolution, so a key can
+        narrow what its owner holds but never widen it.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users grants
+        ui: /users/:userId/grants
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The grants
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantList" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+    put:
+      operationId: putGrants
+      summary: Set a user's grants to exactly this set
+      description: |
+        Declarative rather than add-one/remove-one. The question an operator is
+        answering is "what should this person hold", and expressing that as a
+        sequence of deltas is exactly how a revocation gets forgotten.
+
+        A grant naming a role the catalog does not define is refused rather than
+        stored: it would authorize nothing, so accepting it would report success
+        for a change that does not take effect.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users grants set
+        ui: /users/:userId/grants/edit
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutGrantsRequest" }
+      responses:
+        "200":
+          description: The grants the user now holds
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantList" }
+        "400": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/users/{userId}/keys:
+    get:
+      operationId: listAPIKeys
+      summary: Every API key a user holds, revoked ones included
+      description: |
+        Revoked keys stay listed. A credential that was in use and is not any
+        more is the thing an incident review needs to see, and removing the row
+        would remove the evidence.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users keys
+        ui: /users/:userId/keys
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The keys
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKeyList" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+    post:
+      operationId: mintAPIKey
+      summary: Mint an API key
+      description: |
+        The only response in this API that carries a secret. The key is stored
+        only as an Argon2id hash, so a caller who does not capture it here has
+        to mint another one — which is the property that makes a leaked log
+        harmless.
+
+        Declared grants are intersected with the owner's at every resolution, so
+        a key can narrow its owner's access but never widen it. Declaring more
+        than the owner holds is not an error; it simply has no effect.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users keys mint
+        ui: /users/:userId/keys/new
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MintAPIKeyRequest" }
+      responses:
+        "201":
+          description: The key and its secret, once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MintedAPIKey" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/keys/{keyId}:
+    delete:
+      operationId: revokeAPIKey
+      summary: Revoke an API key
+      description: |
+        Marks the key revoked rather than deleting the row, so the credential
+        stops working and the record of it having existed does not.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users keys revoke
+        ui: /users/:userId/keys/:keyId/revoke
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Revoked }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
+  /api/v1/roles:
+    get:
+      operationId: listRoles
+      summary: The role catalog and every permission that exists
+      description: |
+        `permissions` is the closed set, not only the ones some role happens to
+        use. A UI offered only the latter could never grant a new one, and the
+        set being closed is what keeps it reviewable.
+
+        Answers from the database when one is configured, and from the built-in
+        defaults otherwise — which is also what a fresh install authorizes
+        against before anybody has seeded it.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll roles
+        ui: /roles
+      responses:
+        "200":
+          description: The role catalog
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleCatalog" }
 
   /api/v1/gateway/catalog:
     get:
@@ -432,6 +763,25 @@ components:
   responses:
     NotFound:
       description: The resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Conflict:
+      description: |
+        The request is legitimate but conflicts with existing state — a slug or
+        an email already taken. Not a 500: telling the caller the server broke
+        sends them to the wrong place.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    NoDatabase:
+      description: |
+        This control plane has no database configured, so it holds no tenants or
+        users. A legitimate deployment — a snapshot builder in CI has no
+        business holding user records — which is why it is reported rather than
+        hidden behind an empty list.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -965,12 +1315,221 @@ components:
 
     TenantSummary:
       type: object
-      required: [slug, name, status, tools]
+      description: |
+        One tenant, joined across the database, the registry, and the serving
+        snapshot. `users` of zero with a positive `backends` is a tenant nothing
+        can authenticate into; `backends` of zero is a tenant no tool can reach
+        whatever grants its users hold.
+      required: [slug, name, status, users, backends, tools]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Absent for a slug that appears only in the registry.
+        slug: { type: string }
+        name: { type: string }
+        status:
+          type: string
+          description: |
+            The tenant's own status, or `unregistered` for a slug the registry
+            binds but nobody created.
+        users: { type: integer }
+        backends:
+          type: integer
+          description: Registry bindings naming this tenant.
+        tools:
+          type: integer
+          description: Tools the serving snapshot admits for this tenant.
+        created_at: { type: string, format: date-time }
+
+    Tenant:
+      type: object
+      required: [id, slug, name, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        slug:
+          type: string
+          description: |
+            Appears verbatim in every scope string this tenant's grants use, and
+            is immutable for that reason.
+        name: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+
+    CreateTenantRequest:
+      type: object
+      required: [slug, name]
       properties:
         slug: { type: string }
         name: { type: string }
-        status: { type: string }
-        tools: { type: integer }
+
+    User:
+      type: object
+      required: [id, tenant_id, tenant, email, status, has_password, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        tenant:
+          type: string
+          description: |
+            The slug, carried alongside the id because every scope string this
+            user appears in is written with the slug, not the uuid.
+        email: { type: string }
+        display_name: { type: string }
+        status:
+          type: string
+          enum: [active, disabled]
+        has_password:
+          type: boolean
+          description: |
+            Whether local sign-in is possible. Never the hash — that is the only
+            thing safe to say and the only thing any caller needs.
+        created_at: { type: string, format: date-time }
+
+    UserList:
+      type: object
+      required: [tenant, users]
+      properties:
+        tenant: { type: string }
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+
+    CreateUserRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string }
+        display_name: { type: string }
+        password:
+          type: string
+          description: |
+            Optional. A user who signs in through an identity provider has none,
+            and a service identity that only holds API keys does not need one.
+
+    UpdateUserRequest:
+      type: object
+      required: [status]
+      properties:
+        display_name: { type: string }
+        status:
+          type: string
+          enum: [active, disabled]
+
+    Grant:
+      type: object
+      description: |
+        One role held at one scope. Scopes nest: `*` covers everything,
+        `t/<tenant>` covers a tenant, `t/<tenant>/ts/<toolset>` a toolset, and
+        `t/<tenant>/ts/<toolset>/<tool>` a single tool.
+      required: [role, scope]
+      properties:
+        role: { type: string }
+        scope: { type: string }
+
+    GrantList:
+      type: object
+      required: [user_id, grants]
+      properties:
+        user_id: { type: string, format: uuid }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/Grant" }
+
+    PutGrantsRequest:
+      type: object
+      required: [grants]
+      properties:
+        grants:
+          type: array
+          description: The complete set the user should hold. Anything absent is revoked.
+          items: { $ref: "#/components/schemas/Grant" }
+
+    APIKey:
+      type: object
+      required: [id, user_id, name, prefix, declared_grants, active, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        prefix:
+          type: string
+          description: |
+            The lookup half of the key, public by construction: it identifies
+            the row before anything is verified.
+        declared_grants:
+          type: array
+          description: |
+            What the key asks for. Effective grants are this intersected with
+            the owner's, so a key can narrow but never widen.
+          items: { $ref: "#/components/schemas/Grant" }
+        active:
+          type: boolean
+          description: |
+            Whether this key would authenticate right now — not derivable from
+            any single timestamp below.
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+
+    APIKeyList:
+      type: object
+      required: [user_id, keys]
+      properties:
+        user_id: { type: string, format: uuid }
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/APIKey" }
+
+    MintAPIKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/Grant" }
+        expires_at:
+          type: string
+          format: date-time
+          description: Absent means the key does not expire.
+
+    MintedAPIKey:
+      type: object
+      required: [key, secret]
+      properties:
+        key: { $ref: "#/components/schemas/APIKey" }
+        secret:
+          type: string
+          description: |
+            The only place this will ever appear. Stored as an Argon2id hash, so
+            a caller who does not capture it has to mint another key.
+
+    Role:
+      type: object
+      required: [name, permissions]
+      properties:
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+
+    RoleCatalog:
+      type: object
+      required: [roles, permissions]
+      properties:
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+        permissions:
+          type: array
+          description: |
+            Every permission that exists, not only the ones some role uses.
+            Adding one is a schema change and a UI change — friction that exists
+            because a permission set which grows casually stops being
+            reviewable.
+          items: { type: string }
 
     BackendHealthReport:
       type: object

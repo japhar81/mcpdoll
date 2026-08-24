@@ -11,6 +11,40 @@ import (
 	"github.com/google/uuid"
 )
 
+const countUsersByTenant = `-- name: CountUsersByTenant :many
+SELECT tenant_id, count(*)::bigint AS users
+FROM users
+GROUP BY tenant_id
+`
+
+type CountUsersByTenantRow struct {
+	TenantID uuid.UUID
+	Users    int64
+}
+
+// CountUsersByTenant answers the tenant list in one query rather than one per
+// tenant. A tenant list is the first screen an operator opens, and N+1 there is
+// N+1 forever.
+func (q *Queries) CountUsersByTenant(ctx context.Context) ([]CountUsersByTenantRow, error) {
+	rows, err := q.db.Query(ctx, countUsersByTenant)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountUsersByTenantRow{}
+	for rows.Next() {
+		var i CountUsersByTenantRow
+		if err := rows.Scan(&i.TenantID, &i.Users); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (tenant_id, email, display_name, password_hash)
 VALUES ($1, $2, $3, $4)

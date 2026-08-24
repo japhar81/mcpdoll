@@ -395,3 +395,118 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	require.NoError(t, s.Migrate(context.Background()))
 	require.NoError(t, s.Migrate(context.Background()))
 }
+
+// --------------------------------------------------------- declarative sets --
+
+func TestSetGrantsRevokesWhatIsNotInTheSet(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "")
+	require.NoError(t, err)
+
+	support := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug + "/ts/support"}
+	people := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug + "/ts/people"}
+
+	require.NoError(t, s.SetGrants(ctx, user.ID, []authz.Grant{support, people}, nil))
+	held, err := s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Len(t, held, 2)
+
+	// The whole point of the declarative form: dropping one from the submitted
+	// set revokes it. Expressing this as a sequence of deltas is how a
+	// revocation gets forgotten.
+	require.NoError(t, s.SetGrants(ctx, user.ID, []authz.Grant{support}, nil))
+	held, err = s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, []authz.Grant{support}, held)
+
+	require.NoError(t, s.SetGrants(ctx, user.ID, nil, nil))
+	held, err = s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Empty(t, held, "an empty set strips the account without deleting it")
+}
+
+func TestSetGrantsRefusesTheWholeSetOnOneMalformedScope(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "bob@example.com", "", "")
+	require.NoError(t, err)
+
+	good := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug}
+	require.NoError(t, s.SetGrants(ctx, user.ID, []authz.Grant{good}, nil))
+
+	// Validated before anything is written. A partial apply would leave the
+	// user holding some of what was asked for and none of the rest, which is a
+	// state nobody intended and nobody can see.
+	err = s.SetGrants(ctx, user.ID, []authz.Grant{
+		good,
+		{Role: authz.RoleToolUser, Scope: "not-a-scope"},
+	}, nil)
+	require.ErrorIs(t, err, store.ErrInvalid)
+
+	held, err := s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, []authz.Grant{good}, held, "nothing changed")
+}
+
+func TestSetGrantsLeavesUnchangedGrantsAlone(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "carol@example.com", "", "")
+	require.NoError(t, err)
+
+	want := []authz.Grant{{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug}}
+	require.NoError(t, s.SetGrants(ctx, user.ID, want, nil))
+	require.NoError(t, s.SetGrants(ctx, user.ID, want, nil))
+
+	held, err := s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, want, held, "re-submitting an unchanged set is a no-op")
+}
+
+func TestCountUsersByTenantCountsPerTenant(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+
+	one, two := newTenant(t, s), newTenant(t, s)
+	for _, email := range []string{"a@example.com", "b@example.com"} {
+		_, err := s.CreateUser(ctx, one.ID, email, "", "")
+		require.NoError(t, err)
+	}
+	_, err := s.CreateUser(ctx, two.ID, "c@example.com", "", "")
+	require.NoError(t, err)
+
+	counts, err := s.CountUsersByTenant(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, counts[one.ID])
+	require.Equal(t, 1, counts[two.ID])
+}
+
+func TestUpdateUserRefusesAnUnknownStatus(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "dave@example.com", "Dave", "")
+	require.NoError(t, err)
+
+	// A typo that silently stored "disable" would leave an account the operator
+	// believes is shut off still authenticating.
+	_, err = s.UpdateUser(ctx, user.ID, "Dave", "disable")
+	require.ErrorIs(t, err, store.ErrInvalid)
+
+	after, err := s.GetUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, "active", after.Status)
+}

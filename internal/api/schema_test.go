@@ -54,6 +54,16 @@ var schemas = map[string]any{
 	"ToolSummary":           api.ToolSummary{},
 	"TenantList":            api.TenantList{},
 	"TenantSummary":         api.TenantSummary{},
+	"Tenant":                api.Tenant{},
+	"User":                  api.User{},
+	"UserList":              api.UserList{},
+	"Grant":                 api.Grant{},
+	"GrantList":             api.GrantList{},
+	"APIKey":                api.APIKey{},
+	"APIKeyList":            api.APIKeyList{},
+	"MintedAPIKey":          api.MintedAPIKey{},
+	"Role":                  api.Role{},
+	"RoleCatalog":           api.RoleCatalog{},
 	"BuildReport":           api.BuildReport{},
 	"BackendReport":         api.BackendReport{},
 	"VerifyReport":          api.VerifyReport{},
@@ -76,6 +86,11 @@ var schemas = map[string]any{
 	"BuildSnapshotRequest":      apiserver.BuildSnapshotRequest{},
 	"GenerateSigningKeyRequest": apiserver.GenerateSigningKeyRequest{},
 	"CallToolRequest":           apiserver.CallToolRequest{},
+	"CreateTenantRequest":       apiserver.CreateTenantRequest{},
+	"CreateUserRequest":         apiserver.CreateUserRequest{},
+	"UpdateUserRequest":         apiserver.UpdateUserRequest{},
+	"PutGrantsRequest":          apiserver.PutGrantsRequest{},
+	"MintAPIKeyRequest":         apiserver.MintAPIKeyRequest{},
 }
 
 type openapiDoc struct {

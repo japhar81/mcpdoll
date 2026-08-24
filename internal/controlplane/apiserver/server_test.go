@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mcpdoll/mcpdoll/internal/api"
@@ -399,14 +400,70 @@ func TestListTenantsStillAnswersWhenTheGatewayIsDown(t *testing.T) {
 		c.GatewayURL = "http://127.0.0.1:1"
 	})
 
-	rec := do(t, h, http.MethodGet, "/api/v1/gateway/tenants", nil)
+	rec := do(t, h, http.MethodGet, "/api/v1/tenants", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var list api.TenantList
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
 	// The live half is missing; Ready:false says so rather than hiding it.
-	// and Ready:false says the live half is missing rather than hiding it.
 	require.False(t, list.Ready)
+	// The registry half still answers. A tenant slug the registry binds is
+	// knowable without a database and without the gateway, and reporting
+	// nothing here would make a running deployment look empty.
+	require.NotEmpty(t, list.Registered)
+	require.Equal(t, "unregistered", list.Registered[0].Status,
+		"no store is configured, so every slug here comes from the registry alone")
+}
+
+func TestTenancyOperationsReportTheAbsentDatabase(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, func(*apiserver.Config) {})
+
+	// A control plane with no database is a legitimate deployment — a snapshot
+	// builder in CI has no business holding user records. What it must not do
+	// is answer with an empty list, which reads as "no users exist".
+	for _, path := range []string{
+		"/api/v1/tenants/" + uuid.Nil.String() + "/users",
+		"/api/v1/users/" + uuid.Nil.String(),
+		"/api/v1/users/" + uuid.Nil.String() + "/grants",
+		"/api/v1/users/" + uuid.Nil.String() + "/keys",
+	} {
+		rec := do(t, h, http.MethodGet, path, nil)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, path)
+
+		var apiErr apiserver.Error
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &apiErr))
+		require.Contains(t, apiErr.Message, "no database configured")
+	}
+}
+
+func TestListRolesAnswersWithoutADatabase(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, func(*apiserver.Config) {})
+
+	// The one tenancy operation that does not need a store: the built-in
+	// catalog is what a fresh install authorizes against before anybody has
+	// seeded it, so it is a real answer rather than a placeholder.
+	rec := do(t, h, http.MethodGet, "/api/v1/roles", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var catalog api.RoleCatalog
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &catalog))
+	require.NotEmpty(t, catalog.Roles)
+	require.NotEmpty(t, catalog.Permissions)
+
+	// tool:list and tool:call are separate permissions. A catalog that merged
+	// them would let an agent call something it was never shown.
+	require.Contains(t, catalog.Permissions, "tool:list")
+	require.Contains(t, catalog.Permissions, "tool:call")
+}
+
+func TestUUIDPathsAreRejectedBeforeTheDatabaseIsAsked(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, func(*apiserver.Config) {})
+
+	rec := do(t, h, http.MethodGet, "/api/v1/users/not-a-uuid", nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestCallToolRejectsAnUnknownResponseAction(t *testing.T) {

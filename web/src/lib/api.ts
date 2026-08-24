@@ -9,7 +9,15 @@
  * Pure module — no React, so it is usable from a script or a test.
  */
 import type {
+  APIKeyList,
+  Grant,
+  GrantList,
+  MintedAPIKey,
+  RoleCatalog,
+  Tenant,
   TenantList,
+  User,
+  UserList,
   BackendHealthReport,
   BuildReport,
   CallResult,
@@ -267,3 +275,72 @@ export const callTool = (toolName: string, input: CallToolInput) =>
     `/api/v1/gateway/tools/${encodeURIComponent(toolName)}:call`,
     input,
   );
+
+// ---------------------------------------------------------------- tenancy ---
+
+export const createTenant = (slug: string, name: string) =>
+  request<Tenant>("POST", "/api/v1/tenants", { slug, name });
+
+export const deleteTenant = (tenantId: string) =>
+  request<void>("DELETE", `/api/v1/tenants/${encodeURIComponent(tenantId)}`);
+
+export const listUsers = (tenantId: string) =>
+  request<UserList>(
+    "GET",
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/users`,
+  );
+
+export interface CreateUserInput {
+  email: string;
+  display_name?: string;
+  /** Optional: an SSO user has none, and a key-only identity does not need one. */
+  password?: string;
+}
+
+export const createUser = (tenantId: string, input: CreateUserInput) =>
+  request<User>(
+    "POST",
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/users`,
+    input,
+  );
+
+export const getUser = (userId: string) =>
+  request<User>("GET", `/api/v1/users/${encodeURIComponent(userId)}`);
+
+export const updateUser = (
+  userId: string,
+  input: { display_name?: string; status: string },
+) => request<User>("PATCH", `/api/v1/users/${encodeURIComponent(userId)}`, input);
+
+export const listGrants = (userId: string) =>
+  request<GrantList>("GET", `/api/v1/users/${encodeURIComponent(userId)}/grants`);
+
+/** The complete set the user should hold. Anything absent is revoked. */
+export const putGrants = (userId: string, grants: Grant[]) =>
+  request<GrantList>(
+    "PUT",
+    `/api/v1/users/${encodeURIComponent(userId)}/grants`,
+    { grants },
+  );
+
+export const listAPIKeys = (userId: string) =>
+  request<APIKeyList>("GET", `/api/v1/users/${encodeURIComponent(userId)}/keys`);
+
+export interface MintAPIKeyInput {
+  name: string;
+  grants?: Grant[];
+  /** RFC 3339. Absent means the key does not expire. */
+  expires_at?: string;
+}
+
+export const mintAPIKey = (userId: string, input: MintAPIKeyInput) =>
+  request<MintedAPIKey>(
+    "POST",
+    `/api/v1/users/${encodeURIComponent(userId)}/keys`,
+    input,
+  );
+
+export const revokeAPIKey = (keyId: string) =>
+  request<void>("DELETE", `/api/v1/keys/${encodeURIComponent(keyId)}`);
+
+export const listRoles = () => request<RoleCatalog>("GET", "/api/v1/roles");

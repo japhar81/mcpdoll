@@ -29,6 +29,11 @@ import { KeysScreen } from "./screens/KeysScreen.tsx";
 import { GatewayScreen } from "./screens/GatewayScreen.tsx";
 import { BackendsScreen } from "./screens/BackendsScreen.tsx";
 import { TenantsScreen } from "./screens/TenantsScreen.tsx";
+import { UsersScreen } from "./screens/UsersScreen.tsx";
+import { UserScreen } from "./screens/UserScreen.tsx";
+import { GrantsScreen } from "./screens/GrantsScreen.tsx";
+import { APIKeysScreen } from "./screens/APIKeysScreen.tsx";
+import { RolesScreen } from "./screens/RolesScreen.tsx";
 import { CatalogScreen } from "./screens/CatalogScreen.tsx";
 import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
 
@@ -45,7 +50,12 @@ export interface RouteDef {
   /** Sidebar grouping. Named after the thing, not the feature: "Data plane"
    *  and "Control plane" are what a reader needs to tell apart. */
   section?:
-    "Overview" | "Registry" | "Snapshots" | "Data plane" | "Control plane";
+    | "Overview"
+    | "Tenancy"
+    | "Registry"
+    | "Snapshots"
+    | "Data plane"
+    | "Control plane";
 }
 
 export const ROUTES: RouteDef[] = [
@@ -148,12 +158,78 @@ export const ROUTES: RouteDef[] = [
     nav: "Backend health",
     section: "Data plane",
   },
+  // Tenancy. Several operations share a screen and differ by path: the create
+  // form, the delete confirmation, and the grant editor live on the page that
+  // lists what they act on, because a confirmation which does not show what it
+  // is about is not a confirmation. The route is the deep link into that mode.
   {
-    path: "/gateway/tenants",
+    path: "/tenants",
     operation: "listTenants",
     component: TenantsScreen,
     nav: "Tenants",
-    section: "Data plane",
+    section: "Tenancy",
+  },
+  {
+    path: "/tenants/new",
+    operation: "createTenant",
+    component: TenantsScreen,
+  },
+  {
+    path: "/tenants/:tenantId/delete",
+    operation: "deleteTenant",
+    component: TenantsScreen,
+  },
+  {
+    path: "/tenants/:tenantId/users",
+    operation: "listUsers",
+    component: UsersScreen,
+  },
+  {
+    path: "/tenants/:tenantId/users/new",
+    operation: "createUser",
+    component: UsersScreen,
+  },
+  {
+    path: "/users/:userId",
+    operation: "getUser",
+    component: UserScreen,
+  },
+  {
+    path: "/users/:userId/edit",
+    operation: "updateUser",
+    component: UserScreen,
+  },
+  {
+    path: "/users/:userId/grants",
+    operation: "listGrants",
+    component: GrantsScreen,
+  },
+  {
+    path: "/users/:userId/grants/edit",
+    operation: "putGrants",
+    component: GrantsScreen,
+  },
+  {
+    path: "/users/:userId/keys",
+    operation: "listAPIKeys",
+    component: APIKeysScreen,
+  },
+  {
+    path: "/users/:userId/keys/new",
+    operation: "mintAPIKey",
+    component: APIKeysScreen,
+  },
+  {
+    path: "/users/:userId/keys/:keyId/revoke",
+    operation: "revokeAPIKey",
+    component: APIKeysScreen,
+  },
+  {
+    path: "/roles",
+    operation: "listRoles",
+    component: RolesScreen,
+    nav: "Roles",
+    section: "Tenancy",
   },
   {
     path: "/gateway/catalog",
@@ -181,6 +257,7 @@ export const ROUTES: RouteDef[] = [
 
 export const SECTIONS = [
   "Overview",
+  "Tenancy",
   "Registry",
   "Snapshots",
   "Data plane",

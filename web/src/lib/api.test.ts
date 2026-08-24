@@ -119,3 +119,77 @@ describe("query strings", () => {
     expect(calls[0]!.url).toContain("/tools/crm.lookup%2Fweird:call");
   });
 });
+
+describe("the tenancy operations", () => {
+  it("send the whole grant set, so an omission is a revocation", async () => {
+    const calls = stubFetch(() => json({ user_id: "u1", grants: [] }));
+    const { putGrants } = await import("./api.ts");
+
+    await putGrants("u1", [{ role: "tool_user", scope: "t/acme" }]);
+
+    expect(calls[0]!.init.method).toBe("PUT");
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+      grants: [{ role: "tool_user", scope: "t/acme" }],
+    });
+  });
+
+  it("send an empty set rather than skipping the request", async () => {
+    // Stripping an account without deleting it is a real operation. A client
+    // that treated "no grants" as "nothing to do" would make it impossible.
+    const calls = stubFetch(() => json({ user_id: "u1", grants: [] }));
+    const { putGrants } = await import("./api.ts");
+
+    await putGrants("u1", []);
+
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ grants: [] });
+  });
+
+  it("omit an absent expiry rather than sending an empty string", async () => {
+    // `expires_at: ""` is not RFC 3339 and the server refuses it. A key with no
+    // expiry has to send no field at all.
+    const calls = stubFetch(() =>
+      json({ key: { id: "k1" }, secret: "mcpd.a.b" }, 201),
+    );
+    const { mintAPIKey } = await import("./api.ts");
+
+    await mintAPIKey("u1", { name: "bot" });
+
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ name: "bot" });
+  });
+
+  it("encode a user id into the path", async () => {
+    const calls = stubFetch(() => new Response(null, { status: 204 }));
+    const { revokeAPIKey } = await import("./api.ts");
+
+    await revokeAPIKey("a/b");
+
+    expect(calls[0]!.url).toBe("/api/v1/keys/a%2Fb");
+  });
+
+  it("surface a 409 as a conflict a caller can act on", async () => {
+    stubFetch(() =>
+      json({ code: "invalid_request", message: "slug acme already exists" }, 409),
+    );
+    const { createTenant } = await import("./api.ts");
+
+    await expect(createTenant("acme", "Acme")).rejects.toMatchObject({
+      status: 409,
+      message: "slug acme already exists",
+    });
+  });
+
+  it("report an absent database as its own thing, not as an empty list", async () => {
+    stubFetch(() =>
+      json(
+        {
+          code: "upstream_unavailable",
+          message: "this control plane has no database configured",
+        },
+        503,
+      ),
+    );
+    const { listUsers } = await import("./api.ts");
+
+    await expect(listUsers("t1")).rejects.toBeInstanceOf(ApiError);
+  });
+});

@@ -42,3 +42,11 @@ SELECT * FROM user_identities WHERE user_id = $1 ORDER BY provider;
 
 -- name: UnlinkIdentity :exec
 DELETE FROM user_identities WHERE id = $1;
+
+-- CountUsersByTenant answers the tenant list in one query rather than one per
+-- tenant. A tenant list is the first screen an operator opens, and N+1 there is
+-- N+1 forever.
+-- name: CountUsersByTenant :many
+SELECT tenant_id, count(*)::bigint AS users
+FROM users
+GROUP BY tenant_id;

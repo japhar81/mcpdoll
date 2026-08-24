@@ -53,6 +53,11 @@ func (e *validationErr) Unwrap() error { return e.err }
 func validationError(err error) error { return &validationErr{err: err} }
 
 // codeFor maps an error to its documented exit code.
+// ExitCodeFor exposes the mapping so a test can assert that a refusal and an
+// outage produce different exit codes — the property a caller scripting against
+// this actually depends on.
+func ExitCodeFor(err error) int { return codeFor(err) }
+
 func codeFor(err error) int {
 	var (
 		usage       *usageErr

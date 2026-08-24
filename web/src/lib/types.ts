@@ -128,16 +128,106 @@ export interface GatewayStatus {
   tools: number;
 }
 
+/**
+ * One tenant, joined across the three places a tenant exists.
+ *
+ * `users: 0` with `backends > 0` is a tenant nothing can authenticate into;
+ * `backends: 0` is a tenant no tool can reach whatever its users are granted.
+ */
 export interface TenantSummary {
+  /** Absent for a slug that appears only in the registry. */
+  id?: string;
   slug: string;
   name: string;
+  /** The tenant's own status, or `unregistered` for a registry-only slug. */
   status: string;
+  users: number;
+  /** Registry bindings naming this tenant. */
+  backends: number;
+  /** Tools the serving snapshot admits for this tenant. */
   tools: number;
+  created_at?: string;
 }
 
 export interface TenantList extends GatewayStatus {
-  /** What the registry declares — not necessarily what is being served now. */
+  /** Joined across the database, the registry, and the serving snapshot. */
   registered: TenantSummary[];
+}
+
+export interface Tenant {
+  id: string;
+  /** Appears verbatim in every scope string, and is immutable for that reason. */
+  slug: string;
+  name: string;
+  status: string;
+  created_at: string;
+}
+
+export interface User {
+  id: string;
+  tenant_id: string;
+  /** The slug, because every scope this user appears in is written with it. */
+  tenant: string;
+  email: string;
+  display_name?: string;
+  status: string;
+  /** Whether local sign-in is possible. Never the hash. */
+  has_password: boolean;
+  created_at: string;
+}
+
+export interface UserList {
+  tenant: string;
+  users: User[];
+}
+
+/** One role held at one scope. Scopes nest: `*` ⊃ `t/x` ⊃ `t/x/ts/y` ⊃ `t/x/ts/y/z`. */
+export interface Grant {
+  role: string;
+  scope: string;
+}
+
+export interface GrantList {
+  user_id: string;
+  grants: Grant[];
+}
+
+export interface APIKey {
+  id: string;
+  user_id: string;
+  name: string;
+  /** The lookup half, public by construction. */
+  prefix: string;
+  /** What the key asks for; effective grants are this ∩ the owner's. */
+  declared_grants: Grant[];
+  /** Whether it would authenticate right now. */
+  active: boolean;
+  created_at: string;
+  last_used_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
+}
+
+export interface APIKeyList {
+  user_id: string;
+  keys: APIKey[];
+}
+
+/** A new key. The one time its secret is knowable. */
+export interface MintedAPIKey {
+  key: APIKey;
+  secret: string;
+}
+
+export interface Role {
+  name: string;
+  permissions: string[];
+}
+
+export interface RoleCatalog {
+  roles: Role[];
+  /** Every permission that exists, not only the ones some role uses. */
+  permissions: string[];
 }
 
 export interface CatalogTool {

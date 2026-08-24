@@ -156,6 +156,15 @@ func (s *Store) GetTenantBySlug(ctx context.Context, slug string) (Tenant, error
 	return tenantFrom(row), nil
 }
 
+// GetTenant reads a tenant by id.
+func (s *Store) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
+	row, err := s.q.GetTenant(ctx, id)
+	if err != nil {
+		return Tenant{}, wrap(err, "reading tenant %s", id)
+	}
+	return tenantFrom(row), nil
+}
+
 // ListTenants returns every tenant, ordered by slug.
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	rows, err := s.q.ListTenants(ctx)
@@ -216,6 +225,87 @@ func (s *Store) ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]Us
 		out = append(out, userFrom(row))
 	}
 	return out, nil
+}
+
+// CountUsersByTenant returns user counts keyed by tenant id.
+//
+// One query for the whole list. The alternative — asking per tenant — is the
+// shape that makes a tenant list slower every time somebody onboards.
+func (s *Store) CountUsersByTenant(ctx context.Context) (map[uuid.UUID]int, error) {
+	rows, err := s.q.CountUsersByTenant(ctx)
+	if err != nil {
+		return nil, wrap(err, "counting users")
+	}
+	out := make(map[uuid.UUID]int, len(rows))
+	for _, row := range rows {
+		out[row.TenantID] = int(row.Users)
+	}
+	return out, nil
+}
+
+// UpdateUser changes a user's display name and status.
+//
+// Status is validated here rather than trusted: "disabled" is the offboarding
+// path, and a typo that silently stored "disable" would leave an account the
+// operator believes is shut off still authenticating.
+func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, displayName, status string) (User, error) {
+	switch status {
+	case "active", "disabled":
+	default:
+		return User{}, fmt.Errorf("%w: status %q is not active or disabled", ErrInvalid, status)
+	}
+	row, err := s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
+		ID: id, DisplayName: nilIfEmpty(displayName), Status: status,
+	})
+	if err != nil {
+		return User{}, wrap(err, "updating user %s", id)
+	}
+	return userFrom(row), nil
+}
+
+// SetGrants makes a user's grants exactly the given set.
+//
+// Declarative rather than add/remove, because the question an operator is
+// answering is "what should this person hold", and expressing that as a
+// sequence of deltas is how a revocation gets forgotten. Grants already held
+// are left alone, so re-issuing an unchanged set does not churn the audit
+// trail.
+func (s *Store) SetGrants(ctx context.Context, userID uuid.UUID, want []authz.Grant, grantedBy *uuid.UUID) error {
+	for _, g := range want {
+		if err := g.Validate(); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalid, err)
+		}
+	}
+
+	have, err := s.GrantsForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	wanted := make(map[authz.Grant]bool, len(want))
+	for _, g := range want {
+		wanted[g] = true
+	}
+	held := make(map[authz.Grant]bool, len(have))
+	for _, g := range have {
+		held[g] = true
+	}
+
+	for g := range wanted {
+		if !held[g] {
+			if err := s.Grant(ctx, userID, g, grantedBy); err != nil {
+				return err
+			}
+		}
+	}
+	for g := range held {
+		if !wanted[g] {
+			if err := s.Revoke(ctx, userID, g); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // VerifyPassword checks a local credential.
