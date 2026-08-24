@@ -29,19 +29,15 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: read
-bundles:
-  - id: bnd_all
+toolsets:
+  - id: ts_all
     name: everything
     priority: 10
-    entries:
-      - namespace: ns_crm
-audiences:
-  - id: aud_agents
-    slug: agents
-    name: Agents
-    bundles: [bnd_all]
+    namespaces: [ns_crm]
 `
 
 func TestParseMinimal(t *testing.T) {
@@ -149,61 +145,70 @@ func TestValidateRejects(t *testing.T) {
 			wantErr: "endpoint",
 		},
 		{
-			name: "bundle referencing an unknown namespace",
+			name: "toolset referencing an unknown namespace",
 			mutate: func(s string) string {
-				return strings.Replace(s, "      - namespace: ns_crm", "      - namespace: ns_gone", 1)
+				return strings.Replace(s, "namespaces: [ns_crm]", "namespaces: [ns_gone]", 1)
 			},
 			wantErr: "unknown namespace",
 		},
 		{
-			name: "bundle with no entries contributes nothing",
+			name: "toolset drawing from nothing grants nothing",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    entries:\n      - namespace: ns_crm", "    entries: []", 1)
+				return strings.Replace(s, "    namespaces: [ns_crm]", "    namespaces: []", 1)
 			},
-			wantErr: "no entries",
+			wantErr: "grant nothing",
 		},
 		{
-			name: "bundle TTL trying to widen the catalog TTL",
+			name: "toolset TTL trying to widen the catalog TTL",
 			mutate: func(s string) string {
 				return strings.Replace(s, "    priority: 10", "    priority: 10\n    ttl: 1h", 1)
 			},
 			wantErr: "may only narrow",
 		},
 		{
-			name: "bundle entry naming a tool with a prefix",
+			name: "toolset naming a tool without its prefix",
 			mutate: func(s string) string {
-				return strings.Replace(s, "      - namespace: ns_crm",
-					"      - namespace: ns_crm\n        tools: [crm.lookup]", 1)
+				// A toolset draws from several namespaces, so a bare name is
+				// ambiguous between them — the opposite of the old bundle rule,
+				// where the entry already named the namespace.
+				return strings.Replace(s, "    namespaces: [ns_crm]",
+					"    namespaces: [ns_crm]\n    tools: [lookup]", 1)
 			},
-			wantErr: "unqualified name",
+			wantErr: "without a namespace prefix",
 		},
 		{
-			name: "audience referencing an unknown bundle",
+			name: "toolset name that would change a grant scope's meaning",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    bundles: [bnd_all]", "    bundles: [bnd_gone]", 1)
+				// The name goes inside `t/<tenant>/ts/<name>`; a slash would
+				// make that indistinguishable from a single-tool scope.
+				return strings.Replace(s, "    name: everything", "    name: crm/lookup", 1)
 			},
-			wantErr: "unknown bundle",
+			wantErr: "every grant scope",
 		},
 		{
-			name: "audience with no bundles has an empty catalog",
+			name: "server with no bindings is unreachable by anyone",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    bundles: [bnd_all]", "    bundles: []", 1)
+				return strings.Replace(s,
+					"    bindings:\n      - tenant: acme\n        primary: http://localhost:9101",
+					"    bindings: []", 1)
 			},
-			wantErr: "no bundles",
+			wantErr: "no bindings",
 		},
 		{
-			name: "audience without a slug has no endpoint",
+			name: "binding without a primary has no definition source",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    slug: agents", "    slug: \"\"", 1)
+				return strings.Replace(s, "        primary: http://localhost:9101", "        primary: \"\"", 1)
 			},
-			wantErr: "no slug",
+			wantErr: "no primary",
 		},
 		{
-			name: "slug with a character that is illegal in a URL path",
+			name: "two bindings for one tenant",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    slug: agents", "    slug: My Agents", 1)
+				return strings.Replace(s, "      - tenant: acme\n        primary: http://localhost:9101",
+					"      - tenant: acme\n        primary: http://localhost:9101\n"+
+						"      - tenant: acme\n        primary: http://localhost:9102", 1)
 			},
-			wantErr: "appears in a URL path",
+			wantErr: "two bindings for tenant",
 		},
 		{
 			name: "two namespaces sharing a prefix",
@@ -265,18 +270,15 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: read
-bundles:
-  - id: bnd_all
+toolsets:
+  - id: ts_all
     name: everything
     priority: 10
-    entries:
-      - namespace: ns_crm
-audiences:
-  - id: aud_agents
-    slug: agents
-    bundles: [bnd_all]
+    namespaces: [ns_crm]
 plugins:
   - id: plg_redact
     name: redact
@@ -384,11 +386,11 @@ func TestValidatePluginRejects(t *testing.T) {
 			wantErr: "effect class",
 		},
 		{
-			name: "plugin scoped to an unknown audience",
+			name: "plugin scoped to an unknown toolset",
 			mutate: func(s string) string {
-				return strings.Replace(s, "    priority: 50", "    priority: 50\n    audiences: [aud_gone]", 1)
+				return strings.Replace(s, "    priority: 50", "    priority: 50\n    toolsets: [ts_gone]", 1)
 			},
-			wantErr: "unknown audience",
+			wantErr: "unknown toolset",
 		},
 	}
 	for _, tc := range tests {
