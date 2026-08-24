@@ -22,8 +22,8 @@ import (
 // An interface rather than the concrete pool so the prober's tests do not need
 // five live HTTP servers to exercise a state transition.
 type Lister interface {
-	ListTools(ctx context.Context, serverID string, principal backends.Principal) ([]*sdk.Tool, error)
-	NegotiatedVersion(serverID string) string
+	ListTools(ctx context.Context, target backends.Target, principal backends.Principal) ([]*sdk.Tool, error)
+	NegotiatedVersion(target backends.Target) string
 }
 
 // CircuitReporter is the optional half of [Lister] that exposes breaker state.
@@ -31,7 +31,7 @@ type Lister interface {
 // Optional because a breaker belongs to the call path, not to probing: a
 // prober that required one could not be tested without a pool.
 type CircuitReporter interface {
-	CircuitState(serverID string) backends.State
+	CircuitState(target backends.Target) backends.State
 }
 
 // Options configures a Prober.
@@ -147,41 +147,50 @@ func (p *Prober) ProbeAll(ctx context.Context) {
 	}
 
 	servers := view.Servers()
-	keep := make(map[string]bool, len(servers))
+	keep := map[backends.Target]bool{}
 	for _, s := range servers {
-		keep[s.Id] = true
+		for _, b := range s.Bindings {
+			keep[backends.Target{ServerID: s.Id, TenantID: b.TenantId}] = true
+		}
 	}
-	// Before probing, not after: a backend dropped from the snapshot must stop
+	// Before probing, not after: a binding dropped from the snapshot must stop
 	// blocking calls immediately, not at the end of a sweep that might fail.
 	p.opts.Registry.Forget(keep)
 
-	admitted := admittedByServer(view.Proto())
+	admitted := admittedByBinding(view.Proto())
 
 	sem := make(chan struct{}, p.opts.Concurrency)
 	var wg sync.WaitGroup
 	for _, server := range servers {
-		wg.Add(1)
-		go func(server *snapshotpb.Server) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-			p.probe(ctx, server, admitted[server.Id])
-		}(server)
+		for _, binding := range server.Bindings {
+			wg.Add(1)
+			go func(server *snapshotpb.Server, binding *snapshotpb.Binding) {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				}
+				target := backends.Target{ServerID: server.Id, TenantID: binding.TenantId}
+				p.probe(ctx, view, server, binding, admitted[target])
+			}(server, binding)
+		}
 	}
 	wg.Wait()
 }
 
-func admittedByServer(snap *snapshotpb.Snapshot) map[string]map[string]*snapshotpb.ToolDefinition {
-	out := map[string]map[string]*snapshotpb.ToolDefinition{}
+func admittedByBinding(snap *snapshotpb.Snapshot) map[backends.Target]map[string]*snapshotpb.ToolDefinition {
+	out := map[backends.Target]map[string]*snapshotpb.ToolDefinition{}
 	for _, tool := range snap.Tools {
-		byName, ok := out[tool.ServerId]
+		// Keyed by (server, tenant): the same tool admitted for two tenants is
+		// two definitions with two digests, and comparing one tenant's backend
+		// against another's admitted set would report drift that is not there.
+		target := backends.Target{ServerID: tool.ServerId, TenantID: tool.TenantId}
+		byName, ok := out[target]
 		if !ok {
 			byName = map[string]*snapshotpb.ToolDefinition{}
-			out[tool.ServerId] = byName
+			out[target] = byName
 		}
 		// Keyed by the backend's own name: the qualified name carries a prefix
 		// the backend knows nothing about.
@@ -192,15 +201,24 @@ func admittedByServer(snap *snapshotpb.Snapshot) map[string]map[string]*snapshot
 
 func (p *Prober) probe(
 	ctx context.Context,
+	view *snapshot.View,
 	server *snapshotpb.Server,
+	binding *snapshotpb.Binding,
 	admitted map[string]*snapshotpb.ToolDefinition,
 ) {
-	previous, _ := p.opts.Registry.Backend(server.Id)
+	target := backends.Target{ServerID: server.Id, TenantID: binding.TenantId}
+	previous, _ := p.opts.Registry.Backend(target)
+
+	tenantSlug := binding.TenantId
+	if t := view.TenantByID(binding.TenantId); t != nil {
+		tenantSlug = t.Slug
+	}
 
 	current := Backend{
-		ServerID:      server.Id,
+		Target:        target,
 		ServerName:    server.Name,
-		Endpoint:      server.Endpoint,
+		TenantSlug:    tenantSlug,
+		Endpoint:      binding.Primary,
 		ServingMode:   servingModeName(server.ServingMode),
 		LastProbe:     p.now(),
 		LastSuccess:   previous.LastSuccess,
@@ -216,7 +234,7 @@ func (p *Prober) probe(
 	// backend, not one user's entitlements, and borrowing a real principal's
 	// identity to make a background request is exactly the kind of ambient
 	// authority this system exists to avoid.
-	tools, err := p.opts.Pool.ListTools(probeCtx, server.Id, backends.Principal{})
+	tools, err := p.opts.Pool.ListTools(probeCtx, target, backends.Principal{})
 	elapsed := p.now().Sub(started)
 
 	if err != nil {
@@ -240,7 +258,7 @@ func (p *Prober) probe(
 		time.Duration(previous.LatencyEWMAMs)*time.Millisecond,
 		elapsed, p.opts.EWMAAlpha,
 	).Milliseconds()
-	current.NegotiatedVersion = p.opts.Pool.NegotiatedVersion(server.Id)
+	current.NegotiatedVersion = p.opts.Pool.NegotiatedVersion(target)
 	current.ToolsObserved = len(tools)
 
 	observed, digestErr := mcp.DigestTools(tools)
@@ -258,6 +276,13 @@ func (p *Prober) probe(
 	}
 
 	current.Drift = Diff(admitted, observed)
+
+	// Replicas are compared against the *primary's* observed catalog, not
+	// against the admitted set. During a rolling deploy the primary is already
+	// ahead of what was admitted, and measuring replicas against the snapshot
+	// would flag every one of them for agreeing with each other. See ADR 0017.
+	current.Replicas = p.probeReplicas(ctx, server, binding, observed)
+
 	current.State = classify(nil, current.Drift, current.LastSuccess, p.now(), p.opts.GraceWindow)
 
 	p.opts.Registry.Set(current)
@@ -304,7 +329,7 @@ func (p *Prober) record(ctx context.Context, b Backend, elapsed time.Duration, o
 	// The breaker's state is the pool's, not the prober's — but the prober is
 	// the only thing that runs on a timer, and a gauge nobody samples is a
 	// gauge that never appears.
-	if state, ok := p.circuitState(b.ServerID); ok {
+	if state, ok := p.circuitState(b.Target); ok {
 		m.BackendCircuitState.Record(ctx, state, backend)
 	}
 }
@@ -340,12 +365,12 @@ func (p *Prober) recordDrift(ctx context.Context, previous, current Backend) {
 }
 
 // circuitState reads the pool's breaker, when the pool exposes one.
-func (p *Prober) circuitState(serverID string) (int64, bool) {
+func (p *Prober) circuitState(target backends.Target) (int64, bool) {
 	reporter, ok := p.opts.Pool.(CircuitReporter)
 	if !ok {
 		return 0, false
 	}
-	switch reporter.CircuitState(serverID) {
+	switch reporter.CircuitState(target) {
 	case backends.StateOpen:
 		return 2, true
 	case backends.StateHalfOpen:
@@ -426,4 +451,106 @@ func servingModeName(mode snapshotpb.ServingMode) string {
 		// it "unspecified" here would report a mode that has no behaviour.
 		return "strict"
 	}
+}
+
+// probeReplicas checks a binding's non-primary hosts against the primary.
+//
+// A replica whose *semantic* digest diverges leaves the routable pool. A
+// replica whose description differs is left alone: the gateway serves the
+// admitted description regardless (ADR 0006), so the difference is unobservable
+// to a client, and ejecting a healthy host over prose trades real capacity for
+// nothing.
+func (p *Prober) probeReplicas(
+	ctx context.Context,
+	server *snapshotpb.Server,
+	binding *snapshotpb.Binding,
+	primary map[string]mcp.ToolDigests,
+) []Replica {
+	if len(binding.Replicas) == 0 {
+		return nil
+	}
+
+	out := make([]Replica, 0, len(binding.Replicas))
+	for _, endpoint := range binding.Replicas {
+		replica := Replica{Endpoint: endpoint}
+
+		probeCtx, cancel := context.WithTimeout(ctx, p.opts.Timeout)
+		discovered, err := mcp.Discover(probeCtx, mcp.DiscoverOptions{
+			Endpoint: endpoint,
+			Timeout:  p.opts.Timeout,
+		})
+		cancel()
+
+		if err != nil {
+			replica.Error = err.Error()
+			out = append(out, replica)
+			continue
+		}
+		replica.NegotiatedVersion = discovered.NegotiatedVersion
+
+		observed, err := mcp.DigestTools(discovered.Tools)
+		if err != nil {
+			replica.Error = "catalog could not be canonicalized: " + err.Error()
+			out = append(out, replica)
+			continue
+		}
+
+		// Only blocking divergence removes a replica. Prose differences are
+		// counted so an operator can see a partial deploy, and ignored for
+		// routing.
+		for _, d := range diffObserved(primary, observed) {
+			if d.Kind.Blocking() {
+				replica.Diverged = append(replica.Diverged, d)
+			}
+		}
+		replica.Routable = len(replica.Diverged) == 0
+		out = append(out, replica)
+	}
+	return out
+}
+
+// diffObserved compares two live catalogs.
+//
+// Distinct from [Diff], which compares an observed catalog against *admitted*
+// definitions. Here both sides are observations, so there is no admitted
+// qualified name to report and no notion of a tool being "unadmitted".
+func diffObserved(primary, replica map[string]mcp.ToolDigests) []ToolDrift {
+	var out []ToolDrift
+
+	for name, want := range primary {
+		got, present := replica[name]
+		if !present {
+			out = append(out, ToolDrift{
+				Name: name, Kind: DriftRemoved,
+				Detail: "the primary publishes this tool and the replica does not",
+			})
+			continue
+		}
+		if got.Full == want.Full {
+			continue
+		}
+		if got.Semantic == want.Semantic {
+			out = append(out, ToolDrift{
+				Name: name, Kind: DriftCosmetic,
+				Detail: "prose differs from the primary; the schema matches",
+			})
+			continue
+		}
+		out = append(out, ToolDrift{
+			Name: name, Kind: DriftSemantic,
+			AdmittedDigest: string(want.Semantic),
+			ObservedDigest: string(got.Semantic),
+			Detail:         "the schema differs from the primary",
+		})
+	}
+
+	for name := range replica {
+		if _, ok := primary[name]; !ok {
+			out = append(out, ToolDrift{
+				Name: name, Kind: DriftAdded,
+				Detail: "the replica publishes a tool the primary does not",
+			})
+		}
+	}
+	return out
 }

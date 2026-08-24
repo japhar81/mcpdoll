@@ -81,14 +81,14 @@ func (r *HostRegistry) Host(manifest *snapshotpb.PluginManifest) (pipeline.Host,
 // Registered as a snapshot observer rather than a preparer: see the type comment
 // for why a plugin that fails to load does not refuse the snapshot.
 func (r *HostRegistry) Sync(ctx context.Context, view *snapshot.View) {
+	// Every plugin the snapshot declares, not the ones some audience selected.
+	// Plugin scoping is now per toolset and resolved per principal at connect
+	// time (ADR 0016), so the host cannot know in advance which principals will
+	// need which plugin — and loading a WASM module lazily on a request would
+	// put compilation on the serving path.
 	wanted := map[string]*snapshotpb.PluginManifest{}
-	for _, slug := range view.AudienceSlugs() {
-		av := view.Audience(slug)
-		for _, hook := range allHooks {
-			for _, manifest := range av.PluginsFor(hook) {
-				wanted[manifest.Id] = manifest
-			}
-		}
+	for _, manifest := range view.Proto().Plugins {
+		wanted[manifest.Id] = manifest
 	}
 
 	loaded := map[string]pipeline.Host{}

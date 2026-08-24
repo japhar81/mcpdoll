@@ -26,7 +26,7 @@ func testSigner(t *testing.T, keyID string) (*Signer, *Verifier) {
 }
 
 func minimalSnapshot(version int64) *snapshotpb.Snapshot {
-	return &snapshotpb.Snapshot{Version: version, OrgId: "org_1"}
+	return &snapshotpb.Snapshot{Version: version, Id: "snap_test"}
 }
 
 func TestSignVerifyRoundTrip(t *testing.T) {
@@ -40,7 +40,6 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	got, err := v.Verify(signed)
 	require.NoError(t, err)
 	require.Equal(t, int64(7), got.Version)
-	require.Equal(t, "org_1", got.OrgId)
 }
 
 func TestNewSignerRejectsBadInput(t *testing.T) {

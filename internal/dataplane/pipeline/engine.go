@@ -169,7 +169,7 @@ func (e *Engine) Run(ctx context.Context, req *HookRequest) (*HookResult, error)
 	ctx, span := e.opts.Telemetry.Tracer.Start(ctx, "pipeline."+hookName(req.Hook),
 		trace.WithAttributes(
 			observability.AttrHook.String(hookName(req.Hook)),
-			observability.AttrAudience.String(req.Audience.Audience.Slug),
+			observability.AttrAudience.String(req.Audience.Tenant.Slug),
 		))
 	defer span.End()
 
@@ -564,7 +564,7 @@ func hashSample(requestID string, percent int32) bool {
 // HookRequest is one hook invocation's input.
 type HookRequest struct {
 	RequestID   string
-	Audience    *snapshot.AudienceView
+	Audience    *snapshot.PrincipalView
 	Hook        snapshotpb.Hook
 	EffectClass snapshotpb.EffectClass
 

@@ -273,7 +273,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log.InfoContext(ctx, "data plane listening",
 			"addr", cfg.DataPlane.ListenAddr,
 			logging.FieldSnapshot, store.Version(),
-			"audiences", dp.AudienceSlugs())
+			"tenants", dp.TenantSlugs())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- fmt.Errorf("http server: %w", err)
 		}

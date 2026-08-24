@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	"github.com/mcpdoll/mcpdoll/internal/platform/canonical"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
@@ -26,12 +27,14 @@ type Builder struct {
 	errs []string
 }
 
-// NewBuilder starts a snapshot for an organization at a version.
-func NewBuilder(orgID string, version int64) *Builder {
+// NewBuilder starts a snapshot at a version.
+//
+// The organization id is gone: a snapshot serves many tenants now, and the
+// tenants it carries say which (ADR 0014).
+func NewBuilder(version int64) *Builder {
 	return &Builder{
 		snap: &snapshotpb.Snapshot{
 			Version: version,
-			OrgId:   orgID,
 			BuiltAt: timestamppb.New(time.Now().UTC()),
 			Catalog: &snapshotpb.CatalogDefaults{
 				TtlMs:         int32((5 * time.Minute).Milliseconds()),
@@ -88,13 +91,13 @@ func (b *Builder) AddServer(s *snapshotpb.Server) *Builder {
 	return b
 }
 
-func (b *Builder) AddBundle(bundle *snapshotpb.Bundle) *Builder {
-	b.snap.Bundles = append(b.snap.Bundles, bundle)
+func (b *Builder) AddToolset(ts *snapshotpb.Toolset) *Builder {
+	b.snap.Toolsets = append(b.snap.Toolsets, ts)
 	return b
 }
 
-func (b *Builder) AddAudience(a *snapshotpb.Audience) *Builder {
-	b.snap.Audiences = append(b.snap.Audiences, a)
+func (b *Builder) AddTenant(t *snapshotpb.Tenant) *Builder {
+	b.snap.Tenants = append(b.snap.Tenants, t)
 	return b
 }
 
@@ -111,8 +114,13 @@ func (b *Builder) AddPlugin(p *snapshotpb.PluginManifest) *Builder {
 // ToolInput is a tool as callers hand it to the builder, before the builder
 // computes the derived fields that make it a snapshot entry.
 type ToolInput struct {
-	ServerID     string
-	NamespaceID  string
+	ServerID    string
+	NamespaceID string
+	// TenantID and ToolsetID are what make a definition addressable: the same
+	// vendor tool admitted for two tenants is two entries, and the toolset is
+	// what a grant names. See ADR 0017.
+	TenantID     string
+	ToolsetID    string
 	Prefix       string
 	Name         string
 	Title        string
@@ -137,6 +145,16 @@ func (b *Builder) AddTool(in ToolInput) *Builder {
 	}
 	if in.Prefix == "" {
 		b.errs = append(b.errs, fmt.Sprintf("tool %q has no namespace prefix", in.Name))
+		return b
+	}
+	if in.TenantID == "" {
+		b.errs = append(b.errs, fmt.Sprintf(
+			"tool %q has no tenant; a definition is admitted for exactly one", in.Name))
+		return b
+	}
+	if in.ToolsetID == "" {
+		b.errs = append(b.errs, fmt.Sprintf(
+			"tool %q has no toolset; nothing could grant it", in.Name))
 		return b
 	}
 
@@ -195,6 +213,8 @@ func (b *Builder) AddTool(in ToolInput) *Builder {
 		SemanticDigest: semantic.String(),
 		ServerId:       in.ServerID,
 		NamespaceId:    in.NamespaceID,
+		TenantId:       in.TenantID,
+		ToolsetId:      in.ToolsetID,
 		Name:           in.Name,
 		QualifiedName:  in.Prefix + "." + in.Name,
 		Title:          in.Title,
@@ -263,4 +283,35 @@ func EstimateTokens(canonicalForm []byte) int {
 	// Structural characters tokenize roughly one-to-one; prose at ~4 bytes per
 	// token. Round up so a budget is never under-reported.
 	return structural + (prose+3)/4
+}
+
+// SetRBAC attaches the compiled authorization state.
+//
+// Grants travel inside the signed snapshot so the data plane can decide a
+// catalog without asking the control plane anything (ADR 0018). Signing them
+// matters as much as signing the tools: the grants are precisely the part an
+// attacker would want to change.
+func (b *Builder) SetRBAC(catalog authz.Catalog, principals []*snapshotpb.Principal) *Builder {
+	rbac := &snapshotpb.RBAC{Principals: principals}
+
+	// Sorted, because the snapshot is signed and a map's iteration order would
+	// make two builds of identical inputs produce different bytes — which
+	// would defeat any attempt to compare or deduplicate published artifacts.
+	for _, role := range catalog.Roles() {
+		for _, permission := range catalog.Permissions(role) {
+			rbac.RolePermissions = append(rbac.RolePermissions, &snapshotpb.RolePermission{
+				Role: role, Permission: string(permission),
+			})
+		}
+	}
+
+	if err := authz.ValidateCatalog(catalog); err != nil {
+		// A catalog granting tool:call without tool:list would produce
+		// capabilities that never appear in any catalog. Refused at build
+		// rather than served (ADR 0015).
+		b.errs = append(b.errs, err.Error())
+	}
+
+	b.snap.Rbac = rbac
+	return b
 }

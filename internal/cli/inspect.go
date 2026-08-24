@@ -65,23 +65,25 @@ type pluginList struct {
 }
 
 func (r registryView) Table() Table {
-	rows := make([][]string, 0, len(r.Audiences))
-	for _, a := range r.Audiences {
-		groups := "any authenticated"
-		if len(a.AllowedIdpGroups) > 0 {
-			groups = strings.Join(a.AllowedIdpGroups, ",")
+	rows := make([][]string, 0, len(r.Toolsets))
+	for _, ts := range r.Toolsets {
+		sources := strings.Join(ts.Namespaces, ",")
+		if len(ts.Tools) > 0 {
+			sources += fmt.Sprintf(" +%d named", len(ts.Tools))
 		}
 		rows = append(rows, []string{
-			a.Slug, a.Name, strings.Join(a.Bundles, ","), groups,
+			ts.Name, strconv.Itoa(int(ts.Priority)), sources,
 		})
 	}
 	return Table{
 		Title:   fmt.Sprintf("%s registry, version %d", r.Org, r.Version),
-		Columns: []string{"AUDIENCE", "NAME", "BUNDLES", "ALLOWED GROUPS"},
+		Columns: []string{"TOOLSET", "PRIORITY", "DRAWS FROM"},
 		Rows:    rows,
 		Notes: []string{
-			fmt.Sprintf("%d namespace(s), %d server(s), %d bundle(s), %d policy(s), %d plugin(s)",
-				len(r.Namespaces), len(r.Servers), len(r.Bundles), len(r.Policies), len(r.Plugins)),
+			fmt.Sprintf("%d namespace(s), %d server(s), %d toolset(s), %d policy(s), %d plugin(s)",
+				len(r.Namespaces), len(r.Servers), len(r.Toolsets),
+				len(r.Policies), len(r.Plugins)),
+			"a toolset is what a grant names: t/<tenant>/ts/<toolset>",
 			"use --output json for the full document",
 		},
 	}
@@ -112,11 +114,11 @@ func (l serverList) Table() Table {
 	for _, s := range l.Servers {
 		rows = append(rows, []string{
 			s.Name, s.Namespace, s.ServingMode, s.DefaultEffectClass,
-			s.DataClassification, s.Endpoint,
+			s.DataClassification, strconv.Itoa(len(s.Bindings)),
 		})
 	}
 	return Table{
-		Columns: []string{"BACKEND", "NAMESPACE", "MODE", "DEFAULT EFFECT", "CLASSIFICATION", "ENDPOINT"},
+		Columns: []string{"BACKEND", "NAMESPACE", "MODE", "DEFAULT EFFECT", "CLASSIFICATION", "TENANTS"},
 		Rows:    rows,
 	}
 }
@@ -150,9 +152,16 @@ func (s serverView) Table() Table {
 		{"id", s.ID},
 		{"name", s.Name},
 		{"namespace", s.Namespace},
-		{"endpoint", s.Endpoint},
+
 		{"serving_mode", s.ServingMode},
 		{"default_effect_class", s.DefaultEffectClass},
+	}
+	for _, b := range s.Bindings {
+		hosts := b.Primary
+		if n := len(b.Replicas); n > 0 {
+			hosts += fmt.Sprintf(" (+%d replica)", n)
+		}
+		rows = append(rows, []string{"tenant " + b.Tenant, hosts})
 	}
 	if s.Criticality != "" {
 		rows = append(rows, []string{"criticality", s.Criticality})

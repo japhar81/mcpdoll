@@ -530,20 +530,28 @@ type Snapshot struct {
 	// Identifier of the build that produced this snapshot.
 	Id      string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	BuiltAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=built_at,json=builtAt,proto3" json:"built_at,omitempty"`
-	OrgId   string                 `protobuf:"bytes,4,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	// Digest of the registry state this was resolved from, so a snapshot can be
 	// traced back to the exact admitted definitions it contains.
-	RegistryDigest string            `protobuf:"bytes,5,opt,name=registry_digest,json=registryDigest,proto3" json:"registry_digest,omitempty"`
-	Namespaces     []*Namespace      `protobuf:"bytes,6,rep,name=namespaces,proto3" json:"namespaces,omitempty"`
-	Servers        []*Server         `protobuf:"bytes,7,rep,name=servers,proto3" json:"servers,omitempty"`
-	Tools          []*ToolDefinition `protobuf:"bytes,8,rep,name=tools,proto3" json:"tools,omitempty"`
-	Bundles        []*Bundle         `protobuf:"bytes,9,rep,name=bundles,proto3" json:"bundles,omitempty"`
-	Audiences      []*Audience       `protobuf:"bytes,10,rep,name=audiences,proto3" json:"audiences,omitempty"`
-	Policies       []*Policy         `protobuf:"bytes,11,rep,name=policies,proto3" json:"policies,omitempty"`
-	Plugins        []*PluginManifest `protobuf:"bytes,12,rep,name=plugins,proto3" json:"plugins,omitempty"`
-	Catalog        *CatalogDefaults  `protobuf:"bytes,13,opt,name=catalog,proto3" json:"catalog,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	RegistryDigest string       `protobuf:"bytes,5,opt,name=registry_digest,json=registryDigest,proto3" json:"registry_digest,omitempty"`
+	Namespaces     []*Namespace `protobuf:"bytes,6,rep,name=namespaces,proto3" json:"namespaces,omitempty"`
+	Servers        []*Server    `protobuf:"bytes,7,rep,name=servers,proto3" json:"servers,omitempty"`
+	// Tools are admitted per (toolset, tenant): the same vendor tool published
+	// by two tenants' separately-deployed backends is two definitions with two
+	// digests, and drift is measured against the tenant's own. See ADR 0017.
+	Tools    []*ToolDefinition `protobuf:"bytes,8,rep,name=tools,proto3" json:"tools,omitempty"`
+	Policies []*Policy         `protobuf:"bytes,11,rep,name=policies,proto3" json:"policies,omitempty"`
+	Plugins  []*PluginManifest `protobuf:"bytes,12,rep,name=plugins,proto3" json:"plugins,omitempty"`
+	Catalog  *CatalogDefaults  `protobuf:"bytes,13,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	// Tenants this snapshot serves.
+	Tenants []*Tenant `protobuf:"bytes,14,rep,name=tenants,proto3" json:"tenants,omitempty"`
+	// Toolsets replace bundles: the unit an administrator grants (ADR 0016).
+	Toolsets []*Toolset `protobuf:"bytes,15,rep,name=toolsets,proto3" json:"toolsets,omitempty"`
+	// Compiled RBAC. Grants travel in the snapshot so the data plane needs
+	// nothing from the control plane to decide what a principal may see —
+	// ADR 0018. Revocation therefore takes effect at snapshot latency.
+	Rbac          *RBAC `protobuf:"bytes,16,opt,name=rbac,proto3" json:"rbac,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Snapshot) Reset() {
@@ -597,13 +605,6 @@ func (x *Snapshot) GetBuiltAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *Snapshot) GetOrgId() string {
-	if x != nil {
-		return x.OrgId
-	}
-	return ""
-}
-
 func (x *Snapshot) GetRegistryDigest() string {
 	if x != nil {
 		return x.RegistryDigest
@@ -632,20 +633,6 @@ func (x *Snapshot) GetTools() []*ToolDefinition {
 	return nil
 }
 
-func (x *Snapshot) GetBundles() []*Bundle {
-	if x != nil {
-		return x.Bundles
-	}
-	return nil
-}
-
-func (x *Snapshot) GetAudiences() []*Audience {
-	if x != nil {
-		return x.Audiences
-	}
-	return nil
-}
-
 func (x *Snapshot) GetPolicies() []*Policy {
 	if x != nil {
 		return x.Policies
@@ -667,7 +654,28 @@ func (x *Snapshot) GetCatalog() *CatalogDefaults {
 	return nil
 }
 
-// CatalogDefaults are the org-wide list-result settings. Per-bundle and
+func (x *Snapshot) GetTenants() []*Tenant {
+	if x != nil {
+		return x.Tenants
+	}
+	return nil
+}
+
+func (x *Snapshot) GetToolsets() []*Toolset {
+	if x != nil {
+		return x.Toolsets
+	}
+	return nil
+}
+
+func (x *Snapshot) GetRbac() *RBAC {
+	if x != nil {
+		return x.Rbac
+	}
+	return nil
+}
+
+// CatalogDefaults are the deployment-wide list-result settings. Per-toolset and
 // per-policy values may only narrow these, never widen them.
 type CatalogDefaults struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -821,9 +829,6 @@ type Server struct {
 	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	NamespaceId string                 `protobuf:"bytes,3,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
 	VersionId   string                 `protobuf:"bytes,4,opt,name=version_id,json=versionId,proto3" json:"version_id,omitempty"`
-	// Endpoint URL. Only http/https streamable transports are supported in the
-	// data plane; a stdio backend is wrapped by a sidecar.
-	Endpoint string `protobuf:"bytes,5,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	// Protocol version to pin for this backend, or empty to negotiate. Pinning
 	// exists because a backend that silently upgrades can change result shapes
 	// under a catalog we already admitted.
@@ -839,7 +844,9 @@ type Server struct {
 	Health             *HealthPolicy  `protobuf:"bytes,14,opt,name=health,proto3" json:"health,omitempty"`
 	// Optional tool the prober may invoke as a canary, to distinguish "the
 	// catalog is reachable" from "invocations actually work".
-	CanaryTool    string `protobuf:"bytes,15,opt,name=canary_tool,json=canaryTool,proto3" json:"canary_tool,omitempty"`
+	CanaryTool string `protobuf:"bytes,15,opt,name=canary_tool,json=canaryTool,proto3" json:"canary_tool,omitempty"`
+	// This backend's hosts, one entry per tenant.
+	Bindings      []*Binding `protobuf:"bytes,16,rep,name=bindings,proto3" json:"bindings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -898,13 +905,6 @@ func (x *Server) GetNamespaceId() string {
 func (x *Server) GetVersionId() string {
 	if x != nil {
 		return x.VersionId
-	}
-	return ""
-}
-
-func (x *Server) GetEndpoint() string {
-	if x != nil {
-		return x.Endpoint
 	}
 	return ""
 }
@@ -977,6 +977,13 @@ func (x *Server) GetCanaryTool() string {
 		return x.CanaryTool
 	}
 	return ""
+}
+
+func (x *Server) GetBindings() []*Binding {
+	if x != nil {
+		return x.Bindings
+	}
+	return nil
 }
 
 // TokenExchange configures how an inbound principal becomes a credential the
@@ -1161,6 +1168,13 @@ type ToolDefinition struct {
 	SemanticDigest string `protobuf:"bytes,2,opt,name=semantic_digest,json=semanticDigest,proto3" json:"semantic_digest,omitempty"`
 	ServerId       string `protobuf:"bytes,3,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
 	NamespaceId    string `protobuf:"bytes,4,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	// The tenant this definition was admitted for. Two tenants' backends running
+	// different releases publish different schemas for the same tool, and each
+	// tenant is served its own. See ADR 0017.
+	TenantId string `protobuf:"bytes,15,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// The toolset that contributed this tool, for catalog ordering and for the
+	// authorization scope `t/<tenant>/ts/<toolset>/<name>`.
+	ToolsetId string `protobuf:"bytes,16,opt,name=toolset_id,json=toolsetId,proto3" json:"toolset_id,omitempty"`
 	// Name as the backend publishes it.
 	Name string `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
 	// Name as clients see it: "<prefix>.<name>". Assigned at admission, never
@@ -1176,7 +1190,7 @@ type ToolDefinition struct {
 	AnnotationsJson string      `protobuf:"bytes,11,opt,name=annotations_json,json=annotationsJson,proto3" json:"annotations_json,omitempty"`
 	EffectClass     EffectClass `protobuf:"varint,12,opt,name=effect_class,json=effectClass,proto3,enum=mcpdoll.snapshot.v1.EffectClass" json:"effect_class,omitempty"`
 	// Estimated tokens the serialized definition costs a model, schema included.
-	// Budget enforcement uses this; the console's bundle composer displays it.
+	// Budget enforcement uses this; the console's toolset composer displays it.
 	TokenEstimate int32 `protobuf:"varint,13,opt,name=token_estimate,json=tokenEstimate,proto3" json:"token_estimate,omitempty"`
 	// Whether the tool requires an idempotency key. Derived from effect class at
 	// admission, stored explicitly so the runtime does not re-derive it.
@@ -1239,6 +1253,20 @@ func (x *ToolDefinition) GetServerId() string {
 func (x *ToolDefinition) GetNamespaceId() string {
 	if x != nil {
 		return x.NamespaceId
+	}
+	return ""
+}
+
+func (x *ToolDefinition) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ToolDefinition) GetToolsetId() string {
+	if x != nil {
+		return x.ToolsetId
 	}
 	return ""
 }
@@ -1313,43 +1341,34 @@ func (x *ToolDefinition) GetRequiresIdempotencyKey() bool {
 	return false
 }
 
-// Bundle is a curated set of tools presented as one catalog.
-type Bundle struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name      string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	ProjectId string                 `protobuf:"bytes,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	// Determines the leading component of the stable catalog ordering. Lower
-	// sorts first.
-	Priority int32          `protobuf:"varint,4,opt,name=priority,proto3" json:"priority,omitempty"`
-	Entries  []*BundleEntry `protobuf:"bytes,5,rep,name=entries,proto3" json:"entries,omitempty"`
-	// Ceiling on the summed token_estimate of the bundle's tools. Exceeded
-	// bundles fail the snapshot build rather than silently shipping a catalog
-	// that will not fit a context window.
-	TokenBudget int32 `protobuf:"varint,6,opt,name=token_budget,json=tokenBudget,proto3" json:"token_budget,omitempty"`
-	// Optional TTL override, which may only lower the org default.
-	TtlMs int32 `protobuf:"varint,7,opt,name=ttl_ms,json=ttlMs,proto3" json:"ttl_ms,omitempty"`
-	// Cross-project grants that let this bundle include another project's
-	// namespace. Explicit, recorded, and expiring.
-	Grants        []*Grant `protobuf:"bytes,8,rep,name=grants,proto3" json:"grants,omitempty"`
+// Tenant is an isolation boundary. Every user, backend binding, and admitted
+// tool belongs to exactly one.
+type Tenant struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Appears in every authorization scope as `t/<slug>`, which is why it is
+	// constrained to characters that cannot change a scope's meaning.
+	Slug          string `protobuf:"bytes,2,opt,name=slug,proto3" json:"slug,omitempty"`
+	Name          string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Status        string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"` // "active" | "suspended" | "archived"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Bundle) Reset() {
-	*x = Bundle{}
+func (x *Tenant) Reset() {
+	*x = Tenant{}
 	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Bundle) String() string {
+func (x *Tenant) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Bundle) ProtoMessage() {}
+func (*Tenant) ProtoMessage() {}
 
-func (x *Bundle) ProtoReflect() protoreflect.Message {
+func (x *Tenant) ProtoReflect() protoreflect.Message {
 	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1361,95 +1380,70 @@ func (x *Bundle) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Bundle.ProtoReflect.Descriptor instead.
-func (*Bundle) Descriptor() ([]byte, []int) {
+// Deprecated: Use Tenant.ProtoReflect.Descriptor instead.
+func (*Tenant) Descriptor() ([]byte, []int) {
 	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *Bundle) GetId() string {
+func (x *Tenant) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *Bundle) GetName() string {
+func (x *Tenant) GetSlug() string {
+	if x != nil {
+		return x.Slug
+	}
+	return ""
+}
+
+func (x *Tenant) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *Bundle) GetProjectId() string {
+func (x *Tenant) GetStatus() string {
 	if x != nil {
-		return x.ProjectId
+		return x.Status
 	}
 	return ""
 }
 
-func (x *Bundle) GetPriority() int32 {
-	if x != nil {
-		return x.Priority
-	}
-	return 0
+// Binding is one tenant's hosts for a backend.
+type Binding struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	TenantId string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// The definition source. Discovery reads it; replicas are compared against
+	// it. A declared primary makes "which host is correct" a configuration
+	// decision rather than a vote between two disagreeing hosts.
+	Primary string `protobuf:"bytes,2,opt,name=primary,proto3" json:"primary,omitempty"`
+	// Interchangeable hosts for the same tenant. A replica whose semantic digest
+	// diverges from the primary leaves the routable pool and is reported — what
+	// is *served* does not change, so a rolling deploy costs capacity rather
+	// than churning every client's prompt cache. See ADR 0017.
+	Replicas      []string `protobuf:"bytes,3,rep,name=replicas,proto3" json:"replicas,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Bundle) GetEntries() []*BundleEntry {
-	if x != nil {
-		return x.Entries
-	}
-	return nil
-}
-
-func (x *Bundle) GetTokenBudget() int32 {
-	if x != nil {
-		return x.TokenBudget
-	}
-	return 0
-}
-
-func (x *Bundle) GetTtlMs() int32 {
-	if x != nil {
-		return x.TtlMs
-	}
-	return 0
-}
-
-func (x *Bundle) GetGrants() []*Grant {
-	if x != nil {
-		return x.Grants
-	}
-	return nil
-}
-
-// BundleEntry includes either a whole namespace or an explicit tool list.
-type BundleEntry struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	NamespaceId string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
-	// When empty, every admitted tool in the namespace is included. When set,
-	// only these qualified names — which is how a bundle takes three tools from a
-	// twenty-tool backend.
-	QualifiedNames []string `protobuf:"bytes,2,rep,name=qualified_names,json=qualifiedNames,proto3" json:"qualified_names,omitempty"`
-	// Qualified names to exclude, applied after the include set.
-	ExcludeQualifiedNames []string `protobuf:"bytes,3,rep,name=exclude_qualified_names,json=excludeQualifiedNames,proto3" json:"exclude_qualified_names,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
-}
-
-func (x *BundleEntry) Reset() {
-	*x = BundleEntry{}
+func (x *Binding) Reset() {
+	*x = Binding{}
 	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *BundleEntry) String() string {
+func (x *Binding) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BundleEntry) ProtoMessage() {}
+func (*Binding) ProtoMessage() {}
 
-func (x *BundleEntry) ProtoReflect() protoreflect.Message {
+func (x *Binding) ProtoReflect() protoreflect.Message {
 	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1461,50 +1455,313 @@ func (x *BundleEntry) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BundleEntry.ProtoReflect.Descriptor instead.
-func (*BundleEntry) Descriptor() ([]byte, []int) {
+// Deprecated: Use Binding.ProtoReflect.Descriptor instead.
+func (*Binding) Descriptor() ([]byte, []int) {
 	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *BundleEntry) GetNamespaceId() string {
+func (x *Binding) GetTenantId() string {
 	if x != nil {
-		return x.NamespaceId
+		return x.TenantId
 	}
 	return ""
 }
 
-func (x *BundleEntry) GetQualifiedNames() []string {
+func (x *Binding) GetPrimary() string {
 	if x != nil {
-		return x.QualifiedNames
+		return x.Primary
+	}
+	return ""
+}
+
+func (x *Binding) GetReplicas() []string {
+	if x != nil {
+		return x.Replicas
 	}
 	return nil
 }
 
-func (x *BundleEntry) GetExcludeQualifiedNames() []string {
+// Toolset is a named, grantable group of tools.
+//
+// Replaces Bundle. The rename carries meaning: a bundle grouped namespaces for
+// publication, whereas a toolset is what an administrator hands to a user, and
+// its name appears inside every grant scope.
+type Toolset struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name  string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Leading component of the stable catalog ordering. Lower sorts first.
+	Priority      int32 `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
+	TokenBudget   int32 `protobuf:"varint,4,opt,name=token_budget,json=tokenBudget,proto3" json:"token_budget,omitempty"`
+	TtlMs         int32 `protobuf:"varint,5,opt,name=ttl_ms,json=ttlMs,proto3" json:"ttl_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Toolset) Reset() {
+	*x = Toolset{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Toolset) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Toolset) ProtoMessage() {}
+
+func (x *Toolset) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
 	if x != nil {
-		return x.ExcludeQualifiedNames
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Toolset.ProtoReflect.Descriptor instead.
+func (*Toolset) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Toolset) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Toolset) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Toolset) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *Toolset) GetTokenBudget() int32 {
+	if x != nil {
+		return x.TokenBudget
+	}
+	return 0
+}
+
+func (x *Toolset) GetTtlMs() int32 {
+	if x != nil {
+		return x.TtlMs
+	}
+	return 0
+}
+
+// RBAC is the compiled authorization state: the role catalog plus every
+// principal's grants.
+//
+// It ships inside the signed snapshot so the data plane can decide a catalog
+// without asking anything (ADR 0018). Signing it matters as much as signing the
+// tools: grants are precisely the part an attacker would want to change.
+type RBAC struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RolePermissions []*RolePermission      `protobuf:"bytes,1,rep,name=role_permissions,json=rolePermissions,proto3" json:"role_permissions,omitempty"`
+	Principals      []*Principal           `protobuf:"bytes,2,rep,name=principals,proto3" json:"principals,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RBAC) Reset() {
+	*x = RBAC{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RBAC) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RBAC) ProtoMessage() {}
+
+func (x *RBAC) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RBAC.ProtoReflect.Descriptor instead.
+func (*RBAC) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RBAC) GetRolePermissions() []*RolePermission {
+	if x != nil {
+		return x.RolePermissions
 	}
 	return nil
 }
 
-type Grant struct {
+func (x *RBAC) GetPrincipals() []*Principal {
+	if x != nil {
+		return x.Principals
+	}
+	return nil
+}
+
+// RolePermission is a Casbin `p` policy.
+type RolePermission struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	FromProjectId string                 `protobuf:"bytes,2,opt,name=from_project_id,json=fromProjectId,proto3" json:"from_project_id,omitempty"`
-	ToProjectId   string                 `protobuf:"bytes,3,opt,name=to_project_id,json=toProjectId,proto3" json:"to_project_id,omitempty"`
-	NamespaceId   string                 `protobuf:"bytes,4,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
-	GrantedBy     string                 `protobuf:"bytes,5,opt,name=granted_by,json=grantedBy,proto3" json:"granted_by,omitempty"`
-	GrantedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=granted_at,json=grantedAt,proto3" json:"granted_at,omitempty"`
-	// Grants expire. An unbounded cross-project grant is indistinguishable from
-	// a permanent policy exception nobody remembers making.
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	Permission    string                 `protobuf:"bytes,2,opt,name=permission,proto3" json:"permission,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RolePermission) Reset() {
+	*x = RolePermission{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RolePermission) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RolePermission) ProtoMessage() {}
+
+func (x *RolePermission) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RolePermission.ProtoReflect.Descriptor instead.
+func (*RolePermission) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RolePermission) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *RolePermission) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+// Principal is a resolvable identity and the grants it holds.
+type Principal struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable id — the user id, or the API key id for an agent credential.
+	Id       string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TenantId string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// Human-readable subject for logs and audit. Never used for authorization.
+	Subject string `protobuf:"bytes,3,opt,name=subject,proto3" json:"subject,omitempty"`
+	// Already intersected for an API key (ADR 0014), so the data plane never
+	// has to remember to do it. There is one way to get effective grants, and
+	// this is it.
+	Grants        []*Grant `protobuf:"bytes,4,rep,name=grants,proto3" json:"grants,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Principal) Reset() {
+	*x = Principal{}
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Principal) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Principal) ProtoMessage() {}
+
+func (x *Principal) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Principal.ProtoReflect.Descriptor instead.
+func (*Principal) Descriptor() ([]byte, []int) {
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *Principal) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Principal) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *Principal) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *Principal) GetGrants() []*Grant {
+	if x != nil {
+		return x.Grants
+	}
+	return nil
+}
+
+// Grant is a Casbin `g` policy: a role held within a scope.
+type Grant struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Role  string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// Hierarchical scope: `*`, `t/<tenant>`, `t/<tenant>/ts/<toolset>`, or
+	// `t/<tenant>/ts/<toolset>/<tool>`.
+	Scope         string `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Grant) Reset() {
 	*x = Grant{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1516,7 +1773,7 @@ func (x *Grant) String() string {
 func (*Grant) ProtoMessage() {}
 
 func (x *Grant) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[10]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1529,230 +1786,23 @@ func (x *Grant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Grant.ProtoReflect.Descriptor instead.
 func (*Grant) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{10}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *Grant) GetId() string {
+func (x *Grant) GetRole() string {
 	if x != nil {
-		return x.Id
+		return x.Role
 	}
 	return ""
 }
 
-func (x *Grant) GetFromProjectId() string {
+func (x *Grant) GetScope() string {
 	if x != nil {
-		return x.FromProjectId
+		return x.Scope
 	}
 	return ""
 }
 
-func (x *Grant) GetToProjectId() string {
-	if x != nil {
-		return x.ToProjectId
-	}
-	return ""
-}
-
-func (x *Grant) GetNamespaceId() string {
-	if x != nil {
-		return x.NamespaceId
-	}
-	return ""
-}
-
-func (x *Grant) GetGrantedBy() string {
-	if x != nil {
-		return x.GrantedBy
-	}
-	return ""
-}
-
-func (x *Grant) GetGrantedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.GrantedAt
-	}
-	return nil
-}
-
-func (x *Grant) GetExpiresAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.ExpiresAt
-	}
-	return nil
-}
-
-// Audience is one MCP endpoint's identity: which bundles it serves, under which
-// policies, to which principals.
-type Audience struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// URL slug the endpoint is served at: /mcp/<slug>.
-	Slug      string `protobuf:"bytes,2,opt,name=slug,proto3" json:"slug,omitempty"`
-	Name      string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	ProjectId string `protobuf:"bytes,4,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	// Bundles in the order they contribute to the catalog.
-	BundleIds []string `protobuf:"bytes,5,rep,name=bundle_ids,json=bundleIds,proto3" json:"bundle_ids,omitempty"`
-	PolicyIds []string `protobuf:"bytes,6,rep,name=policy_ids,json=policyIds,proto3" json:"policy_ids,omitempty"`
-	// IdP groups whose members may use this audience. Empty means any
-	// authenticated principal, which is only appropriate for an audience whose
-	// bundles are themselves public.
-	AllowedIdpGroups []string    `protobuf:"bytes,7,rep,name=allowed_idp_groups,json=allowedIdpGroups,proto3" json:"allowed_idp_groups,omitempty"`
-	RateLimits       *RateLimits `protobuf:"bytes,8,opt,name=rate_limits,json=rateLimits,proto3" json:"rate_limits,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *Audience) Reset() {
-	*x = Audience{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Audience) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Audience) ProtoMessage() {}
-
-func (x *Audience) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Audience.ProtoReflect.Descriptor instead.
-func (*Audience) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *Audience) GetId() string {
-	if x != nil {
-		return x.Id
-	}
-	return ""
-}
-
-func (x *Audience) GetSlug() string {
-	if x != nil {
-		return x.Slug
-	}
-	return ""
-}
-
-func (x *Audience) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *Audience) GetProjectId() string {
-	if x != nil {
-		return x.ProjectId
-	}
-	return ""
-}
-
-func (x *Audience) GetBundleIds() []string {
-	if x != nil {
-		return x.BundleIds
-	}
-	return nil
-}
-
-func (x *Audience) GetPolicyIds() []string {
-	if x != nil {
-		return x.PolicyIds
-	}
-	return nil
-}
-
-func (x *Audience) GetAllowedIdpGroups() []string {
-	if x != nil {
-		return x.AllowedIdpGroups
-	}
-	return nil
-}
-
-func (x *Audience) GetRateLimits() *RateLimits {
-	if x != nil {
-		return x.RateLimits
-	}
-	return nil
-}
-
-type RateLimits struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	RequestsPerMinute  int32                  `protobuf:"varint,1,opt,name=requests_per_minute,json=requestsPerMinute,proto3" json:"requests_per_minute,omitempty"`
-	ConcurrentRequests int32                  `protobuf:"varint,2,opt,name=concurrent_requests,json=concurrentRequests,proto3" json:"concurrent_requests,omitempty"`
-	// Token budget per minute across catalog and result content.
-	TokensPerMinute int64 `protobuf:"varint,3,opt,name=tokens_per_minute,json=tokensPerMinute,proto3" json:"tokens_per_minute,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *RateLimits) Reset() {
-	*x = RateLimits{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RateLimits) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RateLimits) ProtoMessage() {}
-
-func (x *RateLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RateLimits.ProtoReflect.Descriptor instead.
-func (*RateLimits) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *RateLimits) GetRequestsPerMinute() int32 {
-	if x != nil {
-		return x.RequestsPerMinute
-	}
-	return 0
-}
-
-func (x *RateLimits) GetConcurrentRequests() int32 {
-	if x != nil {
-		return x.ConcurrentRequests
-	}
-	return 0
-}
-
-func (x *RateLimits) GetTokensPerMinute() int64 {
-	if x != nil {
-		return x.TokensPerMinute
-	}
-	return 0
-}
-
-// Policy is a compiled authorization and shaping rule set.
-//
-// Policies are authored in the control plane and compiled here so the data
-// plane never parses policy source or consults a database to evaluate one.
 type Policy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1765,7 +1815,7 @@ type Policy struct {
 
 func (x *Policy) Reset() {
 	*x = Policy{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1777,7 +1827,7 @@ func (x *Policy) String() string {
 func (*Policy) ProtoMessage() {}
 
 func (x *Policy) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[13]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1790,7 +1840,7 @@ func (x *Policy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Policy.ProtoReflect.Descriptor instead.
 func (*Policy) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{13}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Policy) GetId() string {
@@ -1843,7 +1893,7 @@ type PolicyRule struct {
 
 func (x *PolicyRule) Reset() {
 	*x = PolicyRule{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1855,7 +1905,7 @@ func (x *PolicyRule) String() string {
 func (*PolicyRule) ProtoMessage() {}
 
 func (x *PolicyRule) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[14]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1868,7 +1918,7 @@ func (x *PolicyRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PolicyRule.ProtoReflect.Descriptor instead.
 func (*PolicyRule) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{14}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PolicyRule) GetEffectClasses() []string {
@@ -1975,15 +2025,15 @@ type PluginManifest struct {
 	Endpoint string `protobuf:"bytes,17,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	// Opaque plugin configuration as canonical JSON.
 	ConfigJson string `protobuf:"bytes,18,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
-	// Restrict this plugin to specific audiences. Empty means every audience.
-	AudienceIds   []string `protobuf:"bytes,19,rep,name=audience_ids,json=audienceIds,proto3" json:"audience_ids,omitempty"`
+	// Restrict this plugin to specific toolsets. Empty means every tool.
+	ToolsetIds    []string `protobuf:"bytes,19,rep,name=toolset_ids,json=toolsetIds,proto3" json:"toolset_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PluginManifest) Reset() {
 	*x = PluginManifest{}
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1995,7 +2045,7 @@ func (x *PluginManifest) String() string {
 func (*PluginManifest) ProtoMessage() {}
 
 func (x *PluginManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[15]
+	mi := &file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2008,7 +2058,7 @@ func (x *PluginManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginManifest.ProtoReflect.Descriptor instead.
 func (*PluginManifest) Descriptor() ([]byte, []int) {
-	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{15}
+	return file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PluginManifest) GetId() string {
@@ -2137,9 +2187,9 @@ func (x *PluginManifest) GetConfigJson() string {
 	return ""
 }
 
-func (x *PluginManifest) GetAudienceIds() []string {
+func (x *PluginManifest) GetToolsetIds() []string {
 	if x != nil {
-		return x.AudienceIds
+		return x.ToolsetIds
 	}
 	return nil
 }
@@ -2153,24 +2203,25 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x0esnapshot_bytes\x18\x01 \x01(\fR\rsnapshotBytes\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x1c\n" +
-	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"\x89\x05\n" +
+	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"\xcc\x05\n" +
 	"\bSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x125\n" +
-	"\bbuilt_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\abuiltAt\x12\x15\n" +
-	"\x06org_id\x18\x04 \x01(\tR\x05orgId\x12'\n" +
+	"\bbuilt_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\abuiltAt\x12'\n" +
 	"\x0fregistry_digest\x18\x05 \x01(\tR\x0eregistryDigest\x12>\n" +
 	"\n" +
 	"namespaces\x18\x06 \x03(\v2\x1e.mcpdoll.snapshot.v1.NamespaceR\n" +
 	"namespaces\x125\n" +
 	"\aservers\x18\a \x03(\v2\x1b.mcpdoll.snapshot.v1.ServerR\aservers\x129\n" +
-	"\x05tools\x18\b \x03(\v2#.mcpdoll.snapshot.v1.ToolDefinitionR\x05tools\x125\n" +
-	"\abundles\x18\t \x03(\v2\x1b.mcpdoll.snapshot.v1.BundleR\abundles\x12;\n" +
-	"\taudiences\x18\n" +
-	" \x03(\v2\x1d.mcpdoll.snapshot.v1.AudienceR\taudiences\x127\n" +
+	"\x05tools\x18\b \x03(\v2#.mcpdoll.snapshot.v1.ToolDefinitionR\x05tools\x127\n" +
 	"\bpolicies\x18\v \x03(\v2\x1b.mcpdoll.snapshot.v1.PolicyR\bpolicies\x12=\n" +
 	"\aplugins\x18\f \x03(\v2#.mcpdoll.snapshot.v1.PluginManifestR\aplugins\x12>\n" +
-	"\acatalog\x18\r \x01(\v2$.mcpdoll.snapshot.v1.CatalogDefaultsR\acatalog\"P\n" +
+	"\acatalog\x18\r \x01(\v2$.mcpdoll.snapshot.v1.CatalogDefaultsR\acatalog\x125\n" +
+	"\atenants\x18\x0e \x03(\v2\x1b.mcpdoll.snapshot.v1.TenantR\atenants\x128\n" +
+	"\btoolsets\x18\x0f \x03(\v2\x1c.mcpdoll.snapshot.v1.ToolsetR\btoolsets\x12-\n" +
+	"\x04rbac\x18\x10 \x01(\v2\x19.mcpdoll.snapshot.v1.RBACR\x04rbacJ\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\x06org_idR\abundlesR\taudiences\"P\n" +
 	"\x0fCatalogDefaults\x12\x15\n" +
 	"\x06ttl_ms\x18\x01 \x01(\x05R\x05ttlMs\x12&\n" +
 	"\x0fdegraded_ttl_ms\x18\x02 \x01(\x05R\rdegradedTtlMs\"\xb4\x01\n" +
@@ -2181,14 +2232,13 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x0eowning_team_id\x18\x04 \x01(\tR\fowningTeamId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x05 \x01(\tR\tprojectId\x12&\n" +
-	"\x0fowner_idp_group\x18\x06 \x01(\tR\rownerIdpGroup\"\xf1\x04\n" +
+	"\x0fowner_idp_group\x18\x06 \x01(\tR\rownerIdpGroup\"\x9f\x05\n" +
 	"\x06Server\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
 	"\fnamespace_id\x18\x03 \x01(\tR\vnamespaceId\x12\x1d\n" +
 	"\n" +
-	"version_id\x18\x04 \x01(\tR\tversionId\x12\x1a\n" +
-	"\bendpoint\x18\x05 \x01(\tR\bendpoint\x126\n" +
+	"version_id\x18\x04 \x01(\tR\tversionId\x126\n" +
 	"\x17pinned_protocol_version\x18\x06 \x01(\tR\x15pinnedProtocolVersion\x12C\n" +
 	"\fserving_mode\x18\a \x01(\x0e2 .mcpdoll.snapshot.v1.ServingModeR\vservingMode\x12 \n" +
 	"\vcriticality\x18\b \x01(\tR\vcriticality\x12/\n" +
@@ -2201,7 +2251,8 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x0etoken_exchange\x18\r \x01(\v2\".mcpdoll.snapshot.v1.TokenExchangeR\rtokenExchange\x129\n" +
 	"\x06health\x18\x0e \x01(\v2!.mcpdoll.snapshot.v1.HealthPolicyR\x06health\x12\x1f\n" +
 	"\vcanary_tool\x18\x0f \x01(\tR\n" +
-	"canaryTool\"\xd2\x02\n" +
+	"canaryTool\x128\n" +
+	"\bbindings\x18\x10 \x03(\v2\x1c.mcpdoll.snapshot.v1.BindingR\bbindingsJ\x04\b\x05\x10\x06R\bendpoint\"\xd2\x02\n" +
 	"\rTokenExchange\x12%\n" +
 	"\x0etoken_endpoint\x18\x01 \x01(\tR\rtokenEndpoint\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x16\n" +
@@ -2216,12 +2267,15 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x11probe_interval_ms\x18\x01 \x01(\x05R\x0fprobeIntervalMs\x12(\n" +
 	"\x10probe_timeout_ms\x18\x02 \x01(\x05R\x0eprobeTimeoutMs\x12&\n" +
 	"\x0fgrace_window_ms\x18\x03 \x01(\x05R\rgraceWindowMs\x120\n" +
-	"\x14eject_after_failures\x18\x04 \x01(\x05R\x12ejectAfterFailures\"\xaf\x04\n" +
+	"\x14eject_after_failures\x18\x04 \x01(\x05R\x12ejectAfterFailures\"\xeb\x04\n" +
 	"\x0eToolDefinition\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12'\n" +
 	"\x0fsemantic_digest\x18\x02 \x01(\tR\x0esemanticDigest\x12\x1b\n" +
 	"\tserver_id\x18\x03 \x01(\tR\bserverId\x12!\n" +
-	"\fnamespace_id\x18\x04 \x01(\tR\vnamespaceId\x12\x12\n" +
+	"\fnamespace_id\x18\x04 \x01(\tR\vnamespaceId\x12\x1b\n" +
+	"\ttenant_id\x18\x0f \x01(\tR\btenantId\x12\x1d\n" +
+	"\n" +
+	"toolset_id\x18\x10 \x01(\tR\ttoolsetId\x12\x12\n" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x12%\n" +
 	"\x0equalified_name\x18\x06 \x01(\tR\rqualifiedName\x12\x14\n" +
 	"\x05title\x18\a \x01(\tR\x05title\x12 \n" +
@@ -2232,50 +2286,40 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x10annotations_json\x18\v \x01(\tR\x0fannotationsJson\x12C\n" +
 	"\feffect_class\x18\f \x01(\x0e2 .mcpdoll.snapshot.v1.EffectClassR\veffectClass\x12%\n" +
 	"\x0etoken_estimate\x18\r \x01(\x05R\rtokenEstimate\x128\n" +
-	"\x18requires_idempotency_key\x18\x0e \x01(\bR\x16requiresIdempotencyKey\"\x91\x02\n" +
-	"\x06Bundle\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
-	"\n" +
-	"project_id\x18\x03 \x01(\tR\tprojectId\x12\x1a\n" +
-	"\bpriority\x18\x04 \x01(\x05R\bpriority\x12:\n" +
-	"\aentries\x18\x05 \x03(\v2 .mcpdoll.snapshot.v1.BundleEntryR\aentries\x12!\n" +
-	"\ftoken_budget\x18\x06 \x01(\x05R\vtokenBudget\x12\x15\n" +
-	"\x06ttl_ms\x18\a \x01(\x05R\x05ttlMs\x122\n" +
-	"\x06grants\x18\b \x03(\v2\x1a.mcpdoll.snapshot.v1.GrantR\x06grants\"\x91\x01\n" +
-	"\vBundleEntry\x12!\n" +
-	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12'\n" +
-	"\x0fqualified_names\x18\x02 \x03(\tR\x0equalifiedNames\x126\n" +
-	"\x17exclude_qualified_names\x18\x03 \x03(\tR\x15excludeQualifiedNames\"\x9b\x02\n" +
-	"\x05Grant\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
-	"\x0ffrom_project_id\x18\x02 \x01(\tR\rfromProjectId\x12\"\n" +
-	"\rto_project_id\x18\x03 \x01(\tR\vtoProjectId\x12!\n" +
-	"\fnamespace_id\x18\x04 \x01(\tR\vnamespaceId\x12\x1d\n" +
-	"\n" +
-	"granted_by\x18\x05 \x01(\tR\tgrantedBy\x129\n" +
-	"\n" +
-	"granted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tgrantedAt\x129\n" +
-	"\n" +
-	"expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x8f\x02\n" +
-	"\bAudience\x12\x0e\n" +
+	"\x18requires_idempotency_key\x18\x0e \x01(\bR\x16requiresIdempotencyKey\"X\n" +
+	"\x06Tenant\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04slug\x18\x02 \x01(\tR\x04slug\x12\x12\n" +
-	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1d\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\"\\\n" +
+	"\aBinding\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x18\n" +
+	"\aprimary\x18\x02 \x01(\tR\aprimary\x12\x1a\n" +
+	"\breplicas\x18\x03 \x03(\tR\breplicas\"\x83\x01\n" +
+	"\aToolset\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
+	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12!\n" +
+	"\ftoken_budget\x18\x04 \x01(\x05R\vtokenBudget\x12\x15\n" +
+	"\x06ttl_ms\x18\x05 \x01(\x05R\x05ttlMs\"\x96\x01\n" +
+	"\x04RBAC\x12N\n" +
+	"\x10role_permissions\x18\x01 \x03(\v2#.mcpdoll.snapshot.v1.RolePermissionR\x0frolePermissions\x12>\n" +
 	"\n" +
-	"project_id\x18\x04 \x01(\tR\tprojectId\x12\x1d\n" +
+	"principals\x18\x02 \x03(\v2\x1e.mcpdoll.snapshot.v1.PrincipalR\n" +
+	"principals\"D\n" +
+	"\x0eRolePermission\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x1e\n" +
 	"\n" +
-	"bundle_ids\x18\x05 \x03(\tR\tbundleIds\x12\x1d\n" +
-	"\n" +
-	"policy_ids\x18\x06 \x03(\tR\tpolicyIds\x12,\n" +
-	"\x12allowed_idp_groups\x18\a \x03(\tR\x10allowedIdpGroups\x12@\n" +
-	"\vrate_limits\x18\b \x01(\v2\x1f.mcpdoll.snapshot.v1.RateLimitsR\n" +
-	"rateLimits\"\x99\x01\n" +
-	"\n" +
-	"RateLimits\x12.\n" +
-	"\x13requests_per_minute\x18\x01 \x01(\x05R\x11requestsPerMinute\x12/\n" +
-	"\x13concurrent_requests\x18\x02 \x01(\x05R\x12concurrentRequests\x12*\n" +
-	"\x11tokens_per_minute\x18\x03 \x01(\x03R\x0ftokensPerMinute\"\x7f\n" +
+	"permission\x18\x02 \x01(\tR\n" +
+	"permission\"\x86\x01\n" +
+	"\tPrincipal\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x18\n" +
+	"\asubject\x18\x03 \x01(\tR\asubject\x122\n" +
+	"\x06grants\x18\x04 \x03(\v2\x1a.mcpdoll.snapshot.v1.GrantR\x06grants\"1\n" +
+	"\x05Grant\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\"\x7f\n" +
 	"\x06Policy\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -2292,7 +2336,7 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x06reason\x18\a \x01(\tR\x06reason\x12\x1c\n" +
 	"\n" +
 	"max_ttl_ms\x18\b \x01(\x05R\bmaxTtlMs\x12+\n" +
-	"\x11identity_specific\x18\t \x01(\bR\x10identitySpecific\"\xc5\x06\n" +
+	"\x11identity_specific\x18\t \x01(\bR\x10identitySpecific\"\xc3\x06\n" +
 	"\x0ePluginManifest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -2314,8 +2358,9 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"fuel_limit\x18\x10 \x01(\x04R\tfuelLimit\x12\x1a\n" +
 	"\bendpoint\x18\x11 \x01(\tR\bendpoint\x12\x1f\n" +
 	"\vconfig_json\x18\x12 \x01(\tR\n" +
-	"configJson\x12!\n" +
-	"\faudience_ids\x18\x13 \x03(\tR\vaudienceIds\x1ab\n" +
+	"configJson\x12\x1f\n" +
+	"\vtoolset_ids\x18\x13 \x03(\tR\n" +
+	"toolsetIds\x1ab\n" +
 	"\x12FailurePolicyEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x126\n" +
 	"\x05value\x18\x02 \x01(\x0e2 .mcpdoll.snapshot.v1.FailureModeR\x05value:\x028\x01*x\n" +
@@ -2370,7 +2415,7 @@ func file_mcpdoll_snapshot_v1_snapshot_proto_rawDescGZIP() []byte {
 }
 
 var file_mcpdoll_snapshot_v1_snapshot_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_mcpdoll_snapshot_v1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_mcpdoll_snapshot_v1_snapshot_proto_goTypes = []any{
 	(EffectClass)(0),              // 0: mcpdoll.snapshot.v1.EffectClass
 	(ServingMode)(0),              // 1: mcpdoll.snapshot.v1.ServingMode
@@ -2387,43 +2432,45 @@ var file_mcpdoll_snapshot_v1_snapshot_proto_goTypes = []any{
 	(*TokenExchange)(nil),         // 12: mcpdoll.snapshot.v1.TokenExchange
 	(*HealthPolicy)(nil),          // 13: mcpdoll.snapshot.v1.HealthPolicy
 	(*ToolDefinition)(nil),        // 14: mcpdoll.snapshot.v1.ToolDefinition
-	(*Bundle)(nil),                // 15: mcpdoll.snapshot.v1.Bundle
-	(*BundleEntry)(nil),           // 16: mcpdoll.snapshot.v1.BundleEntry
-	(*Grant)(nil),                 // 17: mcpdoll.snapshot.v1.Grant
-	(*Audience)(nil),              // 18: mcpdoll.snapshot.v1.Audience
-	(*RateLimits)(nil),            // 19: mcpdoll.snapshot.v1.RateLimits
-	(*Policy)(nil),                // 20: mcpdoll.snapshot.v1.Policy
-	(*PolicyRule)(nil),            // 21: mcpdoll.snapshot.v1.PolicyRule
-	(*PluginManifest)(nil),        // 22: mcpdoll.snapshot.v1.PluginManifest
-	nil,                           // 23: mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
-	nil,                           // 24: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
-	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
+	(*Tenant)(nil),                // 15: mcpdoll.snapshot.v1.Tenant
+	(*Binding)(nil),               // 16: mcpdoll.snapshot.v1.Binding
+	(*Toolset)(nil),               // 17: mcpdoll.snapshot.v1.Toolset
+	(*RBAC)(nil),                  // 18: mcpdoll.snapshot.v1.RBAC
+	(*RolePermission)(nil),        // 19: mcpdoll.snapshot.v1.RolePermission
+	(*Principal)(nil),             // 20: mcpdoll.snapshot.v1.Principal
+	(*Grant)(nil),                 // 21: mcpdoll.snapshot.v1.Grant
+	(*Policy)(nil),                // 22: mcpdoll.snapshot.v1.Policy
+	(*PolicyRule)(nil),            // 23: mcpdoll.snapshot.v1.PolicyRule
+	(*PluginManifest)(nil),        // 24: mcpdoll.snapshot.v1.PluginManifest
+	nil,                           // 25: mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
+	nil,                           // 26: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
+	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
 }
 var file_mcpdoll_snapshot_v1_snapshot_proto_depIdxs = []int32{
-	25, // 0: mcpdoll.snapshot.v1.Snapshot.built_at:type_name -> google.protobuf.Timestamp
+	27, // 0: mcpdoll.snapshot.v1.Snapshot.built_at:type_name -> google.protobuf.Timestamp
 	10, // 1: mcpdoll.snapshot.v1.Snapshot.namespaces:type_name -> mcpdoll.snapshot.v1.Namespace
 	11, // 2: mcpdoll.snapshot.v1.Snapshot.servers:type_name -> mcpdoll.snapshot.v1.Server
 	14, // 3: mcpdoll.snapshot.v1.Snapshot.tools:type_name -> mcpdoll.snapshot.v1.ToolDefinition
-	15, // 4: mcpdoll.snapshot.v1.Snapshot.bundles:type_name -> mcpdoll.snapshot.v1.Bundle
-	18, // 5: mcpdoll.snapshot.v1.Snapshot.audiences:type_name -> mcpdoll.snapshot.v1.Audience
-	20, // 6: mcpdoll.snapshot.v1.Snapshot.policies:type_name -> mcpdoll.snapshot.v1.Policy
-	22, // 7: mcpdoll.snapshot.v1.Snapshot.plugins:type_name -> mcpdoll.snapshot.v1.PluginManifest
-	9,  // 8: mcpdoll.snapshot.v1.Snapshot.catalog:type_name -> mcpdoll.snapshot.v1.CatalogDefaults
-	1,  // 9: mcpdoll.snapshot.v1.Server.serving_mode:type_name -> mcpdoll.snapshot.v1.ServingMode
-	12, // 10: mcpdoll.snapshot.v1.Server.token_exchange:type_name -> mcpdoll.snapshot.v1.TokenExchange
-	13, // 11: mcpdoll.snapshot.v1.Server.health:type_name -> mcpdoll.snapshot.v1.HealthPolicy
-	23, // 12: mcpdoll.snapshot.v1.TokenExchange.claim_headers:type_name -> mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
-	0,  // 13: mcpdoll.snapshot.v1.ToolDefinition.effect_class:type_name -> mcpdoll.snapshot.v1.EffectClass
-	16, // 14: mcpdoll.snapshot.v1.Bundle.entries:type_name -> mcpdoll.snapshot.v1.BundleEntry
-	17, // 15: mcpdoll.snapshot.v1.Bundle.grants:type_name -> mcpdoll.snapshot.v1.Grant
-	25, // 16: mcpdoll.snapshot.v1.Grant.granted_at:type_name -> google.protobuf.Timestamp
-	25, // 17: mcpdoll.snapshot.v1.Grant.expires_at:type_name -> google.protobuf.Timestamp
-	19, // 18: mcpdoll.snapshot.v1.Audience.rate_limits:type_name -> mcpdoll.snapshot.v1.RateLimits
-	21, // 19: mcpdoll.snapshot.v1.Policy.rules:type_name -> mcpdoll.snapshot.v1.PolicyRule
+	22, // 4: mcpdoll.snapshot.v1.Snapshot.policies:type_name -> mcpdoll.snapshot.v1.Policy
+	24, // 5: mcpdoll.snapshot.v1.Snapshot.plugins:type_name -> mcpdoll.snapshot.v1.PluginManifest
+	9,  // 6: mcpdoll.snapshot.v1.Snapshot.catalog:type_name -> mcpdoll.snapshot.v1.CatalogDefaults
+	15, // 7: mcpdoll.snapshot.v1.Snapshot.tenants:type_name -> mcpdoll.snapshot.v1.Tenant
+	17, // 8: mcpdoll.snapshot.v1.Snapshot.toolsets:type_name -> mcpdoll.snapshot.v1.Toolset
+	18, // 9: mcpdoll.snapshot.v1.Snapshot.rbac:type_name -> mcpdoll.snapshot.v1.RBAC
+	1,  // 10: mcpdoll.snapshot.v1.Server.serving_mode:type_name -> mcpdoll.snapshot.v1.ServingMode
+	12, // 11: mcpdoll.snapshot.v1.Server.token_exchange:type_name -> mcpdoll.snapshot.v1.TokenExchange
+	13, // 12: mcpdoll.snapshot.v1.Server.health:type_name -> mcpdoll.snapshot.v1.HealthPolicy
+	16, // 13: mcpdoll.snapshot.v1.Server.bindings:type_name -> mcpdoll.snapshot.v1.Binding
+	25, // 14: mcpdoll.snapshot.v1.TokenExchange.claim_headers:type_name -> mcpdoll.snapshot.v1.TokenExchange.ClaimHeadersEntry
+	0,  // 15: mcpdoll.snapshot.v1.ToolDefinition.effect_class:type_name -> mcpdoll.snapshot.v1.EffectClass
+	19, // 16: mcpdoll.snapshot.v1.RBAC.role_permissions:type_name -> mcpdoll.snapshot.v1.RolePermission
+	20, // 17: mcpdoll.snapshot.v1.RBAC.principals:type_name -> mcpdoll.snapshot.v1.Principal
+	21, // 18: mcpdoll.snapshot.v1.Principal.grants:type_name -> mcpdoll.snapshot.v1.Grant
+	23, // 19: mcpdoll.snapshot.v1.Policy.rules:type_name -> mcpdoll.snapshot.v1.PolicyRule
 	2,  // 20: mcpdoll.snapshot.v1.PolicyRule.decision:type_name -> mcpdoll.snapshot.v1.PolicyDecision
 	4,  // 21: mcpdoll.snapshot.v1.PluginManifest.runtime:type_name -> mcpdoll.snapshot.v1.PluginRuntime
 	3,  // 22: mcpdoll.snapshot.v1.PluginManifest.hooks:type_name -> mcpdoll.snapshot.v1.Hook
-	24, // 23: mcpdoll.snapshot.v1.PluginManifest.failure_policy:type_name -> mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
+	26, // 23: mcpdoll.snapshot.v1.PluginManifest.failure_policy:type_name -> mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry
 	5,  // 24: mcpdoll.snapshot.v1.PluginManifest.rollout:type_name -> mcpdoll.snapshot.v1.RolloutState
 	6,  // 25: mcpdoll.snapshot.v1.PluginManifest.FailurePolicyEntry.value:type_name -> mcpdoll.snapshot.v1.FailureMode
 	26, // [26:26] is the sub-list for method output_type
@@ -2444,7 +2491,7 @@ func file_mcpdoll_snapshot_v1_snapshot_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc), len(file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

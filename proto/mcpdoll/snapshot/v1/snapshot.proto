@@ -54,7 +54,10 @@ message Snapshot {
 
   google.protobuf.Timestamp built_at = 3;
 
-  string org_id = 4;
+  // Retired with multi-tenancy (ADR 0014). The tenant table replaces it; the
+  // field number is burned so an old snapshot cannot be misread as a new one.
+  reserved 4;
+  reserved "org_id";
 
   // Digest of the registry state this was resolved from, so a snapshot can be
   // traced back to the exact admitted definitions it contains.
@@ -62,16 +65,33 @@ message Snapshot {
 
   repeated Namespace namespaces = 6;
   repeated Server servers = 7;
+
+  // Tools are admitted per (toolset, tenant): the same vendor tool published
+  // by two tenants' separately-deployed backends is two definitions with two
+  // digests, and drift is measured against the tenant's own. See ADR 0017.
   repeated ToolDefinition tools = 8;
-  repeated Bundle bundles = 9;
-  repeated Audience audiences = 10;
+
+  reserved 9, 10;
+  reserved "bundles", "audiences";
+
   repeated Policy policies = 11;
   repeated PluginManifest plugins = 12;
 
   CatalogDefaults catalog = 13;
+
+  // Tenants this snapshot serves.
+  repeated Tenant tenants = 14;
+
+  // Toolsets replace bundles: the unit an administrator grants (ADR 0016).
+  repeated Toolset toolsets = 15;
+
+  // Compiled RBAC. Grants travel in the snapshot so the data plane needs
+  // nothing from the control plane to decide what a principal may see —
+  // ADR 0018. Revocation therefore takes effect at snapshot latency.
+  RBAC rbac = 16;
 }
 
-// CatalogDefaults are the org-wide list-result settings. Per-bundle and
+// CatalogDefaults are the deployment-wide list-result settings. Per-toolset and
 // per-policy values may only narrow these, never widen them.
 message CatalogDefaults {
   // Ceiling on the ttlMs the edge advertises.
@@ -136,7 +156,8 @@ message Server {
 
   // Endpoint URL. Only http/https streamable transports are supported in the
   // data plane; a stdio backend is wrapped by a sidecar.
-  string endpoint = 5;
+  reserved 5;
+  reserved "endpoint";
 
   // Protocol version to pin for this backend, or empty to negotiate. Pinning
   // exists because a backend that silently upgrades can change result shapes
@@ -158,6 +179,9 @@ message Server {
   // Optional tool the prober may invoke as a canary, to distinguish "the
   // catalog is reachable" from "invocations actually work".
   string canary_tool = 15;
+
+  // This backend's hosts, one entry per tenant.
+  repeated Binding bindings = 16;
 }
 
 // TokenExchange configures how an inbound principal becomes a credential the
@@ -207,6 +231,15 @@ message ToolDefinition {
   string server_id = 3;
   string namespace_id = 4;
 
+  // The tenant this definition was admitted for. Two tenants' backends running
+  // different releases publish different schemas for the same tool, and each
+  // tenant is served its own. See ADR 0017.
+  string tenant_id = 15;
+
+  // The toolset that contributed this tool, for catalog ordering and for the
+  // authorization scope `t/<tenant>/ts/<toolset>/<name>`.
+  string toolset_id = 16;
+
   // Name as the backend publishes it.
   string name = 5;
   // Name as clients see it: "<prefix>.<name>". Assigned at admission, never
@@ -227,7 +260,7 @@ message ToolDefinition {
   EffectClass effect_class = 12;
 
   // Estimated tokens the serialized definition costs a model, schema included.
-  // Budget enforcement uses this; the console's bundle composer displays it.
+  // Budget enforcement uses this; the console's toolset composer displays it.
   int32 token_estimate = 13;
 
   // Whether the tool requires an idempotency key. Derived from effect class at
@@ -235,86 +268,88 @@ message ToolDefinition {
   bool requires_idempotency_key = 14;
 }
 
-// Bundle is a curated set of tools presented as one catalog.
-message Bundle {
+// Tenant is an isolation boundary. Every user, backend binding, and admitted
+// tool belongs to exactly one.
+message Tenant {
   string id = 1;
-  string name = 2;
-  string project_id = 3;
-
-  // Determines the leading component of the stable catalog ordering. Lower
-  // sorts first.
-  int32 priority = 4;
-
-  repeated BundleEntry entries = 5;
-
-  // Ceiling on the summed token_estimate of the bundle's tools. Exceeded
-  // bundles fail the snapshot build rather than silently shipping a catalog
-  // that will not fit a context window.
-  int32 token_budget = 6;
-
-  // Optional TTL override, which may only lower the org default.
-  int32 ttl_ms = 7;
-
-  // Cross-project grants that let this bundle include another project's
-  // namespace. Explicit, recorded, and expiring.
-  repeated Grant grants = 8;
-}
-
-// BundleEntry includes either a whole namespace or an explicit tool list.
-message BundleEntry {
-  string namespace_id = 1;
-  // When empty, every admitted tool in the namespace is included. When set,
-  // only these qualified names — which is how a bundle takes three tools from a
-  // twenty-tool backend.
-  repeated string qualified_names = 2;
-  // Qualified names to exclude, applied after the include set.
-  repeated string exclude_qualified_names = 3;
-}
-
-message Grant {
-  string id = 1;
-  string from_project_id = 2;
-  string to_project_id = 3;
-  string namespace_id = 4;
-  string granted_by = 5;
-  google.protobuf.Timestamp granted_at = 6;
-  // Grants expire. An unbounded cross-project grant is indistinguishable from
-  // a permanent policy exception nobody remembers making.
-  google.protobuf.Timestamp expires_at = 7;
-}
-
-// Audience is one MCP endpoint's identity: which bundles it serves, under which
-// policies, to which principals.
-message Audience {
-  string id = 1;
-  // URL slug the endpoint is served at: /mcp/<slug>.
+  // Appears in every authorization scope as `t/<slug>`, which is why it is
+  // constrained to characters that cannot change a scope's meaning.
   string slug = 2;
   string name = 3;
-  string project_id = 4;
-
-  // Bundles in the order they contribute to the catalog.
-  repeated string bundle_ids = 5;
-  repeated string policy_ids = 6;
-
-  // IdP groups whose members may use this audience. Empty means any
-  // authenticated principal, which is only appropriate for an audience whose
-  // bundles are themselves public.
-  repeated string allowed_idp_groups = 7;
-
-  RateLimits rate_limits = 8;
+  string status = 4;  // "active" | "suspended" | "archived"
 }
 
-message RateLimits {
-  int32 requests_per_minute = 1;
-  int32 concurrent_requests = 2;
-  // Token budget per minute across catalog and result content.
-  int64 tokens_per_minute = 3;
+// Binding is one tenant's hosts for a backend.
+message Binding {
+  string tenant_id = 1;
+
+  // The definition source. Discovery reads it; replicas are compared against
+  // it. A declared primary makes "which host is correct" a configuration
+  // decision rather than a vote between two disagreeing hosts.
+  string primary = 2;
+
+  // Interchangeable hosts for the same tenant. A replica whose semantic digest
+  // diverges from the primary leaves the routable pool and is reported — what
+  // is *served* does not change, so a rolling deploy costs capacity rather
+  // than churning every client's prompt cache. See ADR 0017.
+  repeated string replicas = 3;
 }
 
-// Policy is a compiled authorization and shaping rule set.
+// Toolset is a named, grantable group of tools.
 //
-// Policies are authored in the control plane and compiled here so the data
-// plane never parses policy source or consults a database to evaluate one.
+// Replaces Bundle. The rename carries meaning: a bundle grouped namespaces for
+// publication, whereas a toolset is what an administrator hands to a user, and
+// its name appears inside every grant scope.
+message Toolset {
+  string id = 1;
+  string name = 2;
+
+  // Leading component of the stable catalog ordering. Lower sorts first.
+  int32 priority = 3;
+
+  int32 token_budget = 4;
+  int32 ttl_ms = 5;
+}
+
+// RBAC is the compiled authorization state: the role catalog plus every
+// principal's grants.
+//
+// It ships inside the signed snapshot so the data plane can decide a catalog
+// without asking anything (ADR 0018). Signing it matters as much as signing the
+// tools: grants are precisely the part an attacker would want to change.
+message RBAC {
+  repeated RolePermission role_permissions = 1;
+  repeated Principal principals = 2;
+}
+
+// RolePermission is a Casbin `p` policy.
+message RolePermission {
+  string role = 1;
+  string permission = 2;
+}
+
+// Principal is a resolvable identity and the grants it holds.
+message Principal {
+  // Stable id — the user id, or the API key id for an agent credential.
+  string id = 1;
+  string tenant_id = 2;
+  // Human-readable subject for logs and audit. Never used for authorization.
+  string subject = 3;
+
+  // Already intersected for an API key (ADR 0014), so the data plane never
+  // has to remember to do it. There is one way to get effective grants, and
+  // this is it.
+  repeated Grant grants = 4;
+}
+
+// Grant is a Casbin `g` policy: a role held within a scope.
+message Grant {
+  string role = 1;
+  // Hierarchical scope: `*`, `t/<tenant>`, `t/<tenant>/ts/<toolset>`, or
+  // `t/<tenant>/ts/<toolset>/<tool>`.
+  string scope = 2;
+}
+
 message Policy {
   string id = 1;
   string name = 2;
@@ -451,6 +486,6 @@ message PluginManifest {
   // Opaque plugin configuration as canonical JSON.
   string config_json = 18;
 
-  // Restrict this plugin to specific audiences. Empty means every audience.
-  repeated string audience_ids = 19;
+  // Restrict this plugin to specific toolsets. Empty means every tool.
+  repeated string toolset_ids = 19;
 }

@@ -97,21 +97,61 @@ type Edge struct {
 	opts Options
 	log  *slog.Logger
 
-	// mu guards the per-audience server cache, which is replaced wholesale on
-	// each snapshot activation.
-	mu        sync.RWMutex
-	version   int64
-	audiences map[string]*audienceServer
+	// mu guards the served version.
+	mu      sync.RWMutex
+	version int64
+
+	// principals caches one MCP server per principal, built on first
+	// connection. Dropped wholesale on a snapshot swap: a cached server holds
+	// a catalog composed from grants that the new snapshot may have revoked,
+	// and per-entry invalidation is a chance to miss one (ADR 0018).
+	principals *principalCache
 
 	streamable *mcp.StreamableHTTPHandler
 	router     chi.Router
 }
 
-// audienceServer is one audience's MCP server plus the view it was built from.
-type audienceServer struct {
-	slug   string
-	view   *snapshot.AudienceView
+// principalServer is one principal's MCP server plus the view it was built from.
+type principalServer struct {
+	view   *snapshot.PrincipalView
 	server *mcp.Server
+}
+
+// principalCache holds per-principal servers for the life of one snapshot.
+type principalCache struct {
+	mu      sync.RWMutex
+	entries map[string]*principalServer
+}
+
+func newPrincipalCache() *principalCache {
+	return &principalCache{entries: map[string]*principalServer{}}
+}
+
+func (c *principalCache) get(id string) (*principalServer, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	ps, ok := c.entries[id]
+	return ps, ok
+}
+
+// put stores a server, returning whichever one wins if two connections for the
+// same principal raced. Both are equivalent; returning the stored one keeps a
+// single instance per principal so the SDK's server state is not split.
+func (c *principalCache) put(id string, ps *principalServer) *principalServer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if existing, ok := c.entries[id]; ok {
+		return existing
+	}
+	c.entries[id] = ps
+	return ps
+}
+
+// Purge drops every cached server. Called on snapshot activation.
+func (c *principalCache) Purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = map[string]*principalServer{}
 }
 
 // New builds an Edge and wires it to the snapshot store.
@@ -144,13 +184,13 @@ func New(opts Options) (*Edge, error) {
 	}
 
 	e := &Edge{
-		opts:      opts,
-		log:       opts.Logger,
-		audiences: map[string]*audienceServer{},
+		opts:       opts,
+		log:        opts.Logger,
+		principals: newPrincipalCache(),
 	}
 
-	// One streamable handler for every audience; the audience is resolved from
-	// the request path. Stateless is mandatory for 2026-07-28 over HTTP — the
+	// One streamable handler for everyone. The principal is resolved from the
+	// credential, not the path (ADR 0019). Stateless is mandatory for 2026-07-28 over HTTP — the
 	// SDK rejects the modern protocol on a stateful transport — and it is also
 	// what makes the data plane horizontally scalable with no shared session
 	// state.
@@ -164,10 +204,11 @@ func New(opts Options) (*Edge, error) {
 	})
 
 	r := chi.NewRouter()
-	r.Route("/mcp/{audience}", func(sub chi.Router) {
-		sub.Handle("/", http.HandlerFunc(e.serveMCP))
-		sub.Handle("/*", http.HandlerFunc(e.serveMCP))
-	})
+	// One endpoint. There is deliberately no /mcp/{audience} alias: an audience
+	// no longer determines a catalog, so accepting a slug and ignoring it would
+	// be the most confusing possible behaviour (ADR 0019).
+	r.Handle("/mcp", http.HandlerFunc(e.serveMCP))
+	r.Handle("/mcp/*", http.HandlerFunc(e.serveMCP))
 	r.Get("/healthz", e.serveHealth)
 	r.Get("/readyz", e.serveReady)
 	e.router = r
@@ -202,20 +243,21 @@ func (e *Edge) Handler() http.Handler { return e.router }
 // Everything is built into a new map first and installed with a single
 // assignment, so a partially-built set is never visible to a request.
 func (e *Edge) rebuild(view *snapshot.View) error {
-	next := make(map[string]*audienceServer, len(view.AudienceSlugs()))
-	for _, slug := range view.AudienceSlugs() {
-		av := view.Audience(slug)
-		server, err := e.buildServer(view, av)
-		if err != nil {
-			return fmt.Errorf("audience %q: %w", slug, err)
-		}
-		next[slug] = &audienceServer{slug: slug, view: av, server: server}
-	}
+	// Nothing is precomputed here any more. With one endpoint and a catalog
+	// per principal (ADR 0019), there is no fixed set of servers to build: a
+	// principal's MCP server is constructed on its first connection and cached
+	// with the view, which dies on the next swap.
+	//
+	// This is a weaker guard than the audience version, which discovered a
+	// malformed definition at publish time and refused the snapshot. Now a bad
+	// tool fails one principal's connection instead. Admission-time validation
+	// of every tool therefore matters more, not less — the builder rejects a
+	// tool with no input schema for exactly this reason.
+	e.principals.Purge()
 
 	e.opts.Pool.Sync(view.Servers())
 
 	e.mu.Lock()
-	e.audiences = next
 	e.version = view.Version
 	e.mu.Unlock()
 
@@ -224,7 +266,7 @@ func (e *Edge) rebuild(view *snapshot.View) error {
 	e.opts.Metrics.SnapshotSwaps.Add(ctx, 1)
 	e.log.InfoContext(ctx, "serving new snapshot",
 		logging.FieldSnapshot, view.Version,
-		"audiences", len(next),
+		"tenants", len(view.TenantSlugs()),
 		"backends", len(view.Servers()))
 	return nil
 }
@@ -236,7 +278,7 @@ func (e *Edge) rebuild(view *snapshot.View) error {
 // converted into a refused activation. Defensive rather than expected: the view
 // builder already rejects the definitions we know of, and this catches the ones a
 // future SDK version decides it dislikes.
-func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) (srv *mcp.Server, err error) {
+func (e *Edge) buildServer(view *snapshot.View, av *snapshot.PrincipalView) (srv *mcp.Server, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("building the MCP server panicked: %v", r)
@@ -248,7 +290,7 @@ func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) (srv 
 		Title:   GatewayTitle,
 		Version: GatewayVersion,
 	}, &mcp.ServerOptions{
-		Instructions: audienceInstructions(av),
+		Instructions: principalInstructions(av),
 		Logger:       e.log,
 		// Advertise tools even before any are registered, so an audience whose
 		// bundles are currently empty still presents a tools capability rather
@@ -269,16 +311,21 @@ func (e *Edge) buildServer(view *snapshot.View, av *snapshot.AudienceView) (srv 
 	return srv, nil
 }
 
-// audienceInstructions is the `instructions` string clients receive. It names
-// the gateway and the audience so an operator reading a client's logs can tell
-// which endpoint produced a catalog.
-func audienceInstructions(av *snapshot.AudienceView) string {
-	name := av.Audience.Name
+// principalInstructions is the `instructions` string clients receive.
+//
+// It names the tenant and subject, which is how a client can tell *which
+// identity it is operating as*. With one endpoint for everyone, a misconfigured
+// credential yields a smaller toolset rather than an error (ADR 0019), and this
+// is the line that makes that visible rather than silent.
+func principalInstructions(av *snapshot.PrincipalView) string {
+	name := av.Tenant.Name
 	if name == "" {
-		name = av.Audience.Slug
+		name = av.Tenant.Slug
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Aggregated tools for %s, served by MCPDoll.\n", name)
+	fmt.Fprintf(&b, "You are acting as %s in tenant %s.\n",
+		av.Principal.Subject, av.Tenant.Slug)
 	fmt.Fprintf(&b, "Tool names are namespaced as <prefix>.<tool>. ")
 	b.WriteString("Every definition here has been reviewed and admitted; ")
 	b.WriteString("it is not read live from the upstream server.")
@@ -309,13 +356,10 @@ func toolDefinitionToMCP(t *snapshot.Tool) *mcp.Tool {
 	return out
 }
 
-// serveMCP resolves the audience, authorizes the principal, and delegates to the
+// serveMCP resolves the principal from its credential and delegates to the
 // SDK's streamable handler.
 func (e *Edge) serveMCP(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "audience")
-
 	e.mu.RLock()
-	as, ok := e.audiences[slug]
 	version := e.version
 	e.mu.RUnlock()
 
@@ -327,39 +371,71 @@ func (e *Edge) serveMCP(w http.ResponseWriter, r *http.Request) {
 			http.StatusServiceUnavailable)
 		return
 	}
-	if !ok {
-		http.Error(w, fmt.Sprintf("no audience %q is served by this gateway", slug),
-			http.StatusNotFound)
-		return
-	}
 
 	principal, err := e.opts.Identity.Resolve(r.Header)
 	if err != nil {
+		// No anonymous principal and no default tenant. Without a resolvable
+		// credential there is nothing to compose a catalog from, and defaulting
+		// would be a way to get a catalog without proving who you are.
+		w.Header().Set("WWW-Authenticate", `Bearer realm="mcpdoll"`)
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
-	if err := authorizeAudience(as.view.Audience, principal); err != nil {
-		// 403 rather than 404: the audience exists, and pretending otherwise
-		// would make a misconfigured group assignment look like a typo.
-		http.Error(w, "forbidden", http.StatusForbidden)
+
+	if _, err := e.serverFor(r.Context(), principal); err != nil {
+		// The credential resolved but the snapshot does not carry this
+		// principal — it was created after the last publish. A 403 rather than
+		// a 500: nothing is broken, the grants simply have not been published.
+		e.log.WarnContext(r.Context(), "no principal in the serving snapshot",
+			logging.FieldPrincipal, principal.Subject,
+			logging.FieldSnapshot, version, "err", err)
+		http.Error(w,
+			"this credential is not in the serving snapshot; publish a snapshot "+
+				"to pick up recent grant changes", http.StatusForbidden)
 		return
 	}
 
 	e.streamable.ServeHTTP(w, r.WithContext(withRequestScope(r.Context(), requestScope{
-		Audience:  slug,
 		Principal: principal,
 	})))
 }
 
+// serverFor returns the principal's MCP server, building it on first use.
+func (e *Edge) serverFor(ctx context.Context, principal backends.Principal) (*principalServer, error) {
+	if cached, ok := e.principals.get(principal.ID); ok {
+		return cached, nil
+	}
+
+	view := e.opts.Store.Current()
+	if view == nil {
+		return nil, errors.New("edge: no snapshot")
+	}
+
+	pv, err := view.Principal(ctx, principal.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	server, err := e.buildServer(view, pv)
+	if err != nil {
+		return nil, err
+	}
+	return e.principals.put(principal.ID, &principalServer{view: pv, server: server}), nil
+}
+
 // serverForRequest is the SDK's getServer callback.
 func (e *Edge) serverForRequest(r *http.Request) *mcp.Server {
-	slug := chi.URLParam(r, "audience")
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if as, ok := e.audiences[slug]; ok {
-		return as.server
+	scope, ok := scopeFromContext(r.Context())
+	if !ok {
+		// serveMCP always installs the scope before delegating, so this means
+		// the handler was reached another way.
+		return nil
 	}
-	return nil
+	ps, err := e.serverFor(r.Context(), scope.Principal)
+	if err != nil {
+		return nil
+	}
+	return ps.server
 }
 
 func (e *Edge) serveHealth(w http.ResponseWriter, _ *http.Request) {
@@ -373,8 +449,14 @@ func (e *Edge) serveHealth(w http.ResponseWriter, _ *http.Request) {
 func (e *Edge) serveReady(w http.ResponseWriter, _ *http.Request) {
 	e.mu.RLock()
 	version := e.version
-	count := len(e.audiences)
 	e.mu.RUnlock()
+
+	tenants, tools := 0, 0
+	if view := e.opts.Store.Current(); view != nil {
+		slugs := view.TenantSlugs()
+		tenants = len(slugs)
+		tools = len(view.Proto().Tools)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if version == 0 {
@@ -382,7 +464,12 @@ func (e *Edge) serveReady(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"no snapshot"}`))
 		return
 	}
-	fmt.Fprintf(w, `{"status":"ok","snapshot_version":%d,"audiences":%d}`, version, count)
+	// Tenants and admitted tools, not audiences: "serving N audiences" no
+	// longer describes anything (ADR 0019). Still a count rather than names —
+	// enumerating tenants to an unauthenticated caller is the same information
+	// leak enumerating audiences was.
+	fmt.Fprintf(w, `{"status":"ok","snapshot_version":%d,"tenants":%d,"tools":%d}`,
+		version, tenants, tools)
 }
 
 // SnapshotVersion reports what the edge is serving, for the admin surface.
@@ -392,15 +479,13 @@ func (e *Edge) SnapshotVersion() int64 {
 	return e.version
 }
 
-// AudienceSlugs lists the endpoints currently served.
-func (e *Edge) AudienceSlugs() []string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	out := make([]string, 0, len(e.audiences))
-	for slug := range e.audiences {
-		out = append(out, slug)
+// TenantSlugs lists the tenants the serving snapshot carries.
+func (e *Edge) TenantSlugs() []string {
+	view := e.opts.Store.Current()
+	if view == nil {
+		return nil
 	}
-	return out
+	return view.TenantSlugs()
 }
 
 // ---------------------------------------------------------- request scope ----
@@ -408,7 +493,6 @@ func (e *Edge) AudienceSlugs() []string {
 type requestScopeKey struct{}
 
 type requestScope struct {
-	Audience  string
 	Principal backends.Principal
 }
 

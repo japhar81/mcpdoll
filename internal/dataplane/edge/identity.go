@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
-	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
 // IdentityResolver turns an inbound request into the principal on whose behalf
@@ -119,27 +117,4 @@ func splitAndTrim(raw string) []string {
 		}
 	}
 	return out
-}
-
-// authorizeAudience checks that a principal is permitted on an audience.
-//
-// An audience with no group restriction admits any authenticated principal.
-// That is only safe when the audience's bundles are themselves unrestricted,
-// which is a control-plane concern; the data plane enforces what the snapshot
-// says.
-func authorizeAudience(aud *snapshotpb.Audience, p backends.Principal) error {
-	if len(aud.AllowedIdpGroups) == 0 {
-		return nil
-	}
-	for _, g := range p.Groups {
-		if slices.Contains(aud.AllowedIdpGroups, g) {
-			return nil
-		}
-	}
-	return &ErrForbidden{
-		Subject:  p.Subject,
-		Audience: aud.Slug,
-		Reason: fmt.Sprintf("audience requires membership of one of %v",
-			aud.AllowedIdpGroups),
-	}
 }

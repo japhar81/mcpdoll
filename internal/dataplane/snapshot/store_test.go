@@ -102,12 +102,12 @@ func TestFailedActivationKeepsServing(t *testing.T) {
 		snap, err := defaultFixture(2).b.Build()
 		require.NoError(t, err)
 		// A dangling bundle reference — correctly signed, but unservable.
-		snap.Audiences[0].BundleIds = []string{"bnd_gone"}
+		snap.Tools[0].ToolsetId = "ts_gone"
 		signed, err := signer.Sign(snap)
 		require.NoError(t, err)
 
 		_, err = store.Activate(signed, verifier)
-		require.ErrorContains(t, err, "unknown bundle")
+		require.ErrorContains(t, err, "unknown toolset")
 		require.Same(t, good, store.Current(),
 			"a signed-but-broken snapshot must not displace a working one")
 	})
@@ -307,7 +307,7 @@ func TestConcurrentActivationAndReads(t *testing.T) {
 				if view == nil {
 					continue
 				}
-				av := view.Audience("support-agents")
+				av := view.principalView(t)
 				require.NotNil(t, av)
 				require.Len(t, av.Tools, 4)
 				require.NotNil(t, av.Tool("crm.lookup_customer"))

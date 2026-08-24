@@ -374,11 +374,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAudiences(w http.ResponseWriter, r *http.Request) {
-	spec, ok := s.loadRegistry(w)
-	if !ok {
-		return
-	}
-	out := api.AudienceList{Registered: api.NewRegistry(spec).Audiences}
+	out := api.TenantList{Registered: []api.TenantSummary{}}
 
 	// A gateway that cannot be reached is not a failure of this operation: the
 	// registered audiences are still the useful answer, and the zero status
@@ -395,7 +391,7 @@ func (s *Server) handleListAudiences(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAudienceCatalog(w http.ResponseWriter, r *http.Request) {
 	catalog, err := s.inspectorClient(r).Catalog(r.Context(), inspector.CatalogRequest{
-		Audience:         chi.URLParam(r, "slug"),
+		Credential:       r.Header.Get("X-MCPDoll-Inspect-Credential"),
 		Identity:         identityFromQuery(r),
 		FullDescriptions: r.URL.Query().Get("full") == "true",
 	})
@@ -428,7 +424,7 @@ func (s *Server) writeInspectorError(w http.ResponseWriter, err error) {
 		// operator it was unavailable would send them to restart a service that
 		// is working exactly as configured.
 		writeError(w, s.log, http.StatusForbidden, CodeForbidden, err.Error())
-	case errors.Is(err, inspector.ErrAudienceNotFound):
+	case errors.Is(err, inspector.ErrUnknownPrincipal):
 		writeError(w, s.log, http.StatusNotFound, CodeNotFound, err.Error())
 	case errors.Is(err, inspector.ErrUnavailable):
 		writeError(w, s.log, http.StatusBadGateway, CodeUnavailable, err.Error())

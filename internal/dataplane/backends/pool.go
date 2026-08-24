@@ -69,14 +69,19 @@ type TokenSource interface {
 
 // Principal is who the request is on behalf of.
 type Principal struct {
-	// Subject is the stable identifier — typically the IdP `sub` claim.
+	// ID is how the snapshot addresses this principal — the user id, or the
+	// API key id for an agent credential. Authorization keys on this; Subject
+	// is for humans and may change.
+	ID string
+	// Subject is the human-readable identifier, typically an email.
 	Subject string
 	// Groups from the IdP, used for entitlement filtering and policy matching.
 	Groups []string
 	// Claims carries additional claims a backend may need mapped to headers.
 	Claims map[string]string
-	// Audience slug the request arrived on.
-	Audience string
+	// Tenant slug the principal belongs to. Resolved from the credential, not
+	// from the request path (ADR 0019).
+	Tenant string
 }
 
 // Credential is what gets attached to an outbound backend request.
@@ -123,7 +128,7 @@ type Pool struct {
 	cancel  context.CancelFunc
 
 	mu      sync.Mutex
-	entries map[string]*entry
+	entries map[Target]*entry
 }
 
 // New builds a pool.
@@ -149,13 +154,28 @@ func New(opts Options) *Pool {
 		log:     opts.Logger,
 		baseCtx: baseCtx,
 		cancel:  cancel,
-		entries: map[string]*entry{},
+		entries: map[Target]*entry{},
 	}
 }
 
 // entry is one backend's connection state.
+// Target identifies one connectable backend: a server *for a tenant*.
+//
+// The same server is a different host per tenant (ADR 0017), so a server id
+// alone no longer names something a session can be opened to.
+type Target struct {
+	ServerID string
+	TenantID string
+}
+
+// String renders a target for logs and errors.
+func (t Target) String() string { return t.ServerID + "@" + t.TenantID }
+
 type entry struct {
 	server *snapshotpb.Server
+	// endpoint is this tenant's primary host for the server.
+	endpoint string
+	target   Target
 
 	mu      sync.Mutex
 	session *mcp.ClientSession
@@ -182,47 +202,60 @@ func (p *Pool) Sync(servers []*snapshotpb.Server) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	wanted := make(map[string]*snapshotpb.Server, len(servers))
+	// One entry per (server, tenant): each tenant's binding is a separate
+	// deployment with its own session, its own breaker, and its own health.
+	// Sharing a breaker across tenants would let one tenant's outage shed
+	// another tenant's traffic.
+	type want struct {
+		server   *snapshotpb.Server
+		endpoint string
+	}
+	wanted := map[Target]want{}
 	for _, s := range servers {
-		wanted[s.Id] = s
+		for _, b := range s.Bindings {
+			wanted[Target{ServerID: s.Id, TenantID: b.TenantId}] =
+				want{server: s, endpoint: b.Primary}
+		}
 	}
 
-	for id, e := range p.entries {
-		want, keep := wanted[id]
+	for target, e := range p.entries {
+		w, keep := wanted[target]
 		if !keep {
 			e.close()
-			delete(p.entries, id)
+			delete(p.entries, target)
 			continue
 		}
-		if want.Endpoint != e.server.Endpoint {
+		if w.endpoint != e.endpoint {
 			// A moved endpoint is a different backend as far as health is
 			// concerned, so the session and the breaker both reset.
 			e.close()
-			p.entries[id] = newEntry(want, p.opts)
+			p.entries[target] = newEntry(target, w.server, w.endpoint, p.opts)
 			continue
 		}
 		e.mu.Lock()
-		e.server = want
+		e.server = w.server
 		e.mu.Unlock()
 	}
 
-	for id, s := range wanted {
-		if _, ok := p.entries[id]; !ok {
-			p.entries[id] = newEntry(s, p.opts)
+	for target, w := range wanted {
+		if _, ok := p.entries[target]; !ok {
+			p.entries[target] = newEntry(target, w.server, w.endpoint, p.opts)
 		}
 	}
 }
 
-func newEntry(s *snapshotpb.Server, opts Options) *entry {
+func newEntry(target Target, s *snapshotpb.Server, endpoint string, opts Options) *entry {
 	threshold := opts.FailureThreshold
 	cooldown := opts.Cooldown
 	if h := s.Health; h != nil && h.EjectAfterFailures > 0 {
 		threshold = int(h.EjectAfterFailures)
 	}
 	return &entry{
-		server:  s,
-		breaker: newBreaker(threshold, cooldown),
-		creds:   map[string]Credential{},
+		server:   s,
+		endpoint: endpoint,
+		target:   target,
+		breaker:  newBreaker(threshold, cooldown),
+		creds:    map[string]Credential{},
 	}
 }
 
@@ -239,7 +272,6 @@ func (e *entry) close() {
 	}
 }
 
-// Close shuts every session down and releases the pool's lifetime context.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	for id, e := range p.entries {
@@ -251,26 +283,26 @@ func (p *Pool) Close() {
 }
 
 // Servers lists the ids the pool currently holds.
-func (p *Pool) Servers() []string {
+func (p *Pool) Targets() []Target {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]string, 0, len(p.entries))
+	out := make([]Target, 0, len(p.entries))
 	for id := range p.entries {
 		out = append(out, id)
 	}
 	return out
 }
 
-func (p *Pool) entryFor(serverID string) (*entry, bool) {
+func (p *Pool) entryFor(target Target) (*entry, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	e, ok := p.entries[serverID]
+	e, ok := p.entries[target]
 	return e, ok
 }
 
 // NegotiatedVersion reports the protocol version in use with a backend, or "".
-func (p *Pool) NegotiatedVersion(serverID string) string {
-	e, ok := p.entryFor(serverID)
+func (p *Pool) NegotiatedVersion(target Target) string {
+	e, ok := p.entryFor(target)
 	if !ok {
 		return ""
 	}
@@ -280,8 +312,8 @@ func (p *Pool) NegotiatedVersion(serverID string) string {
 }
 
 // CircuitState reports a backend's breaker state.
-func (p *Pool) CircuitState(serverID string) State {
-	e, ok := p.entryFor(serverID)
+func (p *Pool) CircuitState(target Target) State {
+	e, ok := p.entryFor(target)
 	if !ok {
 		return StateClosed
 	}
@@ -298,7 +330,9 @@ func (p *Pool) CircuitState(serverID string) State {
 // caller — the pool must never see the envelope, and a backend must never see
 // anything but the bytes it produced.
 type Call struct {
-	ServerID       string
+	// Target is the server *for a tenant*: the same server is a different host
+	// per tenant, so a server id alone does not name something callable.
+	Target         Target
 	ToolName       string
 	Arguments      any
 	Meta           map[string]any
@@ -312,10 +346,10 @@ func (p *Pool) CallTool(
 	call Call,
 	principal Principal,
 ) (*mcp.CallToolResult, error) {
-	serverID, toolName := call.ServerID, call.ToolName
-	e, ok := p.entryFor(serverID)
+	target, toolName := call.Target, call.ToolName
+	e, ok := p.entryFor(target)
 	if !ok {
-		return nil, &ErrNotConnected{Backend: serverID, Cause: errors.New("no pool entry")}
+		return nil, &ErrNotConnected{Backend: target.String(), Cause: errors.New("no pool entry")}
 	}
 
 	if !e.breaker.Allow() {
@@ -373,10 +407,10 @@ func (p *Pool) CallTool(
 // ListTools fetches a backend's live catalog. Used by the prober for drift
 // detection — never to answer a client's tools/list, which is served from the
 // snapshot.
-func (p *Pool) ListTools(ctx context.Context, serverID string, principal Principal) ([]*mcp.Tool, error) {
-	e, ok := p.entryFor(serverID)
+func (p *Pool) ListTools(ctx context.Context, target Target, principal Principal) ([]*mcp.Tool, error) {
+	e, ok := p.entryFor(target)
 	if !ok {
-		return nil, &ErrNotConnected{Backend: serverID, Cause: errors.New("no pool entry")}
+		return nil, &ErrNotConnected{Backend: target.String(), Cause: errors.New("no pool entry")}
 	}
 	session, err := p.session(ctx, e, principal)
 	if err != nil {
@@ -457,7 +491,7 @@ func (p *Pool) session(ctx context.Context, e *entry, principal Principal) (*mcp
 	})
 
 	transport := &mcp.StreamableClientTransport{
-		Endpoint:   server.Endpoint,
+		Endpoint:   e.endpoint,
 		HTTPClient: p.credentialedClient(cred),
 		// The gateway makes request/response calls and does not want
 		// server-initiated messages: in stateless mode there is no client to

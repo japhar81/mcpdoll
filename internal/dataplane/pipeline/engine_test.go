@@ -66,7 +66,7 @@ func (m hostMap) Host(manifest *snapshotpb.PluginManifest) (pipeline.Host, error
 // harness builds an engine over a snapshot with the given plugins.
 type harness struct {
 	engine   *pipeline.Engine
-	audience *snapshot.AudienceView
+	audience *snapshot.PrincipalView
 	hosts    hostMap
 	traces   []*pipeline.Trace
 }
@@ -74,7 +74,7 @@ type harness struct {
 func newHarness(t *testing.T, opts pipeline.Options, manifests ...*snapshotpb.PluginManifest) *harness {
 	t.Helper()
 
-	b := snapshot.NewBuilder("org_test", 1).
+	b := snapshot.NewBuilder(1).
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{

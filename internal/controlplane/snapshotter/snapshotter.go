@@ -32,6 +32,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	mcpadapter "github.com/mcpdoll/mcpdoll/internal/mcp"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	"github.com/mcpdoll/mcpdoll/internal/platform/canonical"
 	"github.com/mcpdoll/mcpdoll/internal/platform/ids"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
@@ -53,8 +54,12 @@ type Result struct {
 
 // BackendReport is what one discovery pass found.
 type BackendReport struct {
-	ServerID          string
-	ServerName        string
+	ServerID   string
+	ServerName string
+	// TenantSlug is which tenant's binding this pass discovered. The same
+	// backend appears once per tenant, because each tenant's deployment is
+	// discovered and admitted separately (ADR 0017).
+	TenantSlug        string
 	Endpoint          string
 	NegotiatedVersion string
 	ToolCount         int
@@ -77,6 +82,17 @@ type Options struct {
 	// sequentially at a few hundred milliseconds each makes a build feel broken;
 	// discovered all at once it can overwhelm a shared dependency.
 	Concurrency int
+
+	// Tenants the snapshot serves. A binding naming a tenant absent from this
+	// list is a build failure: the tools would be admitted for a tenant no
+	// principal could belong to.
+	Tenants []*snapshotpb.Tenant
+
+	// Catalog and Principals are the compiled RBAC the snapshot carries, read
+	// from the control plane's database. Empty is legal — a deployment with no
+	// users yet serves nobody, which is correct rather than broken.
+	Catalog    authz.Catalog
+	Principals []*snapshotpb.Principal
 
 	// AllowUnreachable builds a snapshot even when a backend cannot be reached,
 	// omitting its tools.
@@ -111,7 +127,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	b := snapshot.NewBuilder(spec.Org, spec.Version).
+	b := snapshot.NewBuilder(spec.Version).
 		WithID(ids.New(ids.KindSnapshot)).
 		WithCatalogDefaults(spec.Catalog.TTL, spec.Catalog.DegradedTTL)
 
@@ -122,6 +138,15 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("snapshotter: digesting the registry document: %w", err)
 	}
 	b.WithRegistryDigest(registryDigest.String())
+
+	tenantsBySlug := map[string]*snapshotpb.Tenant{}
+	for _, tenant := range opts.Tenants {
+		if _, dup := tenantsBySlug[tenant.Slug]; dup {
+			return nil, fmt.Errorf("snapshotter: tenant slug %q appears twice", tenant.Slug)
+		}
+		tenantsBySlug[tenant.Slug] = tenant
+		b.AddTenant(tenant)
+	}
 
 	namespacesByID := map[string]registry.NamespaceSpec{}
 	for _, ns := range spec.Namespaces {
@@ -136,9 +161,19 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		})
 	}
 
-	// Collisions are detected across the whole build, not per server: two
-	// different backends in the same namespace can both publish `lookup`.
-	claimed := map[string]string{}
+	// Which toolset contributes each tool. Resolved before admission because a
+	// tool in no toolset cannot be granted by anything, and one claimed by two
+	// toolsets would have two possible authorization scopes.
+	toolsetFor, err := resolveToolsets(spec, namespacesByID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collisions are detected per tenant, not across the build: two tenants
+	// publishing `crm.lookup_customer` is the normal case and the whole point
+	// of per-tenant admission. Two *namespaces* colliding within one tenant is
+	// still a failure.
+	claimed := map[bindingKey]map[string]string{}
 
 	for _, srv := range spec.Servers {
 		ns := namespacesByID[srv.Namespace]
@@ -146,11 +181,26 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("snapshotter: server %q: %w", srv.ID, err)
 		}
+
+		bindings := make([]*snapshotpb.Binding, 0, len(srv.Bindings))
+		for _, binding := range srv.Bindings {
+			tenant, ok := tenantsBySlug[binding.Tenant]
+			if !ok {
+				return nil, fmt.Errorf(
+					"snapshotter: server %q has a binding for tenant %q, which this "+
+						"build does not carry; its tools would be admitted for a tenant "+
+						"no principal could belong to", srv.ID, binding.Tenant)
+			}
+			bindings = append(bindings, &snapshotpb.Binding{
+				TenantId: tenant.Id, Primary: binding.Primary, Replicas: binding.Replicas,
+			})
+		}
+
 		b.AddServer(&snapshotpb.Server{
 			Id:                    srv.ID,
 			Name:                  srv.Name,
 			NamespaceId:           srv.Namespace,
-			Endpoint:              srv.Endpoint,
+			Bindings:              bindings,
 			PinnedProtocolVersion: srv.PinnedProtocolVersion,
 			ServingMode:           mode,
 			Criticality:           srv.Criticality,
@@ -163,116 +213,126 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			Health:                healthPolicy(srv.Health),
 		})
 
-		report := reports[srv.ID]
-		if report == nil {
-			// Unreachable and allowed: recorded as a warning, and the server is
-			// still registered so its identity and configuration survive.
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("server %q (%s) was unreachable; its tools are absent from this snapshot",
-					srv.Name, srv.Endpoint))
-			continue
-		}
-
 		defaultEffect, err := registry.ParseEffectClass(srv.DefaultEffectClass)
 		if err != nil {
 			return nil, fmt.Errorf("snapshotter: server %q: %w", srv.ID, err)
 		}
 
-		// Sort by name so the build is deterministic regardless of the order a
-		// backend happened to list its tools in. Catalog order is a contract
-		// (ADR 0010), and it should not depend on a backend's map iteration.
-		tools := make([]*mcpToolWithDef, 0, len(report.tools))
-		tools = append(tools, report.tools...)
-		sort.Slice(tools, func(i, j int) bool { return tools[i].def.Name < tools[j].def.Name })
+		for _, binding := range srv.Bindings {
+			tenant := tenantsBySlug[binding.Tenant]
+			key := bindingKey{serverID: srv.ID, tenant: binding.Tenant}
 
-		summary := BackendReport{
-			ServerID:          srv.ID,
-			ServerName:        srv.Name,
-			Endpoint:          srv.Endpoint,
-			NegotiatedVersion: report.negotiated,
-			ToolCount:         len(tools),
-			ObservedAt:        report.observedAt,
-		}
-
-		for _, tool := range tools {
-			override, hasOverride := srv.Tools[tool.def.Name]
-			if hasOverride && override.Exclude {
-				summary.Excluded = append(summary.Excluded, tool.def.Name)
+			report := reports[key]
+			if report == nil {
+				// Unreachable and allowed. Only *this tenant* loses the tools:
+				// refusing the whole build would take an unrelated tenant's
+				// working configuration hostage to a third party's outage.
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"server %q was unreachable for tenant %q (%s); its tools are absent "+
+						"from that tenant's catalog",
+					srv.Name, binding.Tenant, binding.Primary))
 				continue
 			}
 
-			effect := defaultEffect
-			if hasOverride && override.EffectClass != "" {
-				effect, err = registry.ParseEffectClass(override.EffectClass)
-				if err != nil {
-					return nil, fmt.Errorf("snapshotter: server %q tool %q: %w",
-						srv.ID, tool.def.Name, err)
+			// Sorted by name so the build is deterministic regardless of the
+			// order a backend listed its tools in. Catalog order is a contract
+			// (ADR 0010) and must not depend on a backend's map iteration.
+			tools := append([]*mcpToolWithDef(nil), report.tools...)
+			sort.Slice(tools, func(i, j int) bool { return tools[i].def.Name < tools[j].def.Name })
+
+			summary := BackendReport{
+				ServerID:          srv.ID,
+				ServerName:        srv.Name,
+				TenantSlug:        binding.Tenant,
+				Endpoint:          binding.Primary,
+				NegotiatedVersion: report.negotiated,
+				ToolCount:         len(tools),
+				ObservedAt:        report.observedAt,
+			}
+
+			if claimed[key] == nil {
+				claimed[key] = map[string]string{}
+			}
+
+			for _, tool := range tools {
+				override, hasOverride := srv.Tools[tool.def.Name]
+				if hasOverride && override.Exclude {
+					summary.Excluded = append(summary.Excluded, tool.def.Name)
+					continue
 				}
+
+				effect := defaultEffect
+				if hasOverride && override.EffectClass != "" {
+					effect, err = registry.ParseEffectClass(override.EffectClass)
+					if err != nil {
+						return nil, fmt.Errorf("snapshotter: server %q tool %q: %w",
+							srv.ID, tool.def.Name, err)
+					}
+				}
+
+				qualified := ns.Prefix + "." + tool.def.Name
+				if len(qualified) > registry.MaxQualifiedNameLength {
+					return nil, fmt.Errorf(
+						"snapshotter: qualified name %q is %d characters, over the %d-character "+
+							"budget; shorten the namespace prefix or exclude the tool",
+						qualified, len(qualified), registry.MaxQualifiedNameLength)
+				}
+				if prior, dup := claimed[key][qualified]; dup {
+					return nil, fmt.Errorf(
+						"snapshotter: %q is published for tenant %q by both %q and %q; "+
+							"resolve the collision by excluding one or moving it to another "+
+							"namespace (MCPDoll never auto-renames a tool, because clients "+
+							"depend on the name)",
+						qualified, binding.Tenant, prior, srv.Name)
+				}
+
+				toolsetID, inToolset := toolsetFor.For(qualified, srv.Namespace)
+				if !inToolset {
+					// A tool no toolset contributes cannot be granted to
+					// anyone, so admitting it would put an unreachable entry in
+					// a signed artifact. Reported rather than silently dropped.
+					summary.Excluded = append(summary.Excluded, tool.def.Name)
+					result.Warnings = append(result.Warnings, fmt.Sprintf(
+						"tool %q is in no toolset, so nothing can grant it; it is not admitted",
+						qualified))
+					continue
+				}
+				claimed[key][qualified] = srv.Name
+
+				b.AddTool(snapshot.ToolInput{
+					ServerID:     srv.ID,
+					NamespaceID:  srv.Namespace,
+					TenantID:     tenant.Id,
+					ToolsetID:    toolsetID,
+					Prefix:       ns.Prefix,
+					Name:         tool.def.Name,
+					Title:        tool.def.Title,
+					Description:  tool.def.Description,
+					InputSchema:  rawSchema(tool.def.InputSchema),
+					OutputSchema: rawSchema(tool.def.OutputSchema),
+					Annotations:  tool.def.Annotations,
+					EffectClass:  effect,
+				})
+				summary.Admitted = append(summary.Admitted, qualified)
 			}
 
-			qualified := ns.Prefix + "." + tool.def.Name
-			if len(qualified) > registry.MaxQualifiedNameLength {
-				return nil, fmt.Errorf(
-					"snapshotter: qualified name %q is %d characters, over the %d-character budget; "+
-						"shorten the namespace prefix or exclude the tool",
-					qualified, len(qualified), registry.MaxQualifiedNameLength)
+			if report.negotiated != "" && report.negotiated < "2026-07-28" {
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"server %q negotiated %s for tenant %q; capabilities added in "+
+						"2026-07-28 are unavailable for it",
+					srv.Name, report.negotiated, binding.Tenant))
 			}
-			if prior, dup := claimed[qualified]; dup {
-				return nil, fmt.Errorf(
-					"snapshotter: %q is published by both %q and %q; "+
-						"resolve the collision by excluding one or moving it to another namespace "+
-						"(MCPDoll never auto-renames a tool, because clients depend on the name)",
-					qualified, prior, srv.Name)
-			}
-			claimed[qualified] = srv.Name
-
-			b.AddTool(snapshot.ToolInput{
-				ServerID:     srv.ID,
-				NamespaceID:  srv.Namespace,
-				Prefix:       ns.Prefix,
-				Name:         tool.def.Name,
-				Title:        tool.def.Title,
-				Description:  tool.def.Description,
-				InputSchema:  rawSchema(tool.def.InputSchema),
-				OutputSchema: rawSchema(tool.def.OutputSchema),
-				Annotations:  tool.def.Annotations,
-				EffectClass:  effect,
-			})
-			summary.Admitted = append(summary.Admitted, qualified)
+			result.Discovered = append(result.Discovered, summary)
 		}
-
-		if report.negotiated != "" && report.negotiated < "2026-07-28" {
-			result.Warnings = append(result.Warnings, fmt.Sprintf(
-				"server %q negotiated %s; capabilities added in 2026-07-28 are unavailable for it",
-				srv.Name, report.negotiated))
-		}
-		result.Discovered = append(result.Discovered, summary)
 	}
 
-	for _, bundle := range spec.Bundles {
-		entries := make([]*snapshotpb.BundleEntry, 0, len(bundle.Entries))
-		for _, entry := range bundle.Entries {
-			ns := namespacesByID[entry.Namespace]
-			pbEntry := &snapshotpb.BundleEntry{NamespaceId: entry.Namespace}
-			// The document names tools unqualified; the snapshot uses qualified
-			// names. Qualifying here means the document stays readable and the
-			// snapshot stays unambiguous.
-			for _, name := range entry.Tools {
-				pbEntry.QualifiedNames = append(pbEntry.QualifiedNames, ns.Prefix+"."+name)
-			}
-			for _, name := range entry.Exclude {
-				pbEntry.ExcludeQualifiedNames = append(pbEntry.ExcludeQualifiedNames, ns.Prefix+"."+name)
-			}
-			entries = append(entries, pbEntry)
-		}
-		b.AddBundle(&snapshotpb.Bundle{
-			Id:          bundle.ID,
-			Name:        bundle.Name,
-			ProjectId:   bundle.Project,
-			Priority:    bundle.Priority,
-			Entries:     entries,
-			TokenBudget: bundle.TokenBudget,
-			TtlMs:       int32(bundle.TTL.Milliseconds()),
+	for _, ts := range spec.Toolsets {
+		b.AddToolset(&snapshotpb.Toolset{
+			Id:          ts.ID,
+			Name:        ts.Name,
+			Priority:    ts.Priority,
+			TokenBudget: ts.TokenBudget,
+			TtlMs:       int32(ts.TTL.Milliseconds()),
 		})
 	}
 
@@ -316,18 +376,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		b.AddPlugin(manifest)
 	}
 
-	for _, aud := range spec.Audiences {
-		b.AddAudience(&snapshotpb.Audience{
-			Id:               aud.ID,
-			Slug:             aud.Slug,
-			Name:             aud.Name,
-			ProjectId:        aud.Project,
-			BundleIds:        aud.Bundles,
-			PolicyIds:        aud.Policies,
-			AllowedIdpGroups: aud.AllowedIdpGroups,
-			RateLimits:       rateLimits(aud.RateLimits),
-		})
-	}
+	b.SetRBAC(opts.Catalog, opts.Principals)
 
 	snap, err := b.Build()
 	if err != nil {
@@ -350,6 +399,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 type discoveryReport struct {
 	negotiated string
 	observedAt time.Time
+	endpoint   string
 	tools      []*mcpToolWithDef
 }
 
@@ -360,70 +410,97 @@ type mcpToolWithDef struct {
 }
 
 // discoverAll probes every backend concurrently.
+// bindingKey identifies one (server, tenant) pair — the unit of discovery and
+// of admission.
+type bindingKey struct {
+	serverID string
+	tenant   string
+}
+
 func discoverAll(
 	ctx context.Context,
 	spec *registry.Spec,
 	opts Options,
-) (map[string]*discoveryReport, error) {
+) (map[bindingKey]*discoveryReport, error) {
 	type outcome struct {
-		serverID string
+		key      bindingKey
+		endpoint string
 		report   *discoveryReport
 		err      error
 	}
 
+	type job struct {
+		srv     registry.ServerSpec
+		binding registry.BindingSpec
+	}
+	var jobs []job
+	for _, srv := range spec.Servers {
+		for _, binding := range srv.Bindings {
+			jobs = append(jobs, job{srv: srv, binding: binding})
+		}
+	}
+
 	sem := make(chan struct{}, opts.Concurrency)
-	results := make(chan outcome, len(spec.Servers))
+	results := make(chan outcome, len(jobs))
 	var wg sync.WaitGroup
 
-	for _, srv := range spec.Servers {
+	for _, j := range jobs {
 		wg.Add(1)
-		go func(srv registry.ServerSpec) {
+		go func(j job) {
 			defer wg.Done()
+			key := bindingKey{serverID: j.srv.ID, tenant: j.binding.Tenant}
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				results <- outcome{serverID: srv.ID, err: ctx.Err()}
+				results <- outcome{key: key, endpoint: j.binding.Primary, err: ctx.Err()}
 				return
 			}
 
+			// The primary is the definition source. Replicas are compared
+			// against it by the prober at runtime, not admitted from here —
+			// a replica mid-deploy would otherwise decide the catalog.
 			discovered, err := mcpadapter.Discover(ctx, mcpadapter.DiscoverOptions{
-				Endpoint: srv.Endpoint,
+				Endpoint: j.binding.Primary,
 				Timeout:  opts.DiscoverTimeout,
 			})
 			if err != nil {
-				results <- outcome{serverID: srv.ID, err: err}
+				results <- outcome{key: key, endpoint: j.binding.Primary, err: err}
 				return
 			}
 
 			report := &discoveryReport{
 				negotiated: discovered.NegotiatedVersion,
 				observedAt: discovered.ObservedAt,
+				endpoint:   j.binding.Primary,
 			}
 			for _, tool := range discovered.Tools {
 				def, err := mcpadapter.ToCanonical(tool)
 				if err != nil {
-					results <- outcome{serverID: srv.ID,
+					results <- outcome{key: key, endpoint: j.binding.Primary,
 						err: fmt.Errorf("tool %q: %w", tool.Name, err)}
 					return
 				}
 				report.tools = append(report.tools, &mcpToolWithDef{def: def})
 			}
-			results <- outcome{serverID: srv.ID, report: report}
-		}(srv)
+			results <- outcome{key: key, endpoint: j.binding.Primary, report: report}
+		}(j)
 	}
 
 	wg.Wait()
 	close(results)
 
-	reports := map[string]*discoveryReport{}
+	reports := map[bindingKey]*discoveryReport{}
 	var failures []string
 	for out := range results {
 		if out.err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", out.serverID, out.err))
+			// Named by tenant as well as server: with per-tenant bindings,
+			// "crm-prod is unreachable" is ambiguous across twenty tenants.
+			failures = append(failures, fmt.Sprintf("%s for tenant %s (%s): %v",
+				out.key.serverID, out.key.tenant, out.endpoint, out.err))
 			continue
 		}
-		reports[out.serverID] = out.report
+		reports[out.key] = out.report
 	}
 
 	if len(failures) > 0 && !opts.AllowUnreachable {
@@ -494,17 +571,6 @@ func healthPolicy(spec *registry.HealthSpec) *snapshotpb.HealthPolicy {
 	}
 }
 
-func rateLimits(spec *registry.RateLimitSpec) *snapshotpb.RateLimits {
-	if spec == nil {
-		return nil
-	}
-	return &snapshotpb.RateLimits{
-		RequestsPerMinute:  spec.RequestsPerMinute,
-		ConcurrentRequests: spec.ConcurrentRequests,
-		TokensPerMinute:    spec.TokensPerMinute,
-	}
-}
-
 func pluginManifest(spec registry.PluginSpec) (*snapshotpb.PluginManifest, error) {
 	runtime, err := registry.ParseRuntime(spec.Runtime)
 	if err != nil {
@@ -565,6 +631,86 @@ func pluginManifest(spec registry.PluginSpec) (*snapshotpb.PluginManifest, error
 		FuelLimit:         spec.FuelLimit,
 		Endpoint:          spec.Endpoint,
 		ConfigJson:        configJSON,
-		AudienceIds:       spec.Audiences,
+		ToolsetIds:        spec.Toolsets,
 	}, nil
+}
+
+// toolsetIndex answers "which toolset contributes this tool?".
+//
+// A toolset draws from whole namespaces, from individually named tools, or
+// both, minus its exclusions. Resolving membership up front rather than during
+// admission answers two questions that must have exactly one answer each:
+//
+//   - A tool in no toolset cannot be granted by anything, so admitting it would
+//     put an entry in a signed artifact that no principal could ever reach.
+//   - A tool claimed by two toolsets would have two possible authorization
+//     scopes, and a grant on one would silently not cover the other.
+//
+// The second is a build failure rather than a precedence rule. A precedence
+// rule would mean an operator adding a tool to a second toolset silently
+// changes which grants reach it.
+type toolsetIndex struct {
+	// byTool is an individually named tool -> toolset id.
+	byTool map[string]string
+	// byNamespace is a whole-namespace claim: namespace id -> toolset id.
+	byNamespace map[string]string
+	// excluded are qualified names a toolset explicitly dropped.
+	excluded map[string]bool
+}
+
+// For returns the toolset contributing a tool, or "" if none does.
+//
+// An individually named tool wins over its namespace's claim, which is what
+// lets a curated toolset take one tool out of a namespace another toolset owns.
+func (i toolsetIndex) For(qualifiedName, namespaceID string) (string, bool) {
+	if i.excluded[qualifiedName] {
+		return "", false
+	}
+	if id, ok := i.byTool[qualifiedName]; ok {
+		return id, true
+	}
+	id, ok := i.byNamespace[namespaceID]
+	return id, ok
+}
+
+func resolveToolsets(
+	spec *registry.Spec,
+	namespaces map[string]registry.NamespaceSpec,
+) (toolsetIndex, error) {
+	index := toolsetIndex{
+		byTool:      map[string]string{},
+		byNamespace: map[string]string{},
+		excluded:    map[string]bool{},
+	}
+
+	for _, ts := range spec.Toolsets {
+		for _, nsID := range ts.Namespaces {
+			if _, ok := namespaces[nsID]; !ok {
+				return index, fmt.Errorf(
+					"snapshotter: toolset %q references unknown namespace %q", ts.ID, nsID)
+			}
+			if prior, dup := index.byNamespace[nsID]; dup {
+				return index, fmt.Errorf(
+					"snapshotter: namespace %q is claimed by toolsets %q and %q; its tools "+
+						"would have two authorization scopes, and a grant on one would "+
+						"silently not cover the other",
+					nsID, prior, ts.ID)
+			}
+			index.byNamespace[nsID] = ts.ID
+		}
+
+		for _, qualified := range ts.Tools {
+			if prior, dup := index.byTool[qualified]; dup {
+				return index, fmt.Errorf(
+					"snapshotter: tool %q is named by toolsets %q and %q",
+					qualified, prior, ts.ID)
+			}
+			index.byTool[qualified] = ts.ID
+		}
+
+		for _, qualified := range ts.Exclude {
+			index.excluded[qualified] = true
+		}
+	}
+	return index, nil
 }

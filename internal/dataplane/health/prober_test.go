@@ -89,7 +89,7 @@ func newStoreWithSnapshot(t *testing.T, servingMode snapshotpb.ServingMode) *sna
 	verifier, err := snapshot.NewVerifierFromKeys(map[string]ed25519.PublicKey{"k": pub})
 	require.NoError(t, err)
 
-	b := snapshot.NewBuilder("org_test", 1).
+	b := snapshot.NewBuilder(1).
 		WithID("snap_1").
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_whs", Name: "warehouse", Prefix: "whs"})

@@ -214,8 +214,7 @@ func newRegistryValidateCmd(env *Env) *cobra.Command {
 				Version:    spec.Version,
 				Namespaces: len(spec.Namespaces),
 				Servers:    len(spec.Servers),
-				Bundles:    len(spec.Bundles),
-				Audiences:  len(spec.Audiences),
+				Toolsets:   len(spec.Toolsets),
 				Policies:   len(spec.Policies),
 				Plugins:    len(spec.Plugins),
 			})
@@ -231,8 +230,7 @@ type registryReport struct {
 	Version    int64  `json:"version" yaml:"version"`
 	Namespaces int    `json:"namespaces" yaml:"namespaces"`
 	Servers    int    `json:"servers" yaml:"servers"`
-	Bundles    int    `json:"bundles" yaml:"bundles"`
-	Audiences  int    `json:"audiences" yaml:"audiences"`
+	Toolsets   int    `json:"toolsets" yaml:"toolsets"`
 	Policies   int    `json:"policies" yaml:"policies"`
 	Plugins    int    `json:"plugins" yaml:"plugins"`
 }
@@ -242,8 +240,8 @@ func (r registryReport) Table() Table {
 		Columns: []string{"FILE", "ORG", "VERSION", "NS", "SERVERS", "BUNDLES", "AUDIENCES", "POLICIES", "PLUGINS"},
 		Rows: [][]string{{
 			r.File, r.Org, fmt.Sprint(r.Version),
-			fmt.Sprint(r.Namespaces), fmt.Sprint(r.Servers), fmt.Sprint(r.Bundles),
-			fmt.Sprint(r.Audiences), fmt.Sprint(r.Policies), fmt.Sprint(r.Plugins),
+			fmt.Sprint(r.Namespaces), fmt.Sprint(r.Servers), fmt.Sprint(r.Toolsets),
+			fmt.Sprint(r.Policies), fmt.Sprint(r.Plugins),
 		}},
 		Notes: []string{"document is valid"},
 	}

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 )
 
 // State is a backend's serving fitness.
@@ -45,10 +47,15 @@ const (
 
 // Backend is one backend's observed condition.
 type Backend struct {
-	ServerID   string `json:"server_id"`
-	ServerName string `json:"server_name"`
-	Endpoint   string `json:"endpoint"`
-	State      State  `json:"state"`
+	// Target is (server, tenant): the unit of admission and of routing. The
+	// same server appears once per tenant, because each tenant's deployment is
+	// separate (ADR 0017).
+	Target     backends.Target `json:"-"`
+	ServerID   string          `json:"server_id"`
+	ServerName string          `json:"server_name"`
+	TenantSlug string          `json:"tenant_slug"`
+	Endpoint   string          `json:"endpoint"`
+	State      State           `json:"state"`
 
 	// ServingMode is carried alongside the drift because the same drift means
 	// different things under each: strict refuses, advisory serves and records.
@@ -71,6 +78,23 @@ type Backend struct {
 	ToolsAdmitted int         `json:"tools_admitted"`
 	ToolsObserved int         `json:"tools_observed"`
 	Drift         []ToolDrift `json:"drift,omitempty"`
+
+	// Replicas are this binding's non-primary hosts.
+	Replicas []Replica `json:"replicas,omitempty"`
+}
+
+// Replica is one non-primary host in a tenant's pool.
+type Replica struct {
+	Endpoint          string `json:"endpoint"`
+	NegotiatedVersion string `json:"negotiated_version,omitempty"`
+	// Routable is false when this host diverged from the primary or could not
+	// be reached. It stops receiving traffic; the catalog does not change.
+	Routable bool   `json:"routable"`
+	Error    string `json:"error,omitempty"`
+	// Diverged lists what differs from the primary. Only blocking divergence
+	// appears here — a description that differs is unobservable to a client,
+	// because the gateway serves the admitted one either way.
+	Diverged []ToolDrift `json:"diverged,omitempty"`
 }
 
 // BlockedTools returns the qualified names this backend must not serve.
@@ -99,7 +123,7 @@ func (b Backend) BlockedTools() []string {
 // than anything cleverer.
 type Registry struct {
 	mu       sync.RWMutex
-	backends map[string]Backend
+	backends map[backends.Target]Backend
 	// blocked is derived from backends on every write, so the dispatch path
 	// does a single map lookup instead of walking drift lists per call.
 	blocked map[string]blockReason
@@ -115,7 +139,7 @@ type blockReason struct {
 // probed.
 func NewRegistry() *Registry {
 	return &Registry{
-		backends: map[string]Backend{},
+		backends: map[backends.Target]Backend{},
 		blocked:  map[string]blockReason{},
 	}
 }
@@ -125,7 +149,7 @@ func (r *Registry) Set(b Backend) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.backends[b.ServerID] = b
+	r.backends[b.Target] = b
 	r.rebuildBlockedLocked()
 }
 
@@ -134,13 +158,13 @@ func (r *Registry) Set(b Backend) {
 // Without this, a backend removed from the registry would keep its last
 // condition forever, and a stale block would refuse calls to a tool that a
 // later publish legitimately reinstated.
-func (r *Registry) Forget(keep map[string]bool) {
+func (r *Registry) Forget(keep map[backends.Target]bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for id := range r.backends {
-		if !keep[id] {
-			delete(r.backends, id)
+	for target := range r.backends {
+		if !keep[target] {
+			delete(r.backends, target)
 		}
 	}
 	r.rebuildBlockedLocked()
@@ -188,10 +212,10 @@ func (r *Registry) Blocked(qualifiedName string) (reason string, blocked bool) {
 }
 
 // Backend returns one backend's condition.
-func (r *Registry) Backend(serverID string) (Backend, bool) {
+func (r *Registry) Backend(target backends.Target) (Backend, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	b, ok := r.backends[serverID]
+	b, ok := r.backends[target]
 	return b, ok
 }
 
@@ -204,7 +228,14 @@ func (r *Registry) All() []Backend {
 	for _, b := range r.backends {
 		out = append(out, b)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ServerName < out[j].ServerName })
+	// By tenant then server: an operator looking at a drift report is asking
+	// about a tenant, and grouping by server would interleave them.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TenantSlug != out[j].TenantSlug {
+			return out[i].TenantSlug < out[j].TenantSlug
+		}
+		return out[i].ServerName < out[j].ServerName
+	})
 	return out
 }
 

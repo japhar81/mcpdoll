@@ -185,7 +185,7 @@ func (h *harness) Publish(opts harnessOptions) {
 	h.t.Helper()
 	h.version++
 
-	b := snapshot.NewBuilder("org_test", h.version).
+	b := snapshot.NewBuilder(h.version).
 		WithID("snap_test").
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 

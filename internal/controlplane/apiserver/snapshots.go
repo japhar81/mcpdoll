@@ -228,7 +228,7 @@ func (s *Server) handleVerifySnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, s.log, http.StatusOK, api.VerifyReport{
 		Source: "uploaded", Valid: true, Version: snap.Version,
-		KeyID: signed.KeyId, Audiences: view.AudienceSlugs(), Tools: len(snap.Tools),
+		KeyID: signed.KeyId, Tenants: view.TenantSlugs(), Tools: len(snap.Tools),
 	})
 }
 
@@ -294,15 +294,13 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 	report := api.BuildReport{
 		Version:        result.Snapshot.Version,
 		SnapshotID:     result.Snapshot.Id,
-		Org:            result.Snapshot.OrgId,
 		RegistryDigest: result.Snapshot.RegistryDigest,
 		KeyID:          signer.KeyID(),
 		PublicKey:      snapshot.TrustedKeyEntry(signer.KeyID(), signer.PublicKey()),
 		Namespaces:     len(result.Snapshot.Namespaces),
 		Servers:        len(result.Snapshot.Servers),
 		Tools:          len(result.Snapshot.Tools),
-		Bundles:        len(result.Snapshot.Bundles),
-		Audiences:      len(result.Snapshot.Audiences),
+		Toolsets:       len(result.Snapshot.Toolsets),
 		Plugins:        len(result.Snapshot.Plugins),
 		Backends:       backendReports(result.Discovered),
 		Warnings:       result.Warnings,

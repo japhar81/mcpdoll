@@ -160,7 +160,7 @@ func (h *harness) publish(manifests ...*snapshotpb.PluginManifest) {
 	h.t.Helper()
 	h.version++
 
-	b := snapshot.NewBuilder("org_test", h.version).
+	b := snapshot.NewBuilder(h.version).
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{
@@ -470,7 +470,7 @@ func TestHostRegistryReportsLoadFailures(t *testing.T) {
 
 func buildView(t *testing.T, manifests ...*snapshotpb.PluginManifest) *snapshot.View {
 	t.Helper()
-	b := snapshot.NewBuilder("org_test", 1).WithCatalogDefaults(time.Minute, time.Second)
+	b := snapshot.NewBuilder(1).WithCatalogDefaults(time.Minute, time.Second)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_a", Name: "a", Prefix: "a"})
 	b.AddServer(&snapshotpb.Server{Id: "srv_a", NamespaceId: "ns_a", Endpoint: "http://localhost:1"})
 	b.AddTool(snapshot.ToolInput{

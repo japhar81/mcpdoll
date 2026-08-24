@@ -28,7 +28,6 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/mcpdoll/mcpdoll/internal/api"
-	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
 )
 
 // ErrUnavailable marks a data plane that could not be reached or that is not
@@ -56,8 +55,9 @@ var ErrNoAdminURL = errors.New(
 // spent restarting a healthy service.
 var ErrForbidden = errors.New("forbidden")
 
-// ErrAudienceNotFound marks an audience the data plane does not serve.
-var ErrAudienceNotFound = errors.New("audience not found")
+// ErrUnknownPrincipal marks a credential the serving snapshot does not carry —
+// typically a user created since the last publish.
+var ErrUnknownPrincipal = errors.New("principal not in the serving snapshot")
 
 // DefaultTimeout bounds a single inspection.
 //
@@ -113,9 +113,10 @@ func (c *Client) Status(ctx context.Context) (api.GatewayStatus, error) {
 	defer resp.Body.Close()
 
 	var payload struct {
-		Status    string `json:"status"`
-		Version   int64  `json:"snapshot_version"`
-		Audiences int    `json:"audiences"`
+		Status  string `json:"status"`
+		Version int64  `json:"snapshot_version"`
+		Tenants int    `json:"tenants"`
+		Tools   int    `json:"tools"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return out, fmt.Errorf("%w: %s returned an unreadable body: %v", ErrUnavailable, url, err)
@@ -130,14 +131,21 @@ func (c *Client) Status(ctx context.Context) (api.GatewayStatus, error) {
 	}
 	out.Ready = true
 	out.SnapshotVersion = payload.Version
-	out.Audiences = payload.Audiences
+	out.Tenants = payload.Tenants
+	out.Tools = payload.Tools
 	return out, nil
 }
 
-// CatalogRequest asks for one identity's view of one audience.
+// CatalogRequest asks what one credential can see.
+//
+// A credential, not an audience and a subject. With one endpoint and
+// per-principal catalogs (ADR 0019), the only way to see what a principal sees
+// is to present what they present — anything else would be re-deriving policy,
+// which is exactly the mistake this tool exists to avoid.
 type CatalogRequest struct {
-	Audience string
-	Identity Identity
+	// Credential is the API key to inspect as.
+	Credential string
+	Identity   Identity
 	// FullDescriptions keeps whole descriptions rather than first lines. Off by
 	// default because a poisoned description is often long, and a console list
 	// that renders it in full is doing the attacker's layout work.
@@ -147,13 +155,11 @@ type CatalogRequest struct {
 // Catalog lists the tools an identity actually receives.
 func (c *Client) Catalog(ctx context.Context, req CatalogRequest) (api.Catalog, error) {
 	out := api.Catalog{
-		Audience: req.Audience,
-		Subject:  req.Identity.Subject,
-		Groups:   req.Identity.Groups,
-		Tools:    []api.CatalogTool{},
+		Subject: req.Identity.Subject,
+		Tools:   []api.CatalogTool{},
 	}
 
-	session, observed, err := c.connect(ctx, req.Audience, req.Identity)
+	session, observed, err := c.connect(ctx, req.Credential)
 	if err != nil {
 		return out, err
 	}
@@ -161,7 +167,7 @@ func (c *Client) Catalog(ctx context.Context, req CatalogRequest) (api.Catalog, 
 
 	res, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return out, classify(observed.status(), c.GatewayURL, req.Audience,
+		return out, classify(observed.status(), c.GatewayURL,
 			fmt.Errorf("listing tools: %w", err))
 	}
 
@@ -187,10 +193,10 @@ func (c *Client) Catalog(ctx context.Context, req CatalogRequest) (api.Catalog, 
 
 // CallRequest exercises one tool as one identity.
 type CallRequest struct {
-	Audience  string
-	Tool      string
-	Arguments map[string]any
-	Identity  Identity
+	Credential string
+	Tool       string
+	Arguments  map[string]any
+	Identity   Identity
 
 	// RequestState and Responses continue a deferred (MRTR) call. Both or
 	// neither: a response map without the state it was issued against cannot be
@@ -201,7 +207,7 @@ type CallRequest struct {
 
 // Call invokes a tool through the gateway and reports what came back.
 func (c *Client) Call(ctx context.Context, req CallRequest) (api.CallResult, error) {
-	out := api.CallResult{Tool: req.Tool, Audience: req.Audience}
+	out := api.CallResult{Tool: req.Tool}
 	if strings.TrimSpace(req.Tool) == "" {
 		return out, fmt.Errorf("%w: a tool name is required", ErrInvalidRequest)
 	}
@@ -211,7 +217,7 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (api.CallResult, err
 				"the gateway cannot bind them to the original call", ErrInvalidRequest)
 	}
 
-	session, observed, err := c.connect(ctx, req.Audience, req.Identity)
+	session, observed, err := c.connect(ctx, req.Credential)
 	if err != nil {
 		return out, err
 	}
@@ -228,7 +234,7 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (api.CallResult, err
 	res, err := session.CallTool(ctx, params)
 	elapsed := time.Since(started)
 	if err != nil {
-		return out, classify(observed.status(), c.GatewayURL, req.Audience,
+		return out, classify(observed.status(), c.GatewayURL,
 			fmt.Errorf("calling %s: %w", req.Tool, err))
 	}
 
@@ -261,23 +267,17 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (api.CallResult, err
 // the status is again the only thing that tells them apart.
 func (c *Client) connect(
 	ctx context.Context,
-	audience string,
-	id Identity,
+	credential string,
 ) (*sdk.ClientSession, *statusRecorder, error) {
-	if strings.TrimSpace(audience) == "" {
-		return nil, nil, fmt.Errorf("%w: an audience is required", ErrInvalidRequest)
+	if strings.TrimSpace(credential) == "" {
+		return nil, nil, fmt.Errorf(
+			"%w: a credential is required; inspection presents what the principal "+
+				"presents rather than re-deriving what they should see",
+			ErrInvalidRequest)
 	}
 
 	header := http.Header{}
-	if id.Subject != "" {
-		header.Set(edge.HeaderSubject, id.Subject)
-	}
-	if len(id.Groups) > 0 {
-		header.Set(edge.HeaderGroups, strings.Join(id.Groups, ","))
-	}
-	if c.Token != "" {
-		header.Set("Authorization", "Bearer "+c.Token)
-	}
+	header.Set("Authorization", "Bearer "+credential)
 
 	name := c.ClientName
 	if name == "" {
@@ -297,40 +297,33 @@ func (c *Client) connect(
 		MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true},
 	})
 
-	endpoint := strings.TrimRight(c.GatewayURL, "/") + "/mcp/" + audience
+	// One endpoint for everyone (ADR 0019). The tenant and the toolset both
+	// come from the credential.
+	endpoint := strings.TrimRight(c.GatewayURL, "/") + "/mcp"
 
-	// The transport records the first non-2xx status it sees. The MCP client
-	// surfaces every handshake failure the same way, so the status code is the
-	// only thing that distinguishes "refused" from "unreachable".
 	httpClient, observed := c.identityClient(header)
-
 	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{
-		// The identity headers are per connection, so the HTTP client is too.
-		// Sharing one client across identities would be a cross-principal leak
-		// waiting for the first concurrent inspection.
 		Endpoint:             endpoint,
 		HTTPClient:           httpClient,
 		DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {
-		return nil, nil, classify(observed.status(), endpoint, audience, err)
+		return nil, nil, classify(observed.status(), endpoint, err)
 	}
 	return session, observed, nil
 }
 
 // classify turns a failed handshake into the error that names what happened.
-func classify(status int, endpoint, audience string, err error) error {
+func classify(status int, endpoint string, err error) error {
 	switch status {
 	case http.StatusUnauthorized:
 		return fmt.Errorf("%w: %s rejected the credential presented to it",
 			ErrForbidden, endpoint)
 	case http.StatusForbidden:
 		return fmt.Errorf(
-			"%w: the gateway refused this principal access to audience %q; "+
-				"it is reachable and healthy", ErrForbidden, audience)
-	case http.StatusNotFound:
-		return fmt.Errorf("%w: the data plane serves no audience %q",
-			ErrAudienceNotFound, audience)
+			"%w: the gateway refused this credential; it is reachable and "+
+				"healthy, and this principal may simply not be in the serving "+
+				"snapshot yet", ErrForbidden)
 	case http.StatusBadRequest:
 		// The gateway understood the request and rejected it — an unknown tool,
 		// arguments that fail the schema. That is the caller's problem, and

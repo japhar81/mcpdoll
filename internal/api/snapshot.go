@@ -29,11 +29,10 @@ func NewSnapshot(
 		Source:           source,
 		Version:          snap.Version,
 		SnapshotID:       snap.Id,
-		Org:              snap.OrgId,
 		RegistryDigest:   snap.RegistryDigest,
 		Servable:         view != nil,
 		UnservableReason: unservableReason,
-		Audiences:        []AudienceSummary{},
+		Tenants:          []TenantSnapshotSummary{},
 	}
 	if signed != nil {
 		out.KeyID = signed.KeyId
@@ -46,15 +45,21 @@ func NewSnapshot(
 	}
 
 	if view != nil {
-		for _, slug := range view.AudienceSlugs() {
-			av := view.Audience(slug)
-			out.Audiences = append(out.Audiences, AudienceSummary{
-				Slug:          slug,
-				Name:          av.Audience.Name,
-				Tools:         len(av.Tools),
-				TTLMs:         av.TTLMs,
-				CacheScope:    av.CacheScope(),
-				TokenEstimate: av.TokenEstimate,
+		// Per tenant, not per audience. A tenant's admitted tools are the pool
+		// each of its principals draws from; what any one of them sees is a
+		// subset decided by their grants, so a snapshot cannot report a single
+		// catalog size (ADR 0016).
+		for _, slug := range view.TenantSlugs() {
+			tenant := view.Tenant(slug)
+			tools := view.ToolsForTenant(tenant.Id)
+
+			tokens := 0
+			for _, t := range tools {
+				tokens += int(t.Def.TokenEstimate)
+			}
+			out.Tenants = append(out.Tenants, TenantSnapshotSummary{
+				Slug: slug, Name: tenant.Name,
+				Tools: len(tools), TokenEstimate: tokens,
 			})
 		}
 	}

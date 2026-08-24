@@ -45,8 +45,7 @@ type Registry struct {
 	Version    int64       `json:"version" yaml:"version"`
 	Namespaces []Namespace `json:"namespaces" yaml:"namespaces"`
 	Servers    []Server    `json:"servers" yaml:"servers"`
-	Bundles    []Bundle    `json:"bundles" yaml:"bundles"`
-	Audiences  []Audience  `json:"audiences" yaml:"audiences"`
+	Toolsets   []Toolset   `json:"toolsets" yaml:"toolsets"`
 	Policies   []Policy    `json:"policies,omitempty" yaml:"policies,omitempty"`
 	Plugins    []Plugin    `json:"plugins,omitempty" yaml:"plugins,omitempty"`
 }
@@ -63,16 +62,16 @@ type Namespace struct {
 
 // Server is one registered backend.
 type Server struct {
-	ID                 string   `json:"id" yaml:"id"`
-	Name               string   `json:"name" yaml:"name"`
-	Namespace          string   `json:"namespace" yaml:"namespace"`
-	Endpoint           string   `json:"endpoint" yaml:"endpoint"`
-	ServingMode        string   `json:"serving_mode" yaml:"serving_mode"`
-	Criticality        string   `json:"criticality,omitempty" yaml:"criticality,omitempty"`
-	DataClassification string   `json:"data_classification,omitempty" yaml:"data_classification,omitempty"`
-	ComplianceScope    []string `json:"compliance_scope,omitempty" yaml:"compliance_scope,omitempty"`
-	DefaultEffectClass string   `json:"default_effect_class" yaml:"default_effect_class"`
-	CanaryTool         string   `json:"canary_tool,omitempty" yaml:"canary_tool,omitempty"`
+	ID                 string    `json:"id" yaml:"id"`
+	Name               string    `json:"name" yaml:"name"`
+	Namespace          string    `json:"namespace" yaml:"namespace"`
+	Bindings           []Binding `json:"bindings" yaml:"bindings"`
+	ServingMode        string    `json:"serving_mode" yaml:"serving_mode"`
+	Criticality        string    `json:"criticality,omitempty" yaml:"criticality,omitempty"`
+	DataClassification string    `json:"data_classification,omitempty" yaml:"data_classification,omitempty"`
+	ComplianceScope    []string  `json:"compliance_scope,omitempty" yaml:"compliance_scope,omitempty"`
+	DefaultEffectClass string    `json:"default_effect_class" yaml:"default_effect_class"`
+	CanaryTool         string    `json:"canary_tool,omitempty" yaml:"canary_tool,omitempty"`
 
 	// ToolOverrides names the tools whose classification the registry states
 	// explicitly. Those are the ones a reviewer should look at: everything else
@@ -85,23 +84,27 @@ type Server struct {
 	ExcludedTools []string `json:"excluded_tools,omitempty" yaml:"excluded_tools,omitempty"`
 }
 
-// Bundle is a named group of namespaces with a serving priority.
-type Bundle struct {
+// Toolset is a named, grantable group of tools.
+//
+// Replaces Bundle: a bundle grouped namespaces for publication, whereas a
+// toolset is the unit an administrator grants — and its name appears inside
+// every grant scope. See ADR 0016.
+type Toolset struct {
 	ID          string   `json:"id" yaml:"id"`
 	Name        string   `json:"name" yaml:"name"`
 	Priority    int32    `json:"priority" yaml:"priority"`
 	TokenBudget int32    `json:"token_budget,omitempty" yaml:"token_budget,omitempty"`
 	Namespaces  []string `json:"namespaces" yaml:"namespaces"`
+	Tools       []string `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Exclude     []string `json:"exclude,omitempty" yaml:"exclude,omitempty"`
 }
 
-// Audience is one published MCP endpoint.
-type Audience struct {
-	ID               string   `json:"id" yaml:"id"`
-	Slug             string   `json:"slug" yaml:"slug"`
-	Name             string   `json:"name,omitempty" yaml:"name,omitempty"`
-	Bundles          []string `json:"bundles" yaml:"bundles"`
-	Policies         []string `json:"policies,omitempty" yaml:"policies,omitempty"`
-	AllowedIdpGroups []string `json:"allowed_idp_groups,omitempty" yaml:"allowed_idp_groups,omitempty"`
+// Binding is one tenant's hosts for a backend.
+type Binding struct {
+	Tenant string `json:"tenant" yaml:"tenant"`
+	// Primary is the definition source; replicas are compared against it.
+	Primary  string   `json:"primary" yaml:"primary"`
+	Replicas []string `json:"replicas,omitempty" yaml:"replicas,omitempty"`
 }
 
 // Policy is a named rule set. Rule bodies are summarised: the console renders
@@ -156,8 +159,7 @@ type RegistrySummary struct {
 	Version    int64  `json:"version" yaml:"version"`
 	Namespaces int    `json:"namespaces" yaml:"namespaces"`
 	Servers    int    `json:"servers" yaml:"servers"`
-	Bundles    int    `json:"bundles" yaml:"bundles"`
-	Audiences  int    `json:"audiences" yaml:"audiences"`
+	Toolsets   int    `json:"toolsets" yaml:"toolsets"`
 	Policies   int    `json:"policies" yaml:"policies"`
 	Plugins    int    `json:"plugins" yaml:"plugins"`
 }
@@ -171,8 +173,7 @@ func NewRegistry(spec *registry.Spec) Registry {
 		// client, and one of them makes `.map` throw.
 		Namespaces: []Namespace{},
 		Servers:    []Server{},
-		Bundles:    []Bundle{},
-		Audiences:  []Audience{},
+		Toolsets:   []Toolset{},
 	}
 
 	for _, ns := range spec.Namespaces {
@@ -186,26 +187,18 @@ func NewRegistry(spec *registry.Spec) Registry {
 		out.Servers = append(out.Servers, newServer(srv))
 	}
 
-	for _, b := range spec.Bundles {
-		bundle := Bundle{
-			ID: b.ID, Name: b.Name, Priority: b.Priority,
-			TokenBudget: b.TokenBudget, Namespaces: []string{},
+	for _, ts := range spec.Toolsets {
+		toolset := Toolset{
+			ID: ts.ID, Name: ts.Name, Priority: ts.Priority,
+			TokenBudget: ts.TokenBudget,
+			Namespaces:  ts.Namespaces,
+			Tools:       ts.Tools,
+			Exclude:     ts.Exclude,
 		}
-		for _, entry := range b.Entries {
-			bundle.Namespaces = append(bundle.Namespaces, entry.Namespace)
+		if toolset.Namespaces == nil {
+			toolset.Namespaces = []string{}
 		}
-		out.Bundles = append(out.Bundles, bundle)
-	}
-
-	for _, a := range spec.Audiences {
-		bundles := a.Bundles
-		if bundles == nil {
-			bundles = []string{}
-		}
-		out.Audiences = append(out.Audiences, Audience{
-			ID: a.ID, Slug: a.Slug, Name: a.Name,
-			Bundles: bundles, Policies: a.Policies, AllowedIdpGroups: a.AllowedIdpGroups,
-		})
+		out.Toolsets = append(out.Toolsets, toolset)
 	}
 
 	for _, p := range spec.Policies {
@@ -226,9 +219,16 @@ func newServer(srv registry.ServerSpec) Server {
 	if mode == "" {
 		mode = registry.ServingModeStrict
 	}
+	bindings := make([]Binding, 0, len(srv.Bindings))
+	for _, b := range srv.Bindings {
+		bindings = append(bindings, Binding{
+			Tenant: b.Tenant, Primary: b.Primary, Replicas: b.Replicas,
+		})
+	}
+
 	out := Server{
 		ID: srv.ID, Name: srv.Name, Namespace: srv.Namespace,
-		Endpoint: srv.Endpoint, ServingMode: mode,
+		Bindings: bindings, ServingMode: mode,
 		Criticality: srv.Criticality, DataClassification: srv.DataClassification,
 		ComplianceScope:    srv.ComplianceScope,
 		DefaultEffectClass: srv.DefaultEffectClass,
@@ -268,7 +268,7 @@ func NewRegistrySummary(spec *registry.Spec) RegistrySummary {
 	return RegistrySummary{
 		Valid: true, Org: spec.Org, Version: spec.Version,
 		Namespaces: len(spec.Namespaces), Servers: len(spec.Servers),
-		Bundles: len(spec.Bundles), Audiences: len(spec.Audiences),
+		Toolsets: len(spec.Toolsets),
 		Policies: len(spec.Policies), Plugins: len(spec.Plugins),
 	}
 }
@@ -283,21 +283,29 @@ type GatewayStatus struct {
 	// SnapshotVersion identifies what is being served. Two instances reporting
 	// different versions is the signal that a rollout is mid-flight.
 	SnapshotVersion int64 `json:"snapshot_version" yaml:"snapshot_version"`
-	Audiences       int   `json:"audiences" yaml:"audiences"`
+	// Tenants the gateway is serving. Replaces the audience count: with one
+	// endpoint and per-principal catalogs, "how many audiences" no longer
+	// describes anything (ADR 0019).
+	Tenants int `json:"tenants" yaml:"tenants"`
+	// Tools admitted across every tenant.
+	Tools int `json:"tools" yaml:"tools"`
 }
 
-// AudienceList is the listAudiences response.
-//
-// It carries a count rather than names on purpose: the data plane does not
-// enumerate its endpoints to an unauthenticated caller, and inventing names
-// here from the registry would report what *should* be served rather than what
-// is.
-type AudienceList struct {
+// TenantList is the listTenants response for the gateway.
+type TenantList struct {
 	GatewayStatus
-	// Registered are the audiences the control plane's registry declares. They
+	// Registered are the tenants the control plane's registry declares. They
 	// are what the next snapshot will publish, which is not necessarily what
 	// the gateway is publishing now.
-	Registered []Audience `json:"registered" yaml:"registered"`
+	Registered []TenantSummary `json:"registered" yaml:"registered"`
+}
+
+// TenantSummary is one tenant as the gateway reports it.
+type TenantSummary struct {
+	Slug   string `json:"slug" yaml:"slug"`
+	Name   string `json:"name" yaml:"name"`
+	Status string `json:"status" yaml:"status"`
+	Tools  int    `json:"tools" yaml:"tools"`
 }
 
 // Catalog is the tool list one identity receives from one audience.
@@ -306,11 +314,12 @@ type AudienceList struct {
 // wrong, because it is produced by making the same request the agent makes
 // rather than by re-deriving policy.
 type Catalog struct {
-	Audience        string   `json:"audience" yaml:"audience"`
-	Subject         string   `json:"subject,omitempty" yaml:"subject,omitempty"`
-	Groups          []string `json:"groups,omitempty" yaml:"groups,omitempty"`
-	ProtocolVersion string   `json:"protocol_version" yaml:"protocol_version"`
-	ServerName      string   `json:"server_name" yaml:"server_name"`
+	// Tenant and Subject identify whose catalog this is. There is no audience:
+	// the principal is the audience (ADR 0016).
+	Tenant          string `json:"tenant" yaml:"tenant"`
+	Subject         string `json:"subject,omitempty" yaml:"subject,omitempty"`
+	ProtocolVersion string `json:"protocol_version" yaml:"protocol_version"`
+	ServerName      string `json:"server_name" yaml:"server_name"`
 
 	// TTLMs and CacheScope are the catalog's cacheability, and belong next to
 	// the tools rather than in a debug view: a filtered catalog that came back
@@ -376,18 +385,18 @@ type Snapshot struct {
 	// UnservableReason is why not, when Servable is false.
 	UnservableReason string `json:"unservable_reason,omitempty" yaml:"unservable_reason,omitempty"`
 
-	Audiences []AudienceSummary `json:"audiences" yaml:"audiences"`
-	Tools     []ToolSummary     `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Tenants []TenantSnapshotSummary `json:"tenants" yaml:"tenants"`
+	Tools   []ToolSummary           `json:"tools,omitempty" yaml:"tools,omitempty"`
 }
 
-// AudienceSummary is one audience's slice of a snapshot.
-type AudienceSummary struct {
-	Slug          string `json:"slug" yaml:"slug"`
-	Name          string `json:"name" yaml:"name"`
-	Tools         int    `json:"tools" yaml:"tools"`
-	TTLMs         int    `json:"ttl_ms" yaml:"ttl_ms"`
-	CacheScope    string `json:"cache_scope" yaml:"cache_scope"`
-	TokenEstimate int    `json:"token_estimate" yaml:"token_estimate"`
+// TenantSnapshotSummary is one tenant's slice of a snapshot.
+type TenantSnapshotSummary struct {
+	Slug string `json:"slug" yaml:"slug"`
+	Name string `json:"name" yaml:"name"`
+	// Tools admitted for this tenant. What any given principal sees is a
+	// subset, decided by their grants.
+	Tools         int `json:"tools" yaml:"tools"`
+	TokenEstimate int `json:"token_estimate" yaml:"token_estimate"`
 }
 
 // ToolSummary is one admitted tool.
@@ -413,8 +422,7 @@ type BuildReport struct {
 	Namespaces int    `json:"namespaces" yaml:"namespaces"`
 	Servers    int    `json:"servers" yaml:"servers"`
 	Tools      int    `json:"tools" yaml:"tools"`
-	Bundles    int    `json:"bundles" yaml:"bundles"`
-	Audiences  int    `json:"audiences" yaml:"audiences"`
+	Toolsets   int    `json:"toolsets" yaml:"toolsets"`
 	Plugins    int    `json:"plugins" yaml:"plugins"`
 
 	Backends []BackendReport `json:"backends" yaml:"backends"`
@@ -447,12 +455,12 @@ type BackendReport struct {
 
 // VerifyReport is a signature check's outcome.
 type VerifyReport struct {
-	Source    string   `json:"source,omitempty" yaml:"source,omitempty"`
-	Valid     bool     `json:"valid" yaml:"valid"`
-	Version   int64    `json:"version" yaml:"version"`
-	KeyID     string   `json:"key_id" yaml:"key_id"`
-	Audiences []string `json:"audiences" yaml:"audiences"`
-	Tools     int      `json:"tools" yaml:"tools"`
+	Source  string   `json:"source,omitempty" yaml:"source,omitempty"`
+	Valid   bool     `json:"valid" yaml:"valid"`
+	Version int64    `json:"version" yaml:"version"`
+	KeyID   string   `json:"key_id" yaml:"key_id"`
+	Tenants []string `json:"tenants" yaml:"tenants"`
+	Tools   int      `json:"tools" yaml:"tools"`
 }
 
 // SigningKey is a freshly minted keypair's *public* half.

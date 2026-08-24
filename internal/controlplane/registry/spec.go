@@ -57,10 +57,11 @@ type Spec struct {
 	Catalog    CatalogSpec     `yaml:"catalog"`
 	Namespaces []NamespaceSpec `yaml:"namespaces"`
 	Servers    []ServerSpec    `yaml:"servers"`
-	Bundles    []BundleSpec    `yaml:"bundles"`
-	Audiences  []AudienceSpec  `yaml:"audiences"`
-	Policies   []PolicySpec    `yaml:"policies"`
-	Plugins    []PluginSpec    `yaml:"plugins"`
+	// Toolsets replace bundles: a toolset is the unit an admin *grants*, which
+	// is what its name should say. See ADR 0016.
+	Toolsets []ToolsetSpec `yaml:"toolsets"`
+	Policies []PolicySpec  `yaml:"policies"`
+	Plugins  []PluginSpec  `yaml:"plugins"`
 }
 
 // CatalogSpec holds org-wide list-result defaults.
@@ -89,7 +90,13 @@ type ServerSpec struct {
 	ID        string `yaml:"id"`
 	Name      string `yaml:"name"`
 	Namespace string `yaml:"namespace"`
-	Endpoint  string `yaml:"endpoint"`
+
+	// Bindings are this backend's hosts, one entry per tenant. The same
+	// logical backend is a different deployment for each tenant — Acme's CRM
+	// at acme.realapp.com, Globex's at globex.realapp.com — and they will
+	// eventually run different versions. Each binding is discovered and
+	// admitted separately. See ADR 0017.
+	Bindings []BindingSpec `yaml:"bindings"`
 
 	// ServingMode is "strict" (default) or "advisory". It controls what happens
 	// to the *backend* on divergence, never what clients see — the gateway
@@ -125,6 +132,33 @@ type ServerSpec struct {
 	Health        *HealthSpec        `yaml:"health"`
 }
 
+// BindingSpec is one tenant's hosts for a backend.
+type BindingSpec struct {
+	// Tenant is the tenant slug this binding serves. It appears in every scope
+	// derived from the tools admitted here.
+	Tenant string `yaml:"tenant"`
+
+	// Primary is the definition source. Discovery reads it; replicas are
+	// compared against it. Naming one makes "which host is correct" a
+	// configuration decision rather than a vote between two disagreeing hosts.
+	Primary string `yaml:"primary"`
+
+	// Replicas are interchangeable hosts serving the same tenant. A replica
+	// whose semantic digest diverges from the primary leaves the routable pool
+	// and is reported — the catalog does not change, so a rolling deploy costs
+	// capacity rather than churning every client's prompt cache.
+	Replicas []string `yaml:"replicas"`
+}
+
+// Endpoints returns every host in a binding, primary first.
+func (b BindingSpec) Endpoints() []string {
+	out := make([]string, 0, 1+len(b.Replicas))
+	if b.Primary != "" {
+		out = append(out, b.Primary)
+	}
+	return append(out, b.Replicas...)
+}
+
 // ToolSpec classifies one tool.
 type ToolSpec struct {
 	// EffectClass is "read", "write" or "destructive".
@@ -155,53 +189,37 @@ type HealthSpec struct {
 }
 
 // BundleSpec is a curated set of tools presented as one catalog.
-type BundleSpec struct {
-	ID       string `yaml:"id"`
-	Name     string `yaml:"name"`
-	Project  string `yaml:"project"`
-	Priority int32  `yaml:"priority"`
-	// TokenBudget caps the summed cost of the bundle's tools. Exceeding it fails
-	// the snapshot build rather than shipping a catalog that will not fit a
-	// context window.
-	TokenBudget int32             `yaml:"token_budget"`
-	TTL         time.Duration     `yaml:"ttl"`
-	Entries     []BundleEntrySpec `yaml:"entries"`
-}
+// ToolsetSpec is a named, grantable group of tools.
+//
+// It replaces the old `bundle`, and the rename carries meaning: a bundle
+// grouped namespaces for *publication*, whereas a toolset is what an
+// administrator hands to a user. Its name appears inside every grant scope —
+// `t/<tenant>/ts/<toolset>` — so it is part of the authorization surface.
+type ToolsetSpec struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
 
-// BundleEntrySpec includes a namespace, optionally narrowed to specific tools.
-type BundleEntrySpec struct {
-	Namespace string `yaml:"namespace"`
-	// Tools, when set, restricts the entry to these unqualified tool names.
-	// Unqualified because the author is already inside a namespace and repeating
-	// the prefix is noise that can disagree with it.
+	// Priority orders a principal's catalog, as bundle priority used to
+	// (ADR 0010). Ordering must stay deterministic per principal or every
+	// client's prompt cache churns on republish.
+	Priority int32 `yaml:"priority"`
+
+	TokenBudget int32         `yaml:"token_budget"`
+	TTL         time.Duration `yaml:"ttl"`
+
+	// Namespaces contributes every admitted tool in each named namespace.
+	Namespaces []string `yaml:"namespaces"`
+
+	// Tools names individual tools by their backend name, qualified with the
+	// namespace prefix. This is what makes a toolset a curated set rather than
+	// a mirror of the namespace layout.
 	Tools []string `yaml:"tools"`
-	// Exclude drops tools from the entry, applied after Tools.
+
+	// Exclude removes specific tools that Namespaces would otherwise have
+	// contributed.
 	Exclude []string `yaml:"exclude"`
 }
 
-// AudienceSpec is one MCP endpoint.
-type AudienceSpec struct {
-	ID       string   `yaml:"id"`
-	Slug     string   `yaml:"slug"`
-	Name     string   `yaml:"name"`
-	Project  string   `yaml:"project"`
-	Bundles  []string `yaml:"bundles"`
-	Policies []string `yaml:"policies"`
-	// AllowedIdpGroups restricts who may use the endpoint. Empty means any
-	// authenticated principal, which is only appropriate when the bundles are
-	// themselves unrestricted.
-	AllowedIdpGroups []string       `yaml:"allowed_idp_groups"`
-	RateLimits       *RateLimitSpec `yaml:"rate_limits"`
-}
-
-// RateLimitSpec bounds one audience.
-type RateLimitSpec struct {
-	RequestsPerMinute  int32 `yaml:"requests_per_minute"`
-	ConcurrentRequests int32 `yaml:"concurrent_requests"`
-	TokensPerMinute    int64 `yaml:"tokens_per_minute"`
-}
-
-// PolicySpec is an authorization and shaping rule set.
 type PolicySpec struct {
 	ID       string           `yaml:"id"`
 	Name     string           `yaml:"name"`
@@ -256,7 +274,10 @@ type PluginSpec struct {
 	FuelLimit      uint64         `yaml:"fuel_limit"`
 	Endpoint       string         `yaml:"endpoint"`
 	Config         map[string]any `yaml:"config"`
-	Audiences      []string       `yaml:"audiences"`
+	// Toolsets narrows a plugin to specific toolsets. Empty means every tool.
+	// Replaces the old audience scoping (ADR 0016): a toolset is now the only
+	// grouping a plugin could reasonably be limited to.
+	Toolsets []string `yaml:"toolsets"`
 }
 
 // Load reads and validates a registry document.
@@ -347,8 +368,42 @@ func (s *Spec) Validate() error {
 		if _, ok := namespaces[srv.Namespace]; !ok {
 			add("server %q references unknown namespace %q", srv.ID, srv.Namespace)
 		}
-		if err := validateEndpoint(srv.Endpoint); err != nil {
-			add("server %q: %v", srv.ID, err)
+		if len(srv.Bindings) == 0 {
+			add("server %q has no bindings; a backend with no tenant pointing at "+
+				"it is registered and unreachable by anyone", srv.ID)
+		}
+		seenTenants := map[string]bool{}
+		for _, binding := range srv.Bindings {
+			switch {
+			case binding.Tenant == "":
+				add("server %q has a binding with no tenant", srv.ID)
+			case seenTenants[binding.Tenant]:
+				// Two bindings for one tenant means two answers to "which host
+				// serves this tenant", and nothing here could choose.
+				add("server %q has two bindings for tenant %q", srv.ID, binding.Tenant)
+			default:
+				seenTenants[binding.Tenant] = true
+			}
+
+			if binding.Primary == "" {
+				add("server %q binding for tenant %q has no primary; the primary "+
+					"is what definitions are admitted from", srv.ID, binding.Tenant)
+			}
+			for _, endpoint := range binding.Endpoints() {
+				if err := validateEndpoint(endpoint); err != nil {
+					add("server %q binding for tenant %q: %v", srv.ID, binding.Tenant, err)
+				}
+			}
+			// A host listed twice would be probed twice and counted twice in
+			// the pool, making capacity look larger than it is.
+			seenHosts := map[string]bool{}
+			for _, endpoint := range binding.Endpoints() {
+				if seenHosts[endpoint] {
+					add("server %q binding for tenant %q lists %s twice",
+						srv.ID, binding.Tenant, endpoint)
+				}
+				seenHosts[endpoint] = true
+			}
 		}
 		if _, err := ParseServingMode(srv.ServingMode); err != nil {
 			add("server %q: %v", srv.ID, err)
@@ -381,32 +436,43 @@ func (s *Spec) Validate() error {
 		}
 	}
 
-	bundles := map[string]BundleSpec{}
-	for _, b := range s.Bundles {
-		if b.ID == "" {
-			add("a bundle has no id")
+	toolsets := map[string]ToolsetSpec{}
+	for _, ts := range s.Toolsets {
+		if ts.ID == "" {
+			add("a toolset has no id")
 			continue
 		}
-		if _, dup := bundles[b.ID]; dup {
-			add("bundle id %q appears twice", b.ID)
+		if _, dup := toolsets[ts.ID]; dup {
+			add("toolset id %q appears twice", ts.ID)
 		}
-		bundles[b.ID] = b
-		if len(b.Entries) == 0 {
-			add("bundle %q has no entries, so it would contribute nothing", b.ID)
+		toolsets[ts.ID] = ts
+
+		// The name goes inside every grant scope for this toolset —
+		// `t/<tenant>/ts/<name>` — so a name containing a separator would
+		// change what those scopes mean. That is a privilege boundary rather
+		// than a naming preference.
+		if err := validateToolsetName(ts.Name); err != nil {
+			add("toolset %q: %v", ts.ID, err)
 		}
-		if b.TTL > s.Catalog.TTL {
-			add("bundle %q ttl (%s) exceeds catalog.ttl (%s); a bundle may only narrow the TTL",
-				b.ID, b.TTL, s.Catalog.TTL)
+
+		if len(ts.Namespaces) == 0 && len(ts.Tools) == 0 {
+			add("toolset %q names no namespaces and no tools, so it would grant nothing", ts.ID)
 		}
-		for _, entry := range b.Entries {
-			if _, ok := namespaces[entry.Namespace]; !ok {
-				add("bundle %q references unknown namespace %q", b.ID, entry.Namespace)
+		if ts.TTL > s.Catalog.TTL {
+			add("toolset %q ttl (%s) exceeds catalog.ttl (%s); a toolset may only narrow the TTL",
+				ts.ID, ts.TTL, s.Catalog.TTL)
+		}
+		for _, ns := range ts.Namespaces {
+			if _, ok := namespaces[ns]; !ok {
+				add("toolset %q references unknown namespace %q", ts.ID, ns)
 			}
-			for _, t := range entry.Tools {
-				if strings.Contains(t, ".") {
-					add("bundle %q entry names tool %q with a prefix; use the unqualified name, "+
-						"since the entry already names the namespace", b.ID, t)
-				}
+		}
+		// Individually named tools are qualified, because a toolset draws from
+		// several namespaces and a bare name would be ambiguous between them.
+		for _, t := range append(append([]string{}, ts.Tools...), ts.Exclude...) {
+			if !strings.Contains(t, ".") {
+				add("toolset %q names tool %q without a namespace prefix; a toolset "+
+					"draws from several namespaces, so a bare name is ambiguous", ts.ID, t)
 			}
 		}
 	}
@@ -441,43 +507,6 @@ func (s *Spec) Validate() error {
 			if rule.MaxTTL > s.Catalog.TTL {
 				add("policy %q rule %d max_ttl (%s) exceeds catalog.ttl (%s); a policy may only narrow the TTL",
 					p.ID, i, rule.MaxTTL, s.Catalog.TTL)
-			}
-		}
-	}
-
-	audiences := map[string]bool{}
-	slugs := map[string]string{}
-	for _, a := range s.Audiences {
-		if a.ID == "" {
-			add("an audience has no id")
-			continue
-		}
-		if audiences[a.ID] {
-			add("audience id %q appears twice", a.ID)
-		}
-		audiences[a.ID] = true
-		if a.Slug == "" {
-			add("audience %q has no slug, so it has no endpoint", a.ID)
-		} else {
-			if prior, dup := slugs[a.Slug]; dup {
-				add("audiences %q and %q share the slug %q", prior, a.ID, a.Slug)
-			}
-			if err := validateSlug(a.Slug); err != nil {
-				add("audience %q: %v", a.ID, err)
-			}
-			slugs[a.Slug] = a.ID
-		}
-		if len(a.Bundles) == 0 {
-			add("audience %q has no bundles, so its catalog would always be empty", a.ID)
-		}
-		for _, bid := range a.Bundles {
-			if _, ok := bundles[bid]; !ok {
-				add("audience %q references unknown bundle %q", a.ID, bid)
-			}
-		}
-		for _, pid := range a.Policies {
-			if !policies[pid] {
-				add("audience %q references unknown policy %q", a.ID, pid)
 			}
 		}
 	}
@@ -533,9 +562,9 @@ func (s *Spec) Validate() error {
 		if p.ArtifactRef != "" && p.ArtifactDigest == "" {
 			add("plugin %q has an artifact_ref but no artifact_digest; the digest is what makes a swapped artifact fail closed", p.ID)
 		}
-		for _, aid := range p.Audiences {
-			if !audiences[aid] {
-				add("plugin %q references unknown audience %q", p.ID, aid)
+		for _, tsID := range p.Toolsets {
+			if _, ok := toolsets[tsID]; !ok {
+				add("plugin %q references unknown toolset %q", p.ID, tsID)
 			}
 		}
 	}
@@ -605,6 +634,32 @@ func validateEndpoint(endpoint string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("endpoint %q has no host", endpoint)
+	}
+	return nil
+}
+
+// validateToolsetName enforces what a grant scope can safely contain.
+//
+// A toolset name appears inside `t/<tenant>/ts/<name>`, so a name containing a
+// slash would change the meaning of every scope built from it — a toolset named
+// `crm/lookup` makes `t/acme/ts/crm/lookup` indistinguishable from a grant on a
+// single tool. That is a privilege boundary, not a formatting preference, and it
+// is the same reason a tenant slug is constrained.
+func validateToolsetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("a toolset needs a name")
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("name %q is longer than 63 characters", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return fmt.Errorf(
+				"name %q may contain only lowercase letters, digits, hyphen and "+
+					"underscore — it becomes part of every grant scope", name)
+		}
 	}
 	return nil
 }

@@ -144,7 +144,9 @@ func TestFileSourceKeepsServingOnBadFile(t *testing.T) {
 	// A correctly-signed but structurally broken snapshot.
 	snap, err := defaultFixture(6).b.Build()
 	require.NoError(t, err)
-	snap.Audiences[0].BundleIds = []string{"bnd_missing"}
+	// A tool referencing a toolset that does not exist: structurally signed,
+	// referentially broken.
+	snap.Tools[0].ToolsetId = "ts_missing"
 	broken, err := signer.Sign(snap)
 	require.NoError(t, err)
 	require.NoError(t, WriteSignedSnapshot(path, broken))

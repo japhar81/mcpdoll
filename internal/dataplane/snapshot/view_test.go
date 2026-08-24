@@ -3,12 +3,14 @@
 package snapshot
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -19,7 +21,11 @@ type fixture struct {
 }
 
 func newFixture(version int64) *fixture {
-	b := NewBuilder("org_1", version).WithID("snap_test")
+	b := NewBuilder(version).WithID("snap_test")
+
+	b.AddTenant(&snapshotpb.Tenant{
+		Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active",
+	})
 
 	b.AddNamespace(&snapshotpb.Namespace{
 		Id: "ns_crm", Name: "crm", Prefix: "crm",
@@ -34,13 +40,17 @@ func newFixture(version int64) *fixture {
 
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm",
-		Endpoint:    "https://crm.internal/mcp",
+		Bindings: []*snapshotpb.Binding{
+			{TenantId: "tn_acme", Primary: "https://crm.internal/mcp"},
+		},
 		ServingMode: snapshotpb.ServingMode_SERVING_MODE_STRICT,
 		Criticality: "high", DataClassification: "confidential",
 	})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_bil", Name: "billing-prod", NamespaceId: "ns_bil",
-		Endpoint:    "https://billing.internal/mcp",
+		Bindings: []*snapshotpb.Binding{
+			{TenantId: "tn_acme", Primary: "https://billing.internal/mcp"},
+		},
 		ServingMode: snapshotpb.ServingMode_SERVING_MODE_STRICT,
 		Criticality: "critical", DataClassification: "restricted",
 	})
@@ -51,6 +61,21 @@ func newFixture(version int64) *fixture {
 func (f *fixture) tool(serverID, nsID, prefix, name string, effect snapshotpb.EffectClass) *fixture {
 	f.b.AddTool(ToolInput{
 		ServerID: serverID, NamespaceID: nsID, Prefix: prefix,
+		TenantID: "tn_acme", ToolsetID: "ts_support",
+		Name:        name,
+		Description: "Does " + name + ".",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
+		EffectClass: effect,
+	})
+	return f
+}
+
+// toolIn adds a tool to a named toolset, for tests that need more than the
+// default fixture's single one.
+func (f *fixture) toolIn(toolsetID, serverID, nsID, prefix, name string, effect snapshotpb.EffectClass) *fixture {
+	f.b.AddTool(ToolInput{
+		ServerID: serverID, NamespaceID: nsID, Prefix: prefix,
+		TenantID: "tn_acme", ToolsetID: toolsetID,
 		Name:        name,
 		Description: "Does " + name + ".",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
@@ -77,32 +102,43 @@ func defaultFixture(version int64) *fixture {
 	f.tool("srv_bil", "ns_bil", "bil", "get_invoice", snapshotpb.EffectClass_EFFECT_CLASS_READ)
 	f.tool("srv_bil", "ns_bil", "bil", "void_invoice", snapshotpb.EffectClass_EFFECT_CLASS_DESTRUCTIVE)
 
-	f.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_support", Name: "support", Priority: 10,
-		Entries: []*snapshotpb.BundleEntry{
-			{NamespaceId: "ns_crm"},
-			{NamespaceId: "ns_bil"},
+	f.b.AddToolset(&snapshotpb.Toolset{
+		Id: "ts_support", Name: "support", Priority: 10,
+	})
+
+	// A principal holding the whole toolset, which is the shape most tests
+	// want: everything admitted for the tenant is visible to it.
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "support")},
 		},
-	})
-	f.b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_support", Slug: "support-agents", Name: "Support Agents",
-		BundleIds: []string{"bnd_support"},
-	})
+	}})
 	return f
+}
+
+// principalView composes alice's catalog, which is what most tests assert
+// against: she holds the whole toolset, so her view is everything admitted for
+// the tenant.
+func (v *View) principalView(t *testing.T) *PrincipalView {
+	t.Helper()
+	pv, err := v.Principal(context.Background(), "usr_alice")
+	require.NoError(t, err)
+	return pv
 }
 
 func TestBuildIndexesEverything(t *testing.T) {
 	v := defaultFixture(1).build(t)
 
 	require.Equal(t, int64(1), v.Version)
-	require.Equal(t, "org_1", v.OrgID)
-	require.Equal(t, []string{"support-agents"}, v.AudienceSlugs())
+	require.Equal(t, "snap_test", v.ID)
+	require.Equal(t, []string{"acme"}, v.TenantSlugs())
 	require.NotNil(t, v.Server("srv_crm"))
 	require.Nil(t, v.Server("srv_absent"))
 	require.NotNil(t, v.Namespace("ns_crm"))
 	require.Len(t, v.Servers(), 2)
 
-	av := v.Audience("support-agents")
+	av := v.principalView(t)
 	require.NotNil(t, av)
 	require.Len(t, av.Tools, 4)
 	require.NotNil(t, av.Tool("crm.lookup_customer"))
@@ -113,7 +149,7 @@ func TestBuildIndexesEverything(t *testing.T) {
 
 func TestBuildJoinsToolToServerAndNamespace(t *testing.T) {
 	v := defaultFixture(1).build(t)
-	tool := v.Audience("support-agents").Tool("bil.void_invoice")
+	tool := v.principalView(t).Tool("bil.void_invoice")
 	require.NotNil(t, tool)
 	require.Equal(t, "billing-prod", tool.Server.Name)
 	require.Equal(t, "bil", tool.Namespace.Prefix)
@@ -128,7 +164,7 @@ func TestBuildJoinsToolToServerAndNamespace(t *testing.T) {
 // (bundle priority, namespace prefix, tool name).
 func TestCatalogOrderIsStable(t *testing.T) {
 	v := defaultFixture(1).build(t)
-	got := qualifiedNames(v.Audience("support-agents"))
+	got := qualifiedNames(v.principalView(t))
 	require.Equal(t, []string{
 		"bil.get_invoice",
 		"bil.void_invoice",
@@ -143,12 +179,12 @@ func TestCatalogOrderIsStable(t *testing.T) {
 // prompt. If adding one tool reorders the list, every client's cache is
 // invalidated and every request pays full price again.
 func TestAddingAToolDoesNotPerturbExistingOrder(t *testing.T) {
-	before := qualifiedNames(defaultFixture(1).build(t).Audience("support-agents"))
+	before := qualifiedNames(defaultFixture(1).build(t).principalView(t))
 
 	// Add a tool to an existing namespace, sorting into the middle of it.
 	withExtra := defaultFixture(2)
 	withExtra.tool("srv_crm", "ns_crm", "crm", "merge_customer", snapshotpb.EffectClass_EFFECT_CLASS_WRITE)
-	after := qualifiedNames(withExtra.build(t).Audience("support-agents"))
+	after := qualifiedNames(withExtra.build(t).principalView(t))
 
 	require.Len(t, after, len(before)+1)
 	require.Contains(t, after, "crm.merge_customer")
@@ -164,203 +200,197 @@ func TestAddingAToolDoesNotPerturbExistingOrder(t *testing.T) {
 		Id: "ns_hr", Name: "hr", Prefix: "hr", OwnerIdpGroup: "eng-hr",
 	})
 	withNamespace.b.AddServer(&snapshotpb.Server{
-		Id: "srv_hr", Name: "hr-prod", NamespaceId: "ns_hr", Endpoint: "https://hr.internal/mcp",
+		Id: "srv_hr", Name: "hr-prod", NamespaceId: "ns_hr", Bindings: []*snapshotpb.Binding{{TenantId: "tn_acme", Primary: "https://x/mcp"}},
 	})
 	withNamespace.tool("srv_hr", "ns_hr", "hr", "lookup_employee", snapshotpb.EffectClass_EFFECT_CLASS_READ)
 	// The audience must include it for it to appear.
-	withNamespace.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_hr", Name: "hr", Priority: 20,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_hr"}},
-	})
+	withNamespace.b.AddToolset(&snapshotpb.Toolset{Id: "bnd_hr", Name: "hr", Priority: 20})
 	snap, err := withNamespace.b.Build()
 	require.NoError(t, err)
-	for _, aud := range snap.Audiences {
-		if aud.Slug == "support-agents" {
-			aud.BundleIds = append(aud.BundleIds, "bnd_hr")
-		}
-	}
 	view, err := Build(snap)
 	require.NoError(t, err)
-	got := qualifiedNames(view.Audience("support-agents"))
+	got := qualifiedNames(view.principalView(t))
 	require.Equal(t, append(append([]string{}, before...), "hr.lookup_employee"), got,
 		"a lower-priority bundle appends after the existing block, leaving it untouched")
 }
 
-// TestBundlePriorityLeadsTheOrdering: bundle priority is the primary key, so a
-// high-priority bundle's tools come first regardless of prefix.
-func TestBundlePriorityLeadsTheOrdering(t *testing.T) {
+// TestToolsetPriorityLeadsTheOrdering: catalog order is a cost control, and the
+// leading key is the toolset's priority — not the namespace prefix.
+func TestToolsetPriorityLeadsTheOrdering(t *testing.T) {
 	f := newFixture(1)
-	f.tool("srv_crm", "ns_crm", "crm", "lookup_customer", snapshotpb.EffectClass_EFFECT_CLASS_READ)
-	f.tool("srv_bil", "ns_bil", "bil", "get_invoice", snapshotpb.EffectClass_EFFECT_CLASS_READ)
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_crm", Name: "crm-first", Priority: 1})
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_bil", Name: "billing-second", Priority: 2})
 
-	// "crm" sorts after "bil" alphabetically, but its bundle has the lower
+	f.toolIn("ts_crm", "srv_crm", "ns_crm", "crm", "lookup_customer",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "get_invoice",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope("acme")},
+		},
+	}})
+
+	// "crm" sorts after "bil" alphabetically, but its toolset has the lower
 	// (higher-priority) number, so it must come first.
-	f.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_crm", Name: "crm-first", Priority: 1,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_crm"}},
-	})
-	f.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_bil", Name: "billing-second", Priority: 2,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_bil"}},
-	})
-	f.b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_a", Slug: "a", BundleIds: []string{"bnd_crm", "bnd_bil"},
-	})
-
-	got := qualifiedNames(f.build(t).Audience("a"))
+	got := qualifiedNames(f.build(t).principalView(t))
 	require.Equal(t, []string{"crm.lookup_customer", "bil.get_invoice"}, got)
 }
 
-// TestDuplicateToolAcrossBundlesAppearsOnce: the first bundle to contribute a
-// tool owns it, so a tool included by two bundles must not appear twice nor
-// move in the ordering.
-func TestDuplicateToolAcrossBundlesAppearsOnce(t *testing.T) {
-	f := newFixture(1)
-	f.tool("srv_crm", "ns_crm", "crm", "lookup_customer", snapshotpb.EffectClass_EFFECT_CLASS_READ)
+// ------------------------------------------------------- grants shape it -----
 
-	f.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_1", Name: "one", Priority: 1,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_crm"}},
-	})
-	f.b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_2", Name: "two", Priority: 2,
-		Entries: []*snapshotpb.BundleEntry{
-			{NamespaceId: "ns_crm", QualifiedNames: []string{"crm.lookup_customer"}},
+// A principal's catalog *is* its grants. These are the tests that replaced
+// bundle include/exclude, which no longer exists: selection moved from the
+// publisher's document to the administrator's grant.
+
+func TestAToolsetGrantSeesExactlyThatToolset(t *testing.T) {
+	f := newFixture(1)
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_crm", Name: "crm", Priority: 1})
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_bil", Name: "billing", Priority: 2})
+	f.toolIn("ts_crm", "srv_crm", "ns_crm", "crm", "lookup_customer",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "void_invoice",
+		snapshotpb.EffectClass_EFFECT_CLASS_DESTRUCTIVE)
+
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "crm")},
+		},
+	}})
+
+	av := f.build(t).principalView(t)
+	require.Equal(t, []string{"crm.lookup_customer"}, qualifiedNames(av),
+		"a toolset grant must not reach a sibling toolset")
+}
+
+func TestASingleToolGrantSeesOneTool(t *testing.T) {
+	f := defaultFixture(1)
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_bob", TenantId: "tn_acme", Subject: "bob@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser,
+				Scope: authz.ToolScope("acme", "support", "lookup_customer")},
+		},
+	}})
+
+	v := f.build(t)
+	pv, err := v.Principal(context.Background(), "usr_bob")
+	require.NoError(t, err)
+
+	// "Give Bob one tool" is a grant at a deeper scope, not a bespoke bundle.
+	require.Equal(t, []string{"crm.lookup_customer"}, qualifiedNames(pv))
+}
+
+func TestAPrincipalWithNoGrantsGetsAnEmptyCatalogNotAnError(t *testing.T) {
+	f := defaultFixture(1)
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_new", TenantId: "tn_acme", Subject: "new@example.com",
+	}})
+
+	v := f.build(t)
+	pv, err := v.Principal(context.Background(), "usr_new")
+
+	// The correct state for a just-provisioned user under open_no_access
+	// signup. An error here would make "exists but holds nothing" look like a
+	// bug rather than the intended state.
+	require.NoError(t, err)
+	require.Empty(t, pv.Tools)
+}
+
+func TestListAndCallAreSeparatePrivileges(t *testing.T) {
+	f := defaultFixture(1)
+	f.b.SetRBAC(authz.Catalog{
+		// A role that may see tools without invoking them. The reverse
+		// combination is refused at admission (ADR 0015).
+		"reader": {authz.PermToolList: {}},
+	}, []*snapshotpb.Principal{{
+		Id: "usr_carol", TenantId: "tn_acme", Subject: "carol@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: "reader", Scope: authz.TenantScope("acme")},
+		},
+	}})
+
+	v := f.build(t)
+	pv, err := v.Principal(context.Background(), "usr_carol")
+	require.NoError(t, err)
+
+	require.NotEmpty(t, pv.Tools, "the reader can see the catalog")
+	require.False(t, pv.Callable("crm.lookup_customer"),
+		"but must not be able to invoke anything in it")
+}
+
+func TestTwoPrincipalsInOneTenantGetDifferentCatalogs(t *testing.T) {
+	f := newFixture(1)
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_crm", Name: "crm", Priority: 1})
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_bil", Name: "billing", Priority: 2})
+	f.toolIn("ts_crm", "srv_crm", "ns_crm", "crm", "lookup_customer",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "get_invoice",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
+		{
+			Id: "usr_alice", TenantId: "tn_acme", Subject: "alice@example.com",
+			Grants: []*snapshotpb.Grant{{
+				Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "crm"),
+			}},
+		},
+		{
+			Id: "usr_bob", TenantId: "tn_acme", Subject: "bob@example.com",
+			Grants: []*snapshotpb.Grant{{
+				Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "billing"),
+			}},
 		},
 	})
-	f.b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_a", Slug: "a", BundleIds: []string{"bnd_1", "bnd_2"},
-	})
 
-	av := f.build(t).Audience("a")
-	require.Equal(t, []string{"crm.lookup_customer"}, qualifiedNames(av))
-	require.EqualValues(t, 1, av.Tools[0].BundlePriority,
-		"the first contributing bundle's priority is what sorts the tool")
+	v := f.build(t)
+	alice, err := v.Principal(context.Background(), "usr_alice")
+	require.NoError(t, err)
+	bob, err := v.Principal(context.Background(), "usr_bob")
+	require.NoError(t, err)
+
+	// Same URL, same tenant, different catalogs. This is the property that
+	// lets ADR 0019 collapse the per-audience endpoints into one.
+	require.Equal(t, []string{"crm.lookup_customer"}, qualifiedNames(alice))
+	require.Equal(t, []string{"bil.get_invoice"}, qualifiedNames(bob))
 }
 
-// ------------------------------------------------- bundle include / exclude ----
+func TestPrincipalViewsAreCachedPerView(t *testing.T) {
+	v := defaultFixture(1).build(t)
 
-func TestBundleEntrySelectsSubset(t *testing.T) {
-	f := defaultFixture(1)
-	// Replace the whole-namespace entry with a two-tool subset.
-	snap, err := f.b.Build()
+	first, err := v.Principal(context.Background(), "usr_alice")
 	require.NoError(t, err)
-	snap.Bundles[0].Entries = []*snapshotpb.BundleEntry{
-		{NamespaceId: "ns_crm", QualifiedNames: []string{"crm.lookup_customer"}},
-		{NamespaceId: "ns_bil", ExcludeQualifiedNames: []string{"bil.void_invoice"}},
-	}
-	v, err := Build(snap)
+	second, err := v.Principal(context.Background(), "usr_alice")
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"bil.get_invoice", "crm.lookup_customer"},
-		qualifiedNames(v.Audience("support-agents")),
-		"the destructive billing tool was excluded and the second CRM tool was never included")
-}
-
-func TestBundleEntryExcludeBeatsInclude(t *testing.T) {
-	f := defaultFixture(1)
-	snap, err := f.b.Build()
-	require.NoError(t, err)
-	snap.Bundles[0].Entries = []*snapshotpb.BundleEntry{{
-		NamespaceId:           "ns_crm",
-		QualifiedNames:        []string{"crm.lookup_customer", "crm.update_customer"},
-		ExcludeQualifiedNames: []string{"crm.update_customer"},
-	}}
-	v, err := Build(snap)
-	require.NoError(t, err)
-	require.Equal(t, []string{"crm.lookup_customer"}, qualifiedNames(v.Audience("support-agents")))
+	// The same pointer: composing is cheap but not free, and a connection per
+	// request would recompose on every one.
+	require.Same(t, first, second)
 }
 
 // ----------------------------------------------------------- cacheScope ------
 
-// TestFilteredCatalogIsNeverPublic is the explicit assertion the build brief
-// requires. Serving one principal's filtered catalog from a shared cache to
-// another principal is a confidentiality bug, so an identity-filtered view must
-// be marked private.
-func TestFilteredCatalogIsNeverPublic(t *testing.T) {
-	t.Run("unfiltered is public", func(t *testing.T) {
-		av := defaultFixture(1).build(t).Audience("support-agents")
-		require.False(t, av.IdentityFiltered)
-		require.Equal(t, "public", av.CacheScope())
-	})
+// TestEveryCatalogIsPrivate is the explicit assertion the build brief requires,
+// as amended by ADR 0016.
+//
+// It used to be conditional: a catalog nothing had filtered could be advertised
+// public. That condition is now never true — every catalog is derived from a
+// principal's grants — so the answer is unconditional, and this test says so in
+// one place rather than leaving a `public` branch that can never be reached but
+// could be reintroduced by accident.
+func TestEveryCatalogIsPrivate(t *testing.T) {
+	v := defaultFixture(1).build(t)
 
-	t.Run("identity-specific policy forces private", func(t *testing.T) {
-		f := defaultFixture(1)
-		f.b.AddPolicy(&snapshotpb.Policy{
-			Id: "pol_ent", Name: "entitlements", Priority: 1,
-			Rules: []*snapshotpb.PolicyRule{{
-				Decision:         snapshotpb.PolicyDecision_POLICY_DECISION_ALLOW,
-				IdentitySpecific: true,
-				Reason:           "per-principal entitlement filtering",
-			}},
-		})
-		snap, err := f.b.Build()
-		require.NoError(t, err)
-		snap.Audiences[0].PolicyIds = []string{"pol_ent"}
-		v, err := Build(snap)
-		require.NoError(t, err)
+	pv, err := v.Principal(context.Background(), "usr_alice")
+	require.NoError(t, err)
 
-		av := v.Audience("support-agents")
-		require.True(t, av.IdentityFiltered)
-		require.Equal(t, "private", av.CacheScope(),
-			"an identity-filtered catalog must never be cacheScope: public")
-	})
-
-	t.Run("group-conditioned hide forces private", func(t *testing.T) {
-		f := defaultFixture(1)
-		f.b.AddPolicy(&snapshotpb.Policy{
-			Id: "pol_hide", Name: "hide-destructive", Priority: 1,
-			Rules: []*snapshotpb.PolicyRule{{
-				Decision:          snapshotpb.PolicyDecision_POLICY_DECISION_HIDE,
-				EffectClasses:     []string{"EFFECT_CLASS_DESTRUCTIVE"},
-				RequiredIdpGroups: []string{"billing-admins"},
-				Reason:            "destructive billing tools are admin-only",
-			}},
-		})
-		snap, err := f.b.Build()
-		require.NoError(t, err)
-		snap.Audiences[0].PolicyIds = []string{"pol_hide"}
-		v, err := Build(snap)
-		require.NoError(t, err)
-
-		av := v.Audience("support-agents")
-		require.True(t, av.IdentityFiltered,
-			"a rule that hides tools from some groups but not others makes the catalog identity-specific")
-		require.Equal(t, "private", av.CacheScope())
-	})
-
-	t.Run("identity-dependent ON_CATALOG plugin forces private", func(t *testing.T) {
-		f := defaultFixture(1)
-		f.b.AddPlugin(&snapshotpb.PluginManifest{
-			Id: "plg_ent", Name: "entitlements", Version: "1.0.0",
-			Runtime:           snapshotpb.PluginRuntime_PLUGIN_RUNTIME_WASM,
-			Hooks:             []snapshotpb.Hook{snapshotpb.Hook_HOOK_ON_CATALOG},
-			Priority:          10,
-			IdentityDependent: true,
-			Rollout:           snapshotpb.RolloutState_ROLLOUT_STATE_ENFORCE,
-			Writes:            []string{"catalog.tools"},
-		})
-		av := f.build(t).Audience("support-agents")
-		require.True(t, av.IdentityFiltered)
-		require.Equal(t, "private", av.CacheScope())
-	})
-
-	t.Run("identity-dependent plugin on another hook does not force private", func(t *testing.T) {
-		f := defaultFixture(1)
-		f.b.AddPlugin(&snapshotpb.PluginManifest{
-			Id: "plg_hdr", Name: "header-map", Version: "1.0.0",
-			Runtime:           snapshotpb.PluginRuntime_PLUGIN_RUNTIME_WASM,
-			Hooks:             []snapshotpb.Hook{snapshotpb.Hook_HOOK_ON_TOOL_CALL},
-			Priority:          10,
-			IdentityDependent: true,
-			Rollout:           snapshotpb.RolloutState_ROLLOUT_STATE_ENFORCE,
-			Writes:            []string{"request.headers"},
-		})
-		av := f.build(t).Audience("support-agents")
-		require.False(t, av.IdentityFiltered,
-			"a plugin that shapes the call but not the catalog leaves the catalog shareable")
-		require.Equal(t, "public", av.CacheScope())
-	})
+	// Serving one principal's catalog from a shared cache to another principal
+	// is a confidentiality bug, and with per-principal catalogs there is no
+	// case left where sharing is safe.
+	require.Equal(t, "private", pv.CacheScope())
 }
 
 // ------------------------------------------------------------------ TTL ------
@@ -373,31 +403,31 @@ func TestTTLIsTheMinimumOfContributors(t *testing.T) {
 	t.Run("org default applies when nothing narrows it", func(t *testing.T) {
 		f := defaultFixture(1)
 		f.b.WithCatalogDefaults(orgTTL, 30*time.Second)
-		av := f.build(t).Audience("support-agents")
+		av := f.build(t).principalView(t)
 		require.Equal(t, int(orgTTL.Milliseconds()), av.TTLMs)
 	})
 
-	t.Run("bundle narrows", func(t *testing.T) {
+	t.Run("toolset narrows", func(t *testing.T) {
 		f := defaultFixture(1)
 		f.b.WithCatalogDefaults(orgTTL, 30*time.Second)
 		snap, err := f.b.Build()
 		require.NoError(t, err)
-		snap.Bundles[0].TtlMs = 60_000
+		snap.Toolsets[0].TtlMs = 60_000
 		v, err := Build(snap)
 		require.NoError(t, err)
-		require.Equal(t, 60_000, v.Audience("support-agents").TTLMs)
+		require.Equal(t, 60_000, v.principalView(t).TTLMs)
 	})
 
-	t.Run("bundle cannot widen", func(t *testing.T) {
+	t.Run("toolset cannot widen", func(t *testing.T) {
 		f := defaultFixture(1)
 		f.b.WithCatalogDefaults(time.Minute, 10*time.Second)
 		snap, err := f.b.Build()
 		require.NoError(t, err)
-		snap.Bundles[0].TtlMs = 3_600_000 // an hour, far above the org ceiling
+		snap.Toolsets[0].TtlMs = 3_600_000 // an hour, far above the ceiling
 		v, err := Build(snap)
 		require.NoError(t, err)
-		require.Equal(t, 60_000, v.Audience("support-agents").TTLMs,
-			"a bundle must not be able to raise the TTL above the org default")
+		require.Equal(t, 60_000, v.principalView(t).TTLMs,
+			"a toolset must not be able to raise the TTL above the default")
 	})
 
 	t.Run("policy narrows further", func(t *testing.T) {
@@ -412,12 +442,11 @@ func TestTTLIsTheMinimumOfContributors(t *testing.T) {
 		})
 		snap, err := f.b.Build()
 		require.NoError(t, err)
-		snap.Audiences[0].PolicyIds = []string{"pol_short"}
-		snap.Bundles[0].TtlMs = 60_000
+		snap.Toolsets[0].TtlMs = 60_000
 		v, err := Build(snap)
 		require.NoError(t, err)
-		require.Equal(t, 15_000, v.Audience("support-agents").TTLMs,
-			"the tightest of org, bundle and policy wins")
+		require.Equal(t, 15_000, v.principalView(t).TTLMs,
+			"the tightest of default, toolset and policy wins")
 	})
 }
 
@@ -443,26 +472,14 @@ func TestBuildRejectsBrokenReferences(t *testing.T) {
 			wantErr: "unknown server",
 		},
 		{
-			name:    "bundle references an unknown namespace",
-			mutate:  func(s *snapshotpb.Snapshot) { s.Bundles[0].Entries[0].NamespaceId = "ns_gone" },
-			wantErr: "unknown namespace",
+			name:    "tool references an unknown toolset",
+			mutate:  func(s *snapshotpb.Snapshot) { s.Tools[0].ToolsetId = "ts_gone" },
+			wantErr: "unknown toolset",
 		},
 		{
-			name: "bundle names an unadmitted tool",
-			mutate: func(s *snapshotpb.Snapshot) {
-				s.Bundles[0].Entries[0].QualifiedNames = []string{"crm.not_admitted"}
-			},
-			wantErr: "not admitted",
-		},
-		{
-			name:    "audience references an unknown bundle",
-			mutate:  func(s *snapshotpb.Snapshot) { s.Audiences[0].BundleIds = []string{"bnd_gone"} },
-			wantErr: "unknown bundle",
-		},
-		{
-			name:    "audience references an unknown policy",
-			mutate:  func(s *snapshotpb.Snapshot) { s.Audiences[0].PolicyIds = []string{"pol_gone"} },
-			wantErr: "unknown policy",
+			name:    "tool references an unknown tenant",
+			mutate:  func(s *snapshotpb.Snapshot) { s.Tools[0].TenantId = "tn_gone" },
+			wantErr: "unknown tenant",
 		},
 		{
 			name: "two namespaces share a prefix",
@@ -486,32 +503,30 @@ func TestBuildRejectsBrokenReferences(t *testing.T) {
 			wantErr: "appears twice",
 		},
 		{
-			name: "duplicate tool digest",
+			name: "the same qualified name twice in one tenant",
 			mutate: func(s *snapshotpb.Snapshot) {
 				s.Tools = append(s.Tools, s.Tools[0])
 			},
-			wantErr: "appears twice",
+			// Across tenants this is the normal case and the whole point of
+			// per-tenant admission; within one tenant a tools/call would be
+			// ambiguous.
+			wantErr: "two tools named",
 		},
 		{
 			name: "qualified name disagrees with the namespace prefix",
 			mutate: func(s *snapshotpb.Snapshot) {
 				s.Tools[0].QualifiedName = "wrong.lookup_customer"
 			},
-			wantErr: "implies",
+			wantErr: "has prefix",
 		},
 		{
-			name:    "audience without a slug has no endpoint",
-			mutate:  func(s *snapshotpb.Snapshot) { s.Audiences[0].Slug = "" },
-			wantErr: "no slug",
-		},
-		{
-			name: "duplicate audience slug",
+			name: "duplicate tenant slug",
 			mutate: func(s *snapshotpb.Snapshot) {
-				dup := &snapshotpb.Audience{
-					Id: "aud_other", Slug: s.Audiences[0].Slug,
-					BundleIds: s.Audiences[0].BundleIds,
-				}
-				s.Audiences = append(s.Audiences, dup)
+				// Slugs are how scopes name tenants, so two sharing one would
+				// make every grant on it ambiguous.
+				s.Tenants = append(s.Tenants, &snapshotpb.Tenant{
+					Id: "tn_other", Slug: s.Tenants[0].Slug, Name: "Other",
+				})
 			},
 			wantErr: "appears twice",
 		},
@@ -536,7 +551,7 @@ func TestBuildRejectsNonPositiveVersion(t *testing.T) {
 	require.ErrorContains(t, err, "version must be positive")
 
 	_, err = Build(nil)
-	require.ErrorContains(t, err, "cannot build a view from nothing")
+	require.ErrorContains(t, err, "nil snapshot")
 }
 
 // TestBuildRejectsConflictingMutatingPlugins: two plugins that both patch the
@@ -574,24 +589,28 @@ func TestNonMutatingPluginsMaySharePriority(t *testing.T) {
 		})
 	}
 	v := f.build(t)
-	plugins := v.Audience("support-agents").PluginsFor(snapshotpb.Hook_HOOK_ON_AUDIT)
+	plugins := v.principalView(t).PluginsFor(snapshotpb.Hook_HOOK_ON_AUDIT)
 	require.Len(t, plugins, 2)
 	// Tie-broken by name so the order is reproducible.
 	require.Equal(t, "audit-a", plugins[0].Name)
 	require.Equal(t, "audit-b", plugins[1].Name)
 }
 
-func TestPluginsAreScopedToAudiences(t *testing.T) {
-	f := defaultFixture(1)
-	f.b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_other", Slug: "other", BundleIds: []string{"bnd_support"},
-	})
+func TestPluginsAreScopedToToolsets(t *testing.T) {
+	f := newFixture(1)
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_crm", Name: "crm", Priority: 1})
+	f.b.AddToolset(&snapshotpb.Toolset{Id: "ts_bil", Name: "billing", Priority: 2})
+	f.toolIn("ts_crm", "srv_crm", "ns_crm", "crm", "lookup_customer",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+	f.toolIn("ts_bil", "srv_bil", "ns_bil", "bil", "get_invoice",
+		snapshotpb.EffectClass_EFFECT_CLASS_READ)
+
 	f.b.AddPlugin(&snapshotpb.PluginManifest{
 		Id: "plg_scoped", Name: "scoped", Version: "1.0.0",
-		Runtime:     snapshotpb.PluginRuntime_PLUGIN_RUNTIME_WASM,
-		Hooks:       []snapshotpb.Hook{snapshotpb.Hook_HOOK_ON_REQUEST},
-		Priority:    10,
-		AudienceIds: []string{"aud_support"},
+		Runtime:    snapshotpb.PluginRuntime_PLUGIN_RUNTIME_WASM,
+		Hooks:      []snapshotpb.Hook{snapshotpb.Hook_HOOK_ON_REQUEST},
+		Priority:   10,
+		ToolsetIds: []string{"ts_crm"},
 	})
 	f.b.AddPlugin(&snapshotpb.PluginManifest{
 		Id: "plg_global", Name: "global", Version: "1.0.0",
@@ -600,27 +619,50 @@ func TestPluginsAreScopedToAudiences(t *testing.T) {
 		Priority: 20,
 	})
 
-	v := f.build(t)
-	support := v.Audience("support-agents").PluginsFor(snapshotpb.Hook_HOOK_ON_REQUEST)
-	require.Equal(t, []string{"scoped", "global"}, pluginNames(support))
+	f.b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{
+		{
+			Id: "usr_crm", TenantId: "tn_acme", Subject: "crm@example.com",
+			Grants: []*snapshotpb.Grant{{
+				Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "crm"),
+			}},
+		},
+		{
+			Id: "usr_bil", TenantId: "tn_acme", Subject: "bil@example.com",
+			Grants: []*snapshotpb.Grant{{
+				Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "billing"),
+			}},
+		},
+	})
 
-	other := v.Audience("other").PluginsFor(snapshotpb.Hook_HOOK_ON_REQUEST)
-	require.Equal(t, []string{"global"}, pluginNames(other),
-		"an audience-scoped plugin must not run for another audience")
+	v := f.build(t)
+
+	crm, err := v.Principal(context.Background(), "usr_crm")
+	require.NoError(t, err)
+	require.Equal(t, []string{"scoped", "global"},
+		pluginNames(crm.PluginsFor(snapshotpb.Hook_HOOK_ON_REQUEST)))
+
+	bil, err := v.Principal(context.Background(), "usr_bil")
+	require.NoError(t, err)
+
+	// Scoping now follows the principal's grants: a plugin limited to a
+	// toolset does not run for a principal whose catalog does not include it.
+	require.Equal(t, []string{"global"},
+		pluginNames(bil.PluginsFor(snapshotpb.Hook_HOOK_ON_REQUEST)),
+		"a toolset-scoped plugin must not run for a principal outside it")
 }
 
-func TestBundleTokenBudgetIsEnforcedAtBuild(t *testing.T) {
+func TestToolsetTokenBudgetIsEnforcedAtBuild(t *testing.T) {
 	f := defaultFixture(1)
 	snap, err := f.b.Build()
 	require.NoError(t, err)
-	snap.Bundles[0].TokenBudget = 1 // absurdly low
+	snap.Toolsets[0].TokenBudget = 1 // absurdly low
 	_, err = Build(snap)
 	require.ErrorContains(t, err, "token budget")
 }
 
 func TestToolByDigest(t *testing.T) {
 	v := defaultFixture(1).build(t)
-	tool := v.Audience("support-agents").Tool("crm.lookup_customer")
+	tool := v.principalView(t).Tool("crm.lookup_customer")
 	require.NotNil(t, tool)
 	require.Same(t, tool.Def, v.ToolByDigest(tool.Def.Digest))
 	require.Nil(t, v.ToolByDigest("sha256:absent"))
@@ -637,23 +679,26 @@ func TestViewAge(t *testing.T) {
 }
 
 func TestBuilderRejectsBadNamespacePrefix(t *testing.T) {
-	b := NewBuilder("org_1", 1)
+	b := NewBuilder(1)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_a", Name: "a", Prefix: ""})
 	_, err := b.Build()
 	require.ErrorContains(t, err, "no prefix")
 
-	b2 := NewBuilder("org_1", 1)
+	b2 := NewBuilder(1)
 	b2.AddNamespace(&snapshotpb.Namespace{Id: "ns_a", Name: "a", Prefix: "a.b"})
 	_, err = b2.Build()
 	require.ErrorContains(t, err, "ambiguous")
 }
 
 func TestBuilderRejectsExternalRefInSchema(t *testing.T) {
-	b := NewBuilder("org_1", 1)
+	b := NewBuilder(1)
+	b.AddTenant(&snapshotpb.Tenant{Id: "tn_a", Slug: "a", Name: "A", Status: "active"})
+	b.AddToolset(&snapshotpb.Toolset{Id: "ts_a", Name: "a", Priority: 1})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_a", Name: "a", Prefix: "a"})
-	b.AddServer(&snapshotpb.Server{Id: "srv_a", NamespaceId: "ns_a", Endpoint: "https://a/mcp"})
+	b.AddServer(&snapshotpb.Server{Id: "srv_a", NamespaceId: "ns_a", Bindings: []*snapshotpb.Binding{{TenantId: "tn_a", Primary: "https://a/mcp"}}})
 	b.AddTool(ToolInput{
 		ServerID: "srv_a", NamespaceID: "ns_a", Prefix: "a", Name: "t",
+		TenantID: "tn_a", ToolsetID: "ts_a",
 		InputSchema: json.RawMessage(`{"$ref":"https://evil.example/s.json"}`),
 	})
 	_, err := b.Build()
@@ -671,7 +716,7 @@ func TestEstimateTokens(t *testing.T) {
 
 // ------------------------------------------------------------- helpers -------
 
-func qualifiedNames(av *AudienceView) []string {
+func qualifiedNames(av *PrincipalView) []string {
 	out := make([]string, 0, len(av.Tools))
 	for _, t := range av.Tools {
 		out = append(out, t.Def.QualifiedName)

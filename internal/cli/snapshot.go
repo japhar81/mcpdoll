@@ -102,15 +102,13 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 			return env.Emit(buildReport{
 				Version:        result.Snapshot.Version,
 				SnapshotID:     result.Snapshot.Id,
-				Org:            result.Snapshot.OrgId,
 				RegistryDigest: result.Snapshot.RegistryDigest,
 				KeyID:          signer.KeyID(),
 				PublicKey:      snapshot.TrustedKeyEntry(signer.KeyID(), signer.PublicKey()),
 				Namespaces:     len(result.Snapshot.Namespaces),
 				Servers:        len(result.Snapshot.Servers),
 				Tools:          len(result.Snapshot.Tools),
-				Bundles:        len(result.Snapshot.Bundles),
-				Audiences:      len(result.Snapshot.Audiences),
+				Toolsets:       len(result.Snapshot.Toolsets),
 				Plugins:        len(result.Snapshot.Plugins),
 				Backends:       result.Discovered,
 				Warnings:       result.Warnings,
@@ -150,8 +148,7 @@ type buildReport struct {
 	Namespaces     int                         `json:"namespaces" yaml:"namespaces"`
 	Servers        int                         `json:"servers" yaml:"servers"`
 	Tools          int                         `json:"tools" yaml:"tools"`
-	Bundles        int                         `json:"bundles" yaml:"bundles"`
-	Audiences      int                         `json:"audiences" yaml:"audiences"`
+	Toolsets       int                         `json:"toolsets" yaml:"toolsets"`
 	Plugins        int                         `json:"plugins" yaml:"plugins"`
 	Backends       []snapshotter.BackendReport `json:"backends" yaml:"backends"`
 	Warnings       []string                    `json:"warnings,omitempty" yaml:"warnings,omitempty"`
@@ -176,8 +173,8 @@ func (r buildReport) Table() Table {
 	}
 
 	notes := []string{
-		fmt.Sprintf("snapshot %d (%s): %d namespaces, %d servers, %d tools, %d bundles, %d audiences, %d plugins",
-			r.Version, r.SnapshotID, r.Namespaces, r.Servers, r.Tools, r.Bundles, r.Audiences, r.Plugins),
+		fmt.Sprintf("snapshot %d (%s): %d namespaces, %d servers, %d tools, %d toolsets, %d plugins",
+			r.Version, r.SnapshotID, r.Namespaces, r.Servers, r.Tools, r.Toolsets, r.Plugins),
 		fmt.Sprintf("signed with key %q", r.KeyID),
 		"trusted-key entry for the data plane: " + r.PublicKey,
 	}
@@ -249,18 +246,20 @@ type inspectReport struct {
 	RegistryDigest string `json:"registry_digest" yaml:"registry_digest"`
 	Servable       bool   `json:"servable" yaml:"servable"`
 
-	Audiences []audienceSummary `json:"audiences" yaml:"audiences"`
-	Tools     []toolSummary     `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Tenants []tenantSummary `json:"tenants" yaml:"tenants"`
+	Tools   []toolSummary   `json:"tools,omitempty" yaml:"tools,omitempty"`
 
 	showTools bool
 }
 
-type audienceSummary struct {
+// tenantSummary is one tenant's slice of a snapshot.
+//
+// Not an audience: a snapshot admits tools per tenant, and what any principal
+// in that tenant sees is a subset decided by their grants (ADR 0016).
+type tenantSummary struct {
 	Slug          string `json:"slug" yaml:"slug"`
 	Name          string `json:"name" yaml:"name"`
 	Tools         int    `json:"tools" yaml:"tools"`
-	TTLMs         int    `json:"ttl_ms" yaml:"ttl_ms"`
-	CacheScope    string `json:"cache_scope" yaml:"cache_scope"`
 	TokenEstimate int    `json:"token_estimate" yaml:"token_estimate"`
 }
 
@@ -283,7 +282,6 @@ func newInspectReport(
 		File:           file,
 		Version:        snap.Version,
 		SnapshotID:     snap.Id,
-		Org:            snap.OrgId,
 		KeyID:          signed.KeyId,
 		Algorithm:      signed.Algorithm,
 		RegistryDigest: snap.RegistryDigest,
@@ -297,15 +295,16 @@ func newInspectReport(
 	}
 
 	if view != nil {
-		for _, slug := range view.AudienceSlugs() {
-			av := view.Audience(slug)
-			r.Audiences = append(r.Audiences, audienceSummary{
-				Slug:          slug,
-				Name:          av.Audience.Name,
-				Tools:         len(av.Tools),
-				TTLMs:         av.TTLMs,
-				CacheScope:    av.CacheScope(),
-				TokenEstimate: av.TokenEstimate,
+		for _, slug := range view.TenantSlugs() {
+			tenant := view.Tenant(slug)
+			tools := view.ToolsForTenant(tenant.Id)
+			tokens := 0
+			for _, t := range tools {
+				tokens += int(t.Def.TokenEstimate)
+			}
+			r.Tenants = append(r.Tenants, tenantSummary{
+				Slug: slug, Name: tenant.Name,
+				Tools: len(tools), TokenEstimate: tokens,
 			})
 		}
 	}
@@ -347,13 +346,13 @@ func (r inspectReport) Table() Table {
 		}
 	}
 
-	rows := make([][]string, 0, len(r.Audiences))
-	for _, a := range r.Audiences {
+	rows := make([][]string, 0, len(r.Tenants))
+	for _, t := range r.Tenants {
 		rows = append(rows, []string{
-			a.Slug, a.Name, strconv.Itoa(a.Tools),
-			strconv.Itoa(a.TTLMs), a.CacheScope, strconv.Itoa(a.TokenEstimate),
+			t.Slug, t.Name, strconv.Itoa(t.Tools), strconv.Itoa(t.TokenEstimate),
 		})
 	}
+
 	notes := []string{
 		fmt.Sprintf("version %d (%s), built %s (%s ago)", r.Version, r.SnapshotID, r.BuiltAt, r.Age),
 		fmt.Sprintf("signed with key %q using %s", r.KeyID, r.Algorithm),
@@ -363,7 +362,7 @@ func (r inspectReport) Table() Table {
 		notes = append(notes, "WOULD NOT ACTIVATE: see the warning above")
 	}
 	return Table{
-		Columns: []string{"AUDIENCE", "NAME", "TOOLS", "TTL_MS", "CACHE", "TOKENS"},
+		Columns: []string{"TENANT", "NAME", "ADMITTED TOOLS", "TOKENS"},
 		Rows:    rows,
 		Notes:   notes,
 	}
@@ -402,12 +401,12 @@ func newSnapshotVerifyCmd(env *Env) *cobra.Command {
 				return validationError(wrapf(err, "signature is valid but the snapshot would not activate"))
 			}
 			return env.Emit(verifyReport{
-				File:      args[0],
-				Valid:     true,
-				Version:   snap.Version,
-				KeyID:     signed.KeyId,
-				Audiences: view.AudienceSlugs(),
-				Tools:     len(snap.Tools),
+				File:    args[0],
+				Valid:   true,
+				Version: snap.Version,
+				KeyID:   signed.KeyId,
+				Tenants: view.TenantSlugs(),
+				Tools:   len(snap.Tools),
 			})
 		},
 	}
@@ -418,12 +417,12 @@ func newSnapshotVerifyCmd(env *Env) *cobra.Command {
 }
 
 type verifyReport struct {
-	File      string   `json:"file" yaml:"file"`
-	Valid     bool     `json:"valid" yaml:"valid"`
-	Version   int64    `json:"version" yaml:"version"`
-	KeyID     string   `json:"key_id" yaml:"key_id"`
-	Audiences []string `json:"audiences" yaml:"audiences"`
-	Tools     int      `json:"tools" yaml:"tools"`
+	File    string   `json:"file" yaml:"file"`
+	Valid   bool     `json:"valid" yaml:"valid"`
+	Version int64    `json:"version" yaml:"version"`
+	KeyID   string   `json:"key_id" yaml:"key_id"`
+	Tenants []string `json:"tenants" yaml:"tenants"`
+	Tools   int      `json:"tools" yaml:"tools"`
 }
 
 func (r verifyReport) Table() Table {
@@ -431,7 +430,7 @@ func (r verifyReport) Table() Table {
 		Columns: []string{"FILE", "VALID", "VERSION", "KEY", "TOOLS", "AUDIENCES"},
 		Rows: [][]string{{
 			r.File, strconv.FormatBool(r.Valid), strconv.FormatInt(r.Version, 10),
-			r.KeyID, strconv.Itoa(r.Tools), fmt.Sprint(r.Audiences),
+			r.KeyID, strconv.Itoa(r.Tools), fmt.Sprint(r.Tenants),
 		}},
 	}
 }

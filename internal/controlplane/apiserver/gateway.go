@@ -18,9 +18,13 @@ import (
 // the thing being acted on, and having them in one place means a request cannot
 // disagree with its own URL.
 type CallToolRequest struct {
-	Subject   string         `json:"subject,omitempty"`
-	Groups    []string       `json:"groups,omitempty"`
-	Arguments map[string]any `json:"arguments,omitempty"`
+	// Credential is the API key to act as. Inspection presents what the
+	// principal presents rather than re-deriving what they should see
+	// (ADR 0019).
+	Credential string         `json:"credential"`
+	Subject    string         `json:"subject,omitempty"`
+	Groups     []string       `json:"groups,omitempty"`
+	Arguments  map[string]any `json:"arguments,omitempty"`
 
 	// RequestState continues a deferred call. It is the signed envelope the
 	// gateway issued, echoed back unchanged.
@@ -43,7 +47,7 @@ func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.inspectorClient(r).Call(r.Context(), inspector.CallRequest{
-		Audience:     chi.URLParam(r, "slug"),
+		Credential:   req.Credential,
 		Tool:         chi.URLParam(r, "toolName"),
 		Arguments:    req.Arguments,
 		Identity:     inspector.Identity{Subject: req.Subject, Groups: req.Groups},

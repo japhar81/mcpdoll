@@ -18,7 +18,7 @@ import (
 
 // CatalogRequest is an ON_CATALOG invocation.
 type CatalogRequest struct {
-	Audience  *snapshot.AudienceView
+	Audience  *snapshot.PrincipalView
 	Principal backends.Principal
 	// Tools as the snapshot would serve them, in the stable order.
 	Tools []*mcp.Tool
@@ -42,7 +42,7 @@ type CatalogDecision struct {
 
 // ToolCallRequest is an ON_TOOL_CALL invocation.
 type ToolCallRequest struct {
-	Audience  *snapshot.AudienceView
+	Audience  *snapshot.PrincipalView
 	Tool      *snapshot.Tool
 	Principal backends.Principal
 	Arguments any
@@ -84,7 +84,7 @@ func (d *ToolCallDecision) Deferred() bool {
 
 // ToolResultRequest is an ON_TOOL_RESULT invocation.
 type ToolResultRequest struct {
-	Audience  *snapshot.AudienceView
+	Audience  *snapshot.PrincipalView
 	Tool      *snapshot.Tool
 	Principal backends.Principal
 	Result    *mcp.CallToolResult

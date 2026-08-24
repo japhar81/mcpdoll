@@ -49,7 +49,7 @@ var _ edge.Pipeline = (*EdgePipeline)(nil)
 // OnCatalog runs the catalog hook.
 func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) (*edge.CatalogDecision, error) {
 	payload := catalogPayload{
-		Audience:  req.Audience.Audience.Slug,
+		Audience:  req.Audience.Tenant.Slug,
 		Principal: principalOf(req.Principal),
 		Catalog:   make([]toolPayload, 0, len(req.Tools)),
 	}
@@ -62,7 +62,7 @@ func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) 
 		return nil, fmt.Errorf("wiring: encoding the catalog: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Audience.Slug, req.Principal.Subject, "")
+	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, "")
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID: trace.RequestID,
 		Audience:  req.Audience,
@@ -126,7 +126,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 	}
 
 	payload := callPayload{
-		Audience:       req.Audience.Audience.Slug,
+		Audience:       req.Audience.Tenant.Slug,
 		Principal:      principalOf(req.Principal),
 		Tool:           toolPayloadFromSnapshot(req.Tool),
 		Arguments:      arguments,
@@ -138,7 +138,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 		return nil, fmt.Errorf("wiring: encoding the call: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Audience.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID:   trace.RequestID,
 		Audience:    req.Audience,
@@ -180,7 +180,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 // OnToolResult runs the post-dispatch hook.
 func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultRequest) (*edge.ToolResultDecision, error) {
 	payload := resultPayload{
-		Audience:  req.Audience.Audience.Slug,
+		Audience:  req.Audience.Tenant.Slug,
 		Principal: principalOf(req.Principal),
 		Tool:      toolPayloadFromSnapshot(req.Tool),
 		Result:    resultOf(req.Result),
@@ -190,7 +190,7 @@ func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultReq
 		return nil, fmt.Errorf("wiring: encoding the result: %w", err)
 	}
 
-	trace := newTrace(req.Audience.Audience.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.Audience.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	hookResult, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID:   trace.RequestID,
 		Audience:    req.Audience,
@@ -326,7 +326,7 @@ func toolPayloadFromSnapshot(tool *snapshot.Tool) toolPayload {
 	}
 }
 
-func toolPayloadFrom(av *snapshot.AudienceView, name string, mcpTool *sdk.Tool) toolPayload {
+func toolPayloadFrom(av *snapshot.PrincipalView, name string, mcpTool *sdk.Tool) toolPayload {
 	out := toolPayload{
 		Name:        name,
 		Title:       mcpTool.Title,
