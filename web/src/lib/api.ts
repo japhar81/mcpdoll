@@ -244,8 +244,7 @@ export const getGatewayStatus = () =>
 export const listBackends = () =>
   request<BackendHealthReport>("GET", "/api/v1/gateway/backends");
 
-export const listTenants = () =>
-  request<TenantList>("GET", "/api/v1/gateway/tenants");
+export const listTenants = () => request<TenantList>("GET", "/api/v1/tenants");
 
 /**
  * What one credential can see.

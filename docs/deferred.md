@@ -156,7 +156,14 @@ exist either (see the entries above and below):
 `web/src/lib/types.ts` is hand-written, so it is a second definition of shapes
 that `internal/api` also defines, and it can drift. The Go side is protected —
 `internal/api/schema_test.go` holds every struct against the spec's schemas by
-field name — but nothing checks the TypeScript.
+field name — and the console's *paths* are now checked too
+(`internal/api/console_test.go`), after a moved route left `listTenants`
+fetching a URL that no longer existed: parity was green, the types compiled, and
+the screen 404'd until somebody clicked it.
+
+What is still unchecked is the field names on the TypeScript side. A response
+field renamed in Go and in the spec, and not in `types.ts`, compiles and reads
+as `undefined` at runtime. Generating the file from the spec is the fix.
 
 Missing: `openapi-typescript` in `make generate`, plus a `verify-generated` gate.
 The work is small; it was not done because the schema check bought most of the
