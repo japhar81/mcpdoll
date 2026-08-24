@@ -18,6 +18,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/api"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/inspector"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
+	"github.com/mcpdoll/mcpdoll/internal/controlplane/store"
 )
 
 // Config is what a control-plane API server needs to run.
@@ -55,6 +56,11 @@ type Config struct {
 	// AllowedOrigins are the browser origins permitted to call this API. Empty
 	// means no cross-origin access, which is correct for a same-origin console.
 	AllowedOrigins []string
+
+	// Store is the control plane's durable state. Nil when no database is
+	// configured, in which case the tenant and user operations report that
+	// plainly rather than panicking on a nil pointer.
+	Store *store.Store
 
 	Version string
 	Logger  *slog.Logger

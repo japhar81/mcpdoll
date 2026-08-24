@@ -60,6 +60,26 @@ jobs:
     name: go tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # The store's tests skip themselves when no database answers, which keeps
+    # `go test ./...` green on a laptop. That is a convenience locally and a
+    # hazard in CI: a suite that silently skips is a suite that stops testing.
+    # So CI provides one, and the step below fails if the tests skipped anyway.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: mcpdoll
+          POSTGRES_PASSWORD: mcpdoll
+          POSTGRES_DB: mcpdoll
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mcpdoll -d mcpdoll"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    env:
+      MCPDOLL_TEST_DATABASE_URL: postgres://mcpdoll:mcpdoll@localhost:5432/mcpdoll?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -70,6 +90,19 @@ jobs:
       # -count=1 defeats the test cache. A cached pass tells you nothing about
       # the commit that just landed.
       - run: go test ./... -count=1
+
+      - name: the database-backed tests actually ran
+        run: |
+          # A skip here means CI is not testing the store at all, which looks
+          # identical to a pass in the summary.
+          out=$(go test ./internal/controlplane/store/ -count=1 -v 2>&1)
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "$out" | grep -- "--- SKIP" -A 2
+            echo ""
+            echo "The store tests skipped: no database was reachable."
+            exit 1
+          fi
+          echo "store tests ran against Postgres"
 
   race:
     name: go tests (race)

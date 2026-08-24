@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/apiserver"
+	"github.com/mcpdoll/mcpdoll/internal/controlplane/store"
 	"github.com/mcpdoll/mcpdoll/internal/observability"
 	"github.com/mcpdoll/mcpdoll/internal/platform/config"
 	"github.com/mcpdoll/mcpdoll/internal/platform/logging"
@@ -29,6 +30,12 @@ import (
 
 // Version is stamped at build time with -ldflags.
 var Version = "dev"
+
+// The first tenant and administrator, created on an empty database.
+const (
+	platformTenantSlug = "platform"
+	platformAdminEmail = "admin@mcpdoll.local"
+)
 
 const (
 	exitOK          = 0
@@ -103,6 +110,56 @@ func run() int {
 		token = cfg.ControlPlane.APIToken
 	}
 
+	// The durable side. Optional: a control plane with no database still
+	// serves the registry and builds snapshots, which is the whole of what
+	// this system did before tenancy existed.
+	var db *store.Store
+	dsn := os.Getenv("MCPDOLL_DATABASE_URL")
+	if dsn == "" {
+		dsn = cfg.Database.URL
+	}
+	if dsn != "" {
+		db, err = store.Open(context.Background(), dsn)
+		if err != nil {
+			log.Error("refusing to start", slog.String("error", err.Error()))
+			return exitConfigError
+		}
+		defer db.Close()
+
+		// Migrate before serving. A schema older than the code is a set of
+		// failures at request time that all look like bugs.
+		if err := db.Migrate(context.Background()); err != nil {
+			log.Error("migrations failed", slog.String("error", err.Error()))
+			return exitStartupFail
+		}
+
+		// A deployment with no administrator is unusable and cannot fix
+		// itself: every operation needs a permission, and issuing the first
+		// grant needs role:manage.
+		password, err := db.SeedPlatformAdmin(context.Background(),
+			platformTenantSlug, platformAdminEmail)
+		if err != nil {
+			log.Error("seeding the platform administrator failed",
+				slog.String("error", err.Error()))
+			return exitStartupFail
+		}
+		if password != "" {
+			// Printed once, to stderr, and never stored in recoverable form.
+			// An operator who misses this line resets the password rather than
+			// reading it back.
+			fmt.Fprintf(os.Stderr,
+				"\n  Platform administrator created\n"+
+					"    tenant:   %s\n    email:    %s\n    password: %s\n"+
+					"  This is the only time this password is shown.\n\n",
+				platformTenantSlug, platformAdminEmail, password)
+		}
+		log.Info("database ready")
+	} else {
+		log.Warn("no database configured",
+			slog.String("detail",
+				"tenants, users, and grants are unavailable; set MCPDOLL_DATABASE_URL"))
+	}
+
 	server, err := apiserver.New(apiserver.Config{
 		RegistryPath:   registry,
 		SnapshotPath:   cfg.DataPlane.SnapshotPath,
@@ -116,6 +173,7 @@ func run() int {
 		AllowedOrigins: cfg.ControlPlane.AllowedOrigins,
 		Version:        Version,
 		Logger:         log,
+		Store:          db,
 	})
 	if err != nil {
 		// A refusal here is a configuration problem, and the message says which

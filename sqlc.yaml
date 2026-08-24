@@ -1,0 +1,35 @@
+# Generated repositories for the control plane's durable state.
+#
+# Queries are written in SQL and the Go is generated from them, rather than the
+# reverse. The reason is the same one that made api/openapi.yaml the source of
+# truth: a query is a contract with the database, and a generator that infers it
+# from Go code makes the database's shape an artifact of Go's type system.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: internal/controlplane/store/migrations
+    queries: db/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/controlplane/store/dbgen
+        sql_package: pgx/v5
+        emit_json_tags: false
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_empty_slices: true
+        # A pointer for a nullable column rather than sql.NullString: the zero
+        # value of a Null* type reads as an empty string, and "no password set"
+        # and "the empty password" must not be the same value.
+        emit_pointers_for_null_types: true
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+              pointer: true

@@ -6,9 +6,12 @@
 # plane starts. `bootstrap` is a one-shot container between the two, and
 # everything after it waits on `service_completed_successfully`.
 #
-# Postgres and Redis are deliberately absent: nothing in this build talks to
-# them (the control plane's durable side is not implemented — see
-# docs/deferred.md), and starting a database nothing uses would be misleading.
+# Postgres holds the control plane's durable state — tenants, users, grants,
+# and credentials (ADR 0014). The data plane never connects to it: grants reach
+# it inside a signed snapshot, which is what keeps a database outage from
+# stopping a tool call.
+#
+# Redis is still absent: nothing in this build talks to it.
 
 name: mcpdoll
 
@@ -71,6 +74,32 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  # ---------------------------------------------------------- postgres ----
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: mcpdoll-postgres
+    restart: unless-stopped
+    networks: [mcpdoll]
+    environment:
+      POSTGRES_USER: mcpdoll
+      POSTGRES_PASSWORD: mcpdoll
+      POSTGRES_DB: mcpdoll
+    ports:
+      # Published so `go test -tags=integration ./...` and psql can reach it
+      # from the host. A deployment would not publish this.
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -U and -d, because pg_isready defaults to the OS user and would report
+      # ready against a database that does not exist.
+      test: ["CMD-SHELL", "pg_isready -U mcpdoll -d mcpdoll"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   # ----------------------------------------------------------- fixtures ----
   # Five real MCP backends. Not mocks of a backend — real servers built on the
@@ -202,6 +231,7 @@ services:
       # the console exercises the auth path daily rather than discovering it at
       # deploy time.
       MCPDOLL_CP_TOKEN: ${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}
+      MCPDOLL_DATABASE_URL: postgres://mcpdoll:mcpdoll@postgres:5432/mcpdoll?sslmode=disable
     ports:
       - "3001:3001"
     volumes:
@@ -210,6 +240,7 @@ services:
     depends_on:
       bootstrap: { condition: service_completed_successfully }
       dataplane: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/healthz"]
       interval: 5s
@@ -254,6 +285,7 @@ networks:
 
 volumes:
   lgtm-data:
+  pgdata:
   # The signing key, the resolved registry, and the snapshot. Shared between the
   # bootstrap that writes them and the planes that read them.
   state:

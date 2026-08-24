@@ -226,12 +226,15 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
 
 ## Next, in priority order
 
-1. **Control plane persistence + admission.** Postgres schema, `sqlc`, the
+1. **The restructure (ADRs 0014–0020).** `authz` and `store` are in; the
+   registry, snapshot, edge, and tri-surface management are not. See
+   `docs/deferred.md` for exactly what remains.
+2. **Admission + the job queue.** Postgres schema, `sqlc`, the
    registry API, then the admission stages and human approval. The snapshotter is
    already the piece admission would feed.
-2. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+4. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-3. **A control-plane dashboard and alert rules.** The gateway dashboard is
+5. **A control-plane dashboard and alert rules.** The gateway dashboard is
    provisioned as code; `mcpdoll.drift.events` and `mcpdoll.snapshot.rejects`
    are the two metrics that most obviously want an alert.
 

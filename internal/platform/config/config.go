@@ -52,6 +52,10 @@ type Telemetry struct {
 }
 
 type Database struct {
+	// URL is the control plane's Postgres DSN. Empty disables the durable
+	// side: the API still serves the registry and snapshots, and every
+	// tenant/user/grant operation reports that no database is configured
+	// rather than failing obscurely.
 	URL      string `yaml:"url"`
 	MaxConns int32  `yaml:"max_conns"`
 	MinConns int32  `yaml:"min_conns"`

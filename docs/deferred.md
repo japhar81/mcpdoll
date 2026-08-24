@@ -66,19 +66,46 @@ results and evaluating them, which needs a corpus, a budget, and a privacy model
 
 Ordered by how much their absence matters.
 
-### Control plane: Postgres persistence, registry API, admission pipeline
+### Control plane: admission pipeline and the job queue
 
-**Not built.** The snapshot *builder* is complete and is the same code the
-control plane would use (`snapshot.Builder`), and the test harness exercises the
-whole publish path — discover a backend, canonicalize, digest, build, sign,
-activate — which is the substance of what admission produces. What is missing is
-the durable side: the Postgres schema, `sqlc` queries, the registry HTTP API,
-the admission stages (`ON_SUBMIT` … `ON_PROMOTE`), human approval with
-publisher ≠ approver, and the `river` job queue.
+**Persistence is built.** The Postgres schema, `sqlc` queries, and the
+repository layer exist for tenants, users, identities, grants, API keys, and
+identity providers, with an embedded migration runner and tests that run
+against a real database (`internal/controlplane/store`).
+
+Still missing: the admission stages (`ON_SUBMIT` … `ON_PROMOTE`), human
+approval with publisher ≠ approver, and the `river` job queue.
+
+The *permissions* for approval exist — `snapshot:build` and `snapshot:publish`
+are separate, and the default `publisher` role deliberately holds the second
+without the first — but nothing yet enforces that the two were exercised by
+different people.
 
 Consequence: a publish today is programmatic, not reviewed. The gateway serves
 admitted definitions (ADR 0006) but "admitted" currently means "built into the
 snapshot" rather than "approved by a human who is not the publisher".
+
+### The restructure is partly landed
+
+ADRs 0014–0020 are the design of record. Built so far: `internal/platform/authz`
+(scopes, roles, two engines, conformance) and `internal/controlplane/store`
+(tenancy, credentials, grants).
+
+Not yet built, and each is a breaking change when it lands:
+
+- **Toolsets replacing bundles and audiences** in the registry (ADR 0016).
+- **Per-tenant backend bindings with pools and a primary** (ADR 0017).
+- **A tenant-partitioned snapshot carrying grants** (ADR 0018).
+- **The single `/mcp` endpoint** and `PrincipalView` (ADR 0019). Until this
+  lands the gateway still serves `/mcp/{audience}`, which the ADRs say no
+  longer exists.
+- **Tenant/user/grant/key management on all three surfaces** (ADR 0004). The
+  store has the operations; nothing exposes them yet.
+- **Identity providers and the gRPC SPI** (ADR 0020). Local passwords are
+  implemented in the store; OIDC, SAML, and the pluggable transport are not.
+
+Consequence: the running system is still the pre-restructure one. The ADRs
+describe where it is going, not where it is.
 
 ### The console: built, but read-and-inspect only
 
