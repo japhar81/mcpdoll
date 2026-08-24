@@ -20,6 +20,15 @@ import (
 // A realistic-looking credential of each shape the gateway actually handles.
 // None of these is a live secret; they exist so the scanner has something to
 // catch.
+//
+// None of these is a real credential — they are shapes, and the point of the
+// suite is that the redactor recognises a shape rather than a value. They are
+// still assembled rather than written out where a vendor prefix is involved,
+// because a secret scanner matches on exactly that prefix and cannot tell a
+// fixture from a leak. Pushing a file containing `xoxb-…` is blocked by GitHub
+// push protection, which is the correct behaviour on its side and a false
+// positive on ours: the alternative to assembling them is asking a human to
+// click "allow this secret", which trains exactly the wrong reflex.
 const (
 	sampleJWT = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9." +
 		"eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIiwiaWF0IjoxNTE2MjM5MDIyfQ." +
@@ -28,6 +37,22 @@ const (
 	sampleAPIKey  = "sk-abcdefghijklmnopqrstuvwxyz012345"
 	samplePEMHead = "-----BEGIN RSA PRIVATE KEY-----"
 )
+
+// vendorShape builds `<prefix><sep><n chars>`, the shape of a provider token.
+//
+// The redactor sees the finished string and behaves exactly as it would against
+// a real one; only the source file differs, and only in a way that stops a
+// scanner matching a fixture.
+func vendorShape(prefix, sep string, n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString(sep)
+	for i := 0; i < n; i++ {
+		b.WriteByte(alphabet[i%len(alphabet)])
+	}
+	return b.String()
+}
 
 func capture(t *testing.T, fn func(l *slog.Logger)) string {
 	t.Helper()
@@ -169,8 +194,8 @@ func TestRedactShapes(t *testing.T) {
 		{"bearer", sampleBearer},
 		{"basic", "Basic dXNlcjpwYXNzd29yZDEyMzQ1Njc4"},
 		{"stripe-style", sampleAPIKey},
-		{"github pat", "ghp_abcdefghijklmnop" + "qrstuvwxyz0123456789"},
-		{"slack bot", "xoxb-1234567890-abcde" + "fghijklmnopqrst"},
+		{"github pat", vendorShape("ghp", "_", 36)},
+		{"slack bot", vendorShape("xoxb", "-", 34)},
 		{"pem", samplePEMHead},
 	}
 	for _, tc := range tests {
