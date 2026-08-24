@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package inspector connects to a running data plane as a chosen identity and
 // reports what that identity sees.

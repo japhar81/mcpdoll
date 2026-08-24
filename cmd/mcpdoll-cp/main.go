@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command mcpdoll-cp is MCPDoll's control plane: the API the console and the
 // CLI talk to.

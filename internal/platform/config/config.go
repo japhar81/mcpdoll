@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package config loads and validates MCPDoll's process configuration.
 //

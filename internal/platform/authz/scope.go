@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package authz is MCPDoll's RBAC: hierarchical scopes, roles that grant
 // permissions, and grants that bind a role to a principal within a scope.

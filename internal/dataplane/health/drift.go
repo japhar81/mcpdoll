@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package health probes backends, classifies what they publish against what was
 // admitted, and tracks whether each one is fit to serve.

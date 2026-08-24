@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package registry defines MCPDoll's declarative registry: the document that
 // says which backends exist, how their tools are classified, and which toolsets

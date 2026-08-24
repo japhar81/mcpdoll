@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package observability owns MCPDoll's OpenTelemetry setup and the semantic
 // conventions every component emits.

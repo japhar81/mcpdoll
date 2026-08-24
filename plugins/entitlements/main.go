@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command entitlements filters a catalog to the tools a principal is entitled
 // to, and refuses calls to the ones it hid.

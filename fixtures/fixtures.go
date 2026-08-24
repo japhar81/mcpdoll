@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package fixtures provides real MCP backends for MCPDoll's tests and for
 // `make dev`.

@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command fixture-backend serves one of MCPDoll's fixture MCP backends over
 // HTTP, for `make dev` and for manual exploration.

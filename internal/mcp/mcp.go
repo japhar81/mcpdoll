@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package mcp is MCPDoll's thin adapter over the official MCP Go SDK.
 //

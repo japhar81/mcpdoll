@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command mcpdoll is the command-line client for the MCPDoll gateway.
 //

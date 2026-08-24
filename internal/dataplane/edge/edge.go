@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package edge is MCPDoll's MCP server: the single endpoint each audience talks
 // to.

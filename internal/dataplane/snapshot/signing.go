@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package snapshot verifies, loads, indexes, and hot-swaps the signed serving
 // configuration the data plane runs from.

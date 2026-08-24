@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command mcpdoll-dp is MCPDoll's data plane: the MCP endpoints agents connect
 // to.

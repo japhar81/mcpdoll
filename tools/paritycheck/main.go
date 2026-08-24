@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Command paritycheck enforces MCPDoll's tri-surface rule: every API operation
 // must be reachable from the CLI and from the console.

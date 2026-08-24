@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package snapshotter resolves a registry document plus live backend discovery
 // into a signed snapshot.

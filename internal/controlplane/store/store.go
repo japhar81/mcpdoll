@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package store is the control plane's durable state: tenants, users,
 // credentials, and RBAC grants.

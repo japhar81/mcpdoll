@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package ids mints the identifiers MCPDoll uses in URLs, logs, and audit
 // records.

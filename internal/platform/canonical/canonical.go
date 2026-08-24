@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package canonical produces byte-stable serializations of JSON values and the
 // content-addressed digests MCPDoll derives from them.

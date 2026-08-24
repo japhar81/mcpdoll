@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package pipeline is MCPDoll's hook engine: the thing that runs plugins at each
 // of the seven extension points, under a budget, and combines their verdicts.

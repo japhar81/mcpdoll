@@ -1,4 +1,4 @@
-// Copyright 2026 The MCPDoll Authors.
+// Copyright 2026 Henry Zektser.
 
 // Package logging configures MCPDoll's structured logging and defines the
 // field vocabulary every component uses.
