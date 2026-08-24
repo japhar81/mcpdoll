@@ -42,13 +42,13 @@ have_user() {
 KEYS="${STATE}/demo-keys.txt"
 
 mint() {
-  tenant="$1"; email="$2"; name="$3"; shift 3
+  tenant="$1"; email="$2"; name="$3"
   secret="$(mcpdoll users keys mint "${email}" \
-    --tenant "${tenant}" --name "${name}" --output json "$@" \
+    --tenant "${tenant}" --name "${name}-$(date +%s)" --output json \
     | sed -n 's/.*"secret": "\([^"]*\)".*/\1/p')"
-  [ -n "${secret}" ] || { echo "seed: minting ${name} produced no secret" >&2; exit 1; }
-  printf '%-24s %-28s %s\n' "${tenant}/${email}" "${name}" "${secret}" >> "${KEYS}"
-  log "minted ${name} for ${email} (${tenant})"
+  [ -n "${secret}" ] || { echo "seed: minting a key for ${email} produced no secret" >&2; exit 1; }
+  printf '%-30s %s\n' "${tenant}/${email}" "${secret}" >> "${KEYS}"
+  log "minted a key for ${email} (${tenant})"
 }
 
 # --------------------------------------------------------------- tenants ----
@@ -67,14 +67,25 @@ done
 
 # ----------------------------------------------------------------- users ----
 
-: > "${KEYS}.new"
+# Users and keys are separate concerns. A user survives across runs — they are
+# rows in a database this container does not own — but the *keys file* lives on
+# the state volume, and a key's secret cannot be recovered once it is gone. So:
+# create users that are missing, and mint a key whenever the file is absent,
+# whether or not the user was new. A user may hold several keys, and the
+# alternative is a banner pointing at a file that does not exist.
+#
+#   tenant|email|display name|comma-separated role@scope grants
+DEMO_USERS="\
+acme|support@acme.example|Support Agent|tool_user@t/acme/ts/support
+acme|platform@acme.example|Platform Operator|tool_user@t/acme/ts/support,tool_user@t/acme/ts/platform
+acme|research@acme.example|Threat Researcher|tool_user@t/acme/ts/untrusted
+globex|support@globex.example|Support Agent|tool_user@t/globex/ts/support"
 
-seed_user() {
-  tenant="$1"; email="$2"; label="$3"; shift 3
-
+echo "${DEMO_USERS}" | while IFS='|' read -r tenant email label grants; do
+  [ -n "${tenant}" ] || continue
   if have_user "${tenant}" "${email}"; then
     log "user ${email} already exists in ${tenant}"
-    return 0
+    continue
   fi
 
   log "creating ${email} in ${tenant}"
@@ -84,51 +95,37 @@ seed_user() {
   # Grants come second and separately, because a new user holding nothing is
   # the correct starting state — an account that could reach tools the moment
   # it existed would make onboarding the thing that grants access.
+  set -- ""
+  shift
+  for g in $(echo "${grants}" | tr ',' ' '); do
+    set -- "$@" --grant "${g}"
+  done
   mcpdoll users grants set "${email}" --tenant "${tenant}" "$@" >/dev/null
-  log "granted ${email}: $*"
-  echo "${tenant} ${email}" >> "${KEYS}.new"
-}
-
-# A support agent: the everyday catalog, nothing destructive.
-seed_user acme support@acme.example "Support Agent" \
-  --grant "tool_user@t/acme/ts/support"
-
-# A platform operator: the same, plus the deploy tools, which are destructive
-# and therefore go through MRTR confirmation on every call.
-seed_user acme platform@acme.example "Platform Operator" \
-  --grant "tool_user@t/acme/ts/support" \
-  --grant "tool_user@t/acme/ts/platform"
-
-# A security researcher: only the hostile backend. Granted by toolset name, so
-# nothing else in acme can reach it and it cannot reach anything else.
-seed_user acme research@acme.example "Threat Researcher" \
-  --grant "tool_user@t/acme/ts/untrusted"
-
-# Globex's support agent. Same role, same toolset name, different tenant — and
-# therefore a different backend deployment behind identical tool names. This is
-# the pair to compare in the catalog screen.
-seed_user globex support@globex.example "Support Agent" \
-  --grant "tool_user@t/globex/ts/support"
+  log "granted ${email}: ${grants}"
+done
 
 # ------------------------------------------------------------------ keys ----
 
-if [ -s "${KEYS}.new" ]; then
+if [ ! -s "${KEYS}" ]; then
   {
     printf '# MCPDoll demo credentials, minted %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf '# Every secret here is shown once and nothing keeps it. Paste one into\n'
-    printf '# the console at /gateway/catalog to see exactly what that agent sees.\n\n'
+    printf '# Every secret here is shown once and nothing keeps it. A previous\n'
+    printf '# run'"'"'s keys are not recoverable, so this run minted new ones.\n'
+    printf '#\n'
+    printf '# Paste one into the console at /gateway/catalog to see exactly what\n'
+    printf '# that agent sees.\n\n'
   } > "${KEYS}"
 
-  while read -r tenant email; do
+  echo "${DEMO_USERS}" | while IFS='|' read -r tenant email label grants; do
+    [ -n "${tenant}" ] || continue
     mint "${tenant}" "${email}" "agent"
-  done < "${KEYS}.new"
+  done
 
   log "credentials written to ${KEYS}"
   cat "${KEYS}"
 else
-  log "every demo user already existed; no keys minted"
+  log "reusing the credentials in ${KEYS}"
 fi
-rm -f "${KEYS}.new"
 
 # -------------------------------------------------------------- snapshot ----
 

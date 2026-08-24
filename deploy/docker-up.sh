@@ -83,8 +83,8 @@ Demo credentials were minted into the state volume. Read them with:
 
 Try it:
 
-  ACME=\$(docker exec mcpdoll-cp awk '/acme\/support/ {print \$3}' /srv/state/demo-keys.txt)
-  GLOBEX=\$(docker exec mcpdoll-cp awk '/globex\/support/ {print \$3}' /srv/state/demo-keys.txt)
+  ACME=\$(docker exec mcpdoll-cp awk '/acme\/support/ {print \$2}' /srv/state/demo-keys.txt)
+  GLOBEX=\$(docker exec mcpdoll-cp awk '/globex\/support/ {print \$2}' /srv/state/demo-keys.txt)
 
   # What a support agent sees, asked as a real MCP client. Eight tools.
   ./bin/mcpdoll gateway catalog --as "\${ACME}"

@@ -27,6 +27,10 @@ if [[ -f "${PID_FILE}" ]]; then
   while read -r pid; do
     [[ -z "${pid}" ]] && continue
     if kill -0 "${pid}" 2>/dev/null; then
+      # Children first. `npm run dev` is a wrapper around vite, and killing the
+      # wrapper orphans the server that is actually holding :5173 — so the next
+      # `make dev` refuses to start on a port nothing appears to own.
+      pkill -TERM -P "${pid}" 2>/dev/null || true
       # SIGTERM, not SIGKILL: the data plane drains in-flight calls and flushes
       # telemetry on a clean shutdown, which is exactly the data you want.
       kill "${pid}" 2>/dev/null || true
@@ -39,11 +43,24 @@ if [[ -f "${PID_FILE}" ]]; then
     [[ -z "${pid}" ]] && continue
     if kill -0 "${pid}" 2>/dev/null; then
       info "process ${pid} did not exit; sending SIGKILL"
+      pkill -KILL -P "${pid}" 2>/dev/null || true
       kill -9 "${pid}" 2>/dev/null || true
     fi
   done < "${PID_FILE}"
 
   rm -f "${PID_FILE}"
+
+  # A last check on the ports themselves. Killing by pid is right and is not
+  # sufficient: anything the recorded processes spawned indirectly survives it,
+  # and the symptom is a `make dev` that refuses to start against a port whose
+  # owner nobody can name.
+  for port in 8080 8081 3001 5173 9101 9102 9103 9104 9105 9106; do
+    stray="$(lsof -ti ":${port}" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "${stray}" ]]; then
+      info "port ${port} is still held by ${stray}; stopping it"
+      kill -9 ${stray} 2>/dev/null || true
+    fi
+  done
 else
   info "no recorded processes (already stopped?)"
 fi
