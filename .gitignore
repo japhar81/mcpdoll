@@ -38,6 +38,11 @@ deploy/local/*.pem
 # are per-machine.
 deploy/local/*.pub
 deploy/local/snapshot.pb
+deploy/local/revocations.pb
+# Minted agent credentials. `make dev` writes real, working secrets here, and
+# the `mcpd.` marker exists precisely so a scanner flags them in a repository —
+# so committing this file would trip the alarm this project designed.
+deploy/local/demo-keys.txt
 deploy/local/logs/
 deploy/local/dev.pids
 deploy/local/plugins/*.wasm
