@@ -11,7 +11,10 @@ export function PluginsScreen() {
   return (
     <Screen title="Plugins" isLoading={q.isLoading} error={q.error}>
       <p className="muted">
-        Rollout is the first column to read. <code>shadow</code> means a plugin
+        Rollout is the column to read first. shadow runs a plugin and records what
+        it would have done without doing it; enforce acts. Read a plugin's shadow
+        divergences before promoting it.
+      <code>shadow</code> means a plugin
         runs and is recorded but changes nothing; <code>enforce</code> means it
         acts. Promote only after reading a plugin's shadow divergences.
       </p>
@@ -61,9 +64,8 @@ export function PluginsScreen() {
 
       <h2>Artifact digests</h2>
       <p className="muted">
-        Checked before load. A mismatch refuses the plugin, which is what makes
-        a swapped artifact fail closed — and why the digest has to be updated
-        whenever the plugin is.
+        Checked before load. A mismatch refuses the plugin, so update the digest
+        whenever you rebuild one.
       </p>
       <Table
         columns={["Plugin", "Digest"]}

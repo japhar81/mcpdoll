@@ -53,15 +53,13 @@ export function ServerDetailScreen() {
 
           <h2>Tenant bindings</h2>
           <p className="muted">
-            One backend, one address per tenant. The same tools with different
-            data behind them — which is the whole reason a tenant is a routing
-            fact and not just a label (ADR 0017).
+            One address per tenant: the same tools, different data behind
+            them.
           </p>
           <p className="muted">
             Only the primary is discovered. Replicas serve traffic but never
-            define the catalog: a replica whose tools have drifted is a routing
-            problem, and admitting from it would silently change what every
-            principal in that tenant can see.
+            define the catalog, so a drifted replica leaves the pool and is
+            reported here without changing what anyone sees.
           </p>
           <Table
             columns={["Tenant", "Primary", "Replicas"]}
@@ -81,8 +79,7 @@ export function ServerDetailScreen() {
           <p className="muted">
             Only the tools the registry names explicitly. Everything else this
             backend publishes inherits{" "}
-            <EffectBadge effect={s.default_effect_class} />, which is why the
-            default is the field to get right.
+            <EffectBadge effect={s.default_effect_class} />.
           </p>
           <Table
             columns={["Tool", "Effect class"]}
@@ -97,8 +94,7 @@ export function ServerDetailScreen() {
             <>
               <h2>Withheld tools</h2>
               <p className="muted">
-                Never admitted, for any tenant. An exclusion is not an
-                override with a blank class: the tool does not reach the
+                Never admitted, for any tenant. These do not reach the
                 snapshot at all.
               </p>
               <Table

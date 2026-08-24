@@ -43,9 +43,10 @@ export function SnapshotInspectScreen() {
       }
     >
       <p className="muted">
-        The file's bytes are sent, not its path — a server that opens whatever
-        path a caller names is an arbitrary file read. The signature is{" "}
-        <em>not</em> checked here; use Verify for that.
+        The signature is not checked here — use Verify for that. Inspect works on
+        a snapshot signed by a key you do not hold, which is when it is most
+        useful.
+      <em>not</em> checked here; use Verify for that.
       </p>
 
       <label className="field" style={{ maxWidth: 420 }}>

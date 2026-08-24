@@ -71,6 +71,7 @@ generate-go:
 # The console's route manifest is generated from its router, so it cannot
 # describe a route that does not exist. See tools/paritycheck.
 generate-ts:
+	$(GO) run ./tools/gents
 	cd web && npm run routes
 
 ## verify-generated: fail if generated code is stale (CI gate)

@@ -32,8 +32,8 @@ export function GatewayScreen() {
           />
           <div className="note">
             <strong>
-              The data plane does not depend on this control plane at request
-              time.
+              The gateway serves from the snapshot it already holds. If this control
+              plane goes down, publishing and this console stop; tool calls do not.
             </strong>{" "}
             It serves from the snapshot it already holds, so a control-plane
             outage stops publishing and stops this console — it does not stop a

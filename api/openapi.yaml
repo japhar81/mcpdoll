@@ -1761,9 +1761,8 @@ components:
           type: array
           description: |
             Every permission that exists, not only the ones some role uses.
-            Adding one is a schema change and a UI change — friction that exists
-            because a permission set which grows casually stops being
-            reviewable.
+            The difference is what a console can show as unreachable: a
+            permission no role grants is an operation nobody can perform.
           items: { type: string }
 
     BackendHealthReport:
@@ -1933,10 +1932,17 @@ components:
         duration_ms: { type: integer, format: int64 }
         text: { type: string }
         gateway_detail:
+          type: object
+          additionalProperties: true
           description: |
             The gateway's own `_meta` annotation — which plugin mutated the
             result, which hook denied it. Shaped by the pipeline rather than by
             this API, so it is returned as-is.
+
+            Declared open rather than left untyped: a property with no `type` at
+            all is indistinguishable from one somebody forgot to finish, and a
+            generated client has to guess. `additionalProperties: true` says the
+            shape is deliberately not this API's to define.
         input_requests:
           type: array
           items: { type: string }

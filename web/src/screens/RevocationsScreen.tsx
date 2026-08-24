@@ -60,18 +60,15 @@ export function RevocationsScreen() {
 
           <div className="note">
             <strong>List age is the exposure window.</strong> A revoked
-            credential keeps working for exactly as long as the gateway&apos;s
-            list is out of date. That is a deliberate trade: refusing to serve
-            when the list is unreachable would let a control-plane outage stop
-            tool calls, which is the failure the whole architecture exists to
-            prevent. The window is bounded and measurable rather than removed.
+            credential keeps working for as long as the gateway&apos;s list is
+            out of date. Under a minute is normal — the control plane
+            republishes every 30 seconds. A climbing figure means the gateway
+            has stopped receiving the list.
           </div>
 
           <h2>Refused principals</h2>
           <p className="muted">
-            Ids, not grants. There is no scope and no role here — nothing in
-            this list can authorize anything, which is what keeps &ldquo;why was
-            this allowed?&rdquo; answerable from the snapshot alone.
+            Each of these is refused whatever the snapshot says.
           </p>
           <Table
             columns={["Principal", "Kind", "Reason", "Revoked"]}
@@ -90,8 +87,8 @@ export function RevocationsScreen() {
 
           <p className="muted">
             Entries disappear once a snapshot built after the revocation is
-            serving: that snapshot already omits the credential, so carrying it
-            here would only make the signed list bigger. Pruned through snapshot{" "}
+            serving — that snapshot already omits the credential. Pruned through
+            snapshot{" "}
             <span className="mono">{data.pruned_through}</span>.
           </p>
         </>

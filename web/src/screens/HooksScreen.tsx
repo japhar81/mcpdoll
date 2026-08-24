@@ -22,9 +22,8 @@ export function HooksScreen() {
   return (
     <Screen title="Pipeline hooks" isLoading={q.isLoading} error={q.error}>
       <p className="muted">
-        The set is closed at seven. Every hook is a place plugin authors must
-        reason about and a place the request budget has to be divided, so an
-        eighth requires an ADR rather than a pull request.
+        Seven hooks, in execution order. Every plugin declares which of them it
+        runs at, and the per-request plugin budget is divided across them.
       </p>
       <Table
         columns={["#", "Hook", "Runs"]}

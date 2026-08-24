@@ -45,6 +45,16 @@ export function TenantsScreen() {
   const data = q.data;
   const doomed = data?.registered.find((t) => t.id === tenantId);
 
+  // Named, not counted. "Some tenants have no bindings" makes the reader scan
+  // the table to work out which — the banner should say what the row already
+  // knows.
+  const unregistered = (data?.registered ?? [])
+    .filter((t) => t.status === "unregistered")
+    .map((t) => t.slug);
+  const unbound = (data?.registered ?? [])
+    .filter((t) => t.id && t.backends === 0)
+    .map((t) => t.slug);
+
   return (
     <Screen
       title="Tenants"
@@ -64,9 +74,8 @@ export function TenantsScreen() {
             <strong>New tenant</strong>
           </div>
           <p className="muted">
-            The slug appears verbatim in every scope string this tenant&apos;s
-            grants use, so it cannot be changed afterwards — renaming would
-            orphan every grant naming it.
+            The slug appears in every grant scope for this tenant and cannot be
+            changed afterwards.
           </p>
           <label className="field">
             Slug
@@ -111,9 +120,8 @@ export function TenantsScreen() {
           {doomed ? (
             <p className="muted">
               This deletes the tenant along with its {doomed.users} user
-              {doomed.users === 1 ? "" : "s"}, every grant they hold, and every
-              API key they own. The cascade is the schema&apos;s, so nothing is
-              left behind — and nothing can be recovered.
+              {doomed.users === 1 ? "" : "s"}, every grant they hold, and every API key
+              they own. Nothing is left behind and nothing can be recovered.
             </p>
           ) : (
             <p className="muted">
@@ -179,9 +187,17 @@ export function TenantsScreen() {
               <code>{t.slug}</code>,
               t.name,
               <TenantStatus status={t.status} />,
-              <span className="mono">{t.users}</span>,
-              <span className="mono">{t.backends}</span>,
-              <span className="mono">{t.tools}</span>,
+              <Count
+                value={t.users}
+                warnAtZero={t.id !== undefined}
+                why="Nobody can authenticate into this tenant."
+              />,
+              <Count
+                value={t.backends}
+                warnAtZero
+                why="Nothing is bound, so no tool can reach this tenant whatever its users are granted."
+              />,
+              <Count value={t.tools} />,
               t.id ? (
                 <>
                   <Link className="link" to={`/tenants/${t.id}/users`}>
@@ -198,24 +214,54 @@ export function TenantsScreen() {
             empty="No tenants. Create one, then add a user to it."
           />
 
-          {data.registered.some((t) => t.status === "unregistered") && (
+          {unregistered.length > 0 && (
             <div className="note warn">
-              <strong>Some slugs are bound but do not exist.</strong> The
-              registry routes to them, but no tenant record does, so nobody can
-              authenticate into them and their tools reach no one.
+              <strong>
+                Bound by the registry, but no tenant record exists:{" "}
+                {unregistered.join(", ")}.
+              </strong>{" "}
+              Nobody can authenticate into{" "}
+              {unregistered.length === 1 ? "it" : "them"}. Create the tenant, or
+              remove the binding from the registry.
             </div>
           )}
-          {data.registered.some((t) => t.id && t.backends === 0) && (
+          {unbound.length > 0 && (
             <div className="note warn">
-              <strong>Some tenants have no backend bindings.</strong> Their
-              users can sign in and will see an empty catalog, whatever they are
-              granted — there is nothing bound for them to reach.
+              <strong>No backend bindings: {unbound.join(", ")}.</strong> Their
+              users can sign in and will see an empty catalog. Bind a backend to{" "}
+              {unbound.length === 1 ? "it" : "them"} in the registry.
             </div>
           )}
         </>
       )}
     </Screen>
   );
+}
+
+/**
+ * A count that flags itself when zero means something is wrong.
+ *
+ * The warning belongs on the row rather than only in a banner underneath: a
+ * banner naming a condition leaves the reader scanning for the row it applies
+ * to, which is exactly the work the table should have already done.
+ */
+function Count({
+  value,
+  warnAtZero,
+  why,
+}: {
+  value: number;
+  warnAtZero?: boolean;
+  why?: string;
+}) {
+  if (warnAtZero && value === 0) {
+    return (
+      <span className="mono count-warn" title={why}>
+        ⚠ 0
+      </span>
+    );
+  }
+  return <span className="mono">{value}</span>;
 }
 
 function TenantStatus({ status }: { status: string }) {

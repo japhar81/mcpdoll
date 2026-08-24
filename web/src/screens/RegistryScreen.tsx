@@ -25,8 +25,8 @@ export function RegistryScreen() {
 
           <h2>Namespaces</h2>
           <p className="muted">
-            The prefix is what every tool in the namespace is served under, and
-            is why two namespaces cannot share one.
+            Every tool in a namespace is served under its prefix, so no two
+            namespaces may share one.
           </p>
           <Table
             columns={["Prefix", "Name", "Team", "Owner group"]}
@@ -40,10 +40,10 @@ export function RegistryScreen() {
 
           <h2>Toolsets</h2>
           <p className="muted">
-            The grantable unit. A toolset name appears verbatim in every grant
-            scope, so renaming one silently changes who can reach it — which is
-            why the name is part of the registry rather than a display label.
-            Priority breaks ties when two toolsets carry the same tool.
+            The grantable unit. A toolset&apos;s name appears in every grant
+            scope that reaches it, so renaming one changes who can reach it —
+            regrant afterwards. Priority breaks ties when two toolsets carry the
+            same tool.
           </p>
           <Table
             columns={["Name", "Priority", "Namespaces", "Token budget"]}

@@ -492,3 +492,29 @@ a.link:hover { text-decoration: underline; }
   max-width: 76ch;
 }
 .flow li { margin-bottom: 8px; }
+
+/* A wrapped row of small code tokens — permissions, scopes.
+   Used by /session; the class was referenced before it existed, which rendered
+   as one unbroken run of text. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.chips code {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* A count whose zero is a problem — an unbound tenant, a user nobody granted.
+   Marked on the row so a banner does not send the reader hunting for which. */
+.count-warn {
+  color: var(--danger);
+  font-weight: 600;
+  cursor: help;
+}

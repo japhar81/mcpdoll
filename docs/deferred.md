@@ -151,26 +151,18 @@ exist either (see the entries above and below):
   a session for a person. Every console user is therefore the same principal
   with the same access — see "separation of duties" below.
 
-### TypeScript types generated from the spec
+### The console's copy was written for me, not for an operator
 
-`web/src/lib/types.ts` is hand-written, so it is a second definition of shapes
-that `internal/api` also defines, and it can drift. The Go side is protected —
-`internal/api/schema_test.go` holds every struct against the spec's schemas by
-field name — and the console's *paths* are now checked too
-(`internal/api/console_test.go`), after a moved route left `listTenants`
-fetching a URL that no longer existed: parity was green, the types compiled, and
-the screen 404'd until somebody clicked it.
+Fixed once, and worth watching. Screens carried paragraphs justifying design
+decisions — ADR citations, "on purpose", "the alternative would be" — which
+is documentation aimed at whoever built it rather than whoever is looking at
+it. It has been swept; the reasoning moved into the component doc comments,
+where it belongs and where it is still there for the next maintainer.
 
-What is still unchecked is the field names on the TypeScript side. A response
-field renamed in Go and in the spec, and not in `types.ts`, compiles and reads
-as `undefined` at runtime. Generating the file from the spec is the fix.
-
-Missing: `openapi-typescript` in `make generate`, plus a `verify-generated` gate.
-The work is small; it was not done because the schema check bought most of the
-same protection for the half where the drift would be silent.
-
-Consequence: a field renamed in the spec and in Go will typecheck fine in the
-console and render `undefined` at runtime.
+The test that was applied: does this sentence help the reader decide or act? A
+banner that says "some tenants have no bindings" fails it — the reader then
+scans the table to work out which. It names them now, and the row carries the
+mark.
 
 ### The gRPC plugin host and the LLM guard
 

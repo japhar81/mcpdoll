@@ -94,10 +94,9 @@ export function GrantsScreen() {
       }
     >
       <p className="muted">
-        These are the grants the user holds <em>directly</em>. An API key&apos;s
-        effective grants are the intersection of what the key declares with this
-        set, recomputed at every resolution — so a key can narrow what its owner
-        holds but never widen it.
+        What this user holds directly. An API key carries these intersected with
+        whatever the key itself declares, so a key can narrow this set but never
+        widen it.
       </p>
 
       <Table

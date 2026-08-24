@@ -48,9 +48,7 @@ export function OverviewScreen() {
     <Screen title="Overview">
       <p className="muted">
         MCPDoll fronts many MCP backends behind one MCP endpoint. Who you are
-        decides what you see: a principal's grants are their catalog. It is
-        split into two planes that fail independently — that split is the
-        architecture, not an implementation detail.
+        decides what you see: a principal's grants are their catalog.
       </p>
 
       <div className="topology">

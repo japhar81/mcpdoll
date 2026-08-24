@@ -25,8 +25,8 @@ export function HealthScreen() {
           />
           <h2>What this control plane is reading</h2>
           <p className="muted">
-            Two paths, shown because unexpected output is nearly always the
-            wrong file rather than the wrong logic.
+            The files this control plane is reading. Check these first when output
+            looks wrong.
           </p>
           <Stats
             items={[
@@ -35,7 +35,9 @@ export function HealthScreen() {
             ]}
           />
           <div className="note">
-            <strong>Health is outside the auth wall.</strong> A load balancer
+            <strong>
+This endpoint needs no credential, so a load balancer can reach it.
+</strong> A load balancer
             has no credential, and this response says nothing that is not
             already implied by the port accepting connections.
           </div>

@@ -353,8 +353,17 @@ Two further checks stop the surfaces agreeing only nominally:
   and every type a schema, a `required` field may not be `omitempty`, and every
   `$ref` must resolve. It found **sixteen** drifted schemas when first written.
 
-The gap that remains is the TypeScript half — `web/src/lib/types.ts` is
-hand-written and nothing checks it. Recorded in `docs/deferred.md`.
+The TypeScript half is closed too, in two directions:
+
+- `web/src/lib/types.ts` is **generated** from the spec by `tools/gents`, so a
+  renamed field cannot compile on the console side and read as `undefined` at
+  runtime. The generator refuses on any construct it does not understand rather
+  than emitting `unknown`, because a file that compiles and lies is worse than a
+  build failure.
+- `internal/api/console_test.go` holds the *paths* `web/src/lib/api.ts` fetches
+  against the spec, both ways. It was written after `listTenants` moved
+  server-side and the console kept calling the old URL: parity was green, the
+  types compiled, and the screen 404'd.
 
 ## Decisions of record
 

@@ -14,6 +14,14 @@ import { Screen, Stats, Table } from "../components/Screen.tsx";
 export function RolesScreen() {
   const q = useQuery({ queryKey: ["roles"], queryFn: listRoles });
 
+  // Permissions no role grants. The full permission list used to be on this
+  // screen and said nothing an operator could act on — with the default
+  // catalog `platform_admin` holds every one, so the table below already showed
+  // them all. This is the part reading the table does not give you: an
+  // operation nobody can reach.
+  const granted = new Set((q.data?.roles ?? []).flatMap((r) => r.permissions));
+  const unreachable = (q.data?.permissions ?? []).filter((p) => !granted.has(p));
+
   return (
     <Screen title="Roles" isLoading={q.isLoading} error={q.error}>
       {q.data && (
@@ -26,11 +34,8 @@ export function RolesScreen() {
           />
 
           <p className="muted">
-            A grant pairs one of these roles with a scope. The role decides
-            what; the scope decides where. <code>tool:list</code> and{" "}
-            <code>tool:call</code> are separate on purpose — a role that could
-            call without listing would let an agent reach a tool it was never
-            shown.
+            A grant pairs one of these roles with a scope: the role decides
+            what, the scope decides where.
           </p>
 
           <Table
@@ -42,16 +47,17 @@ export function RolesScreen() {
             empty="No roles defined, so no grant can authorize anything."
           />
 
-          <h2>Every permission that exists</h2>
-          <p className="muted">
-            The complete closed set, not only the ones some role happens to use.
-            Adding one is a schema change and a change to this console.
-          </p>
-          <div className="chips">
-            {q.data.permissions.map((p) => (
-              <code key={p}>{p}</code>
-            ))}
-          </div>
+          {unreachable.length > 0 && (
+            <div className="note warn">
+              <strong>
+                {unreachable.length} permission
+                {unreachable.length === 1 ? "" : "s"} no role grants.
+              </strong>{" "}
+              Nobody can hold {unreachable.length === 1 ? "it" : "them"}, so the
+              operations behind {unreachable.length === 1 ? "it" : "them"} are
+              unreachable: {unreachable.join(", ")}.
+            </div>
+          )}
         </>
       )}
     </Screen>

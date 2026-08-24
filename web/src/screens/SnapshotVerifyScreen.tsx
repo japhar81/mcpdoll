@@ -30,10 +30,9 @@ export function SnapshotVerifyScreen() {
       }
     >
       <p className="muted">
-        Two checks, both of which matter. The signature is verified over exactly
-        the transmitted bytes; then the snapshot is built, because a correctly
-        signed snapshot with a dangling reference is refused by every data-plane
-        instance.
+        Two checks: the signature over exactly the transmitted bytes, then whether
+        the snapshot would activate. A correctly signed snapshot with a dangling
+        reference is refused by every data plane.
       </p>
 
       <div className="row">
@@ -64,7 +63,8 @@ export function SnapshotVerifyScreen() {
       </label>
       <p className="muted">
         You supply these rather than the server using its own, so this answers
-        “would <em>that</em> data plane accept it?” — including one whose trust
+        whether that particular data plane would accept it.
+      <em>that</em> data plane accept it?” — including one whose trust
         list you are about to change.
       </p>
 

@@ -50,20 +50,15 @@ export function SessionScreen() {
           {me.kind === "static" && (
             <div className="note warn">
               <strong>This is the deployment&apos;s break-glass token.</strong>{" "}
-              It holds every permission, including minting a signing key that
-              every data-plane instance trusts. It exists so CI can build a
-              snapshot before any user does, and so a control plane whose
-              database is down is still inspectable. Every use of it is logged.
-              <br />
-              Sign in as a person for ordinary work.
+              It holds every permission, including minting a signing key every
+              data-plane instance trusts, and every use of it is logged. Sign in
+              as a person for ordinary work.
             </div>
           )}
 
           <h2>Grants</h2>
           <p className="muted">
-            The same grants that decide what an agent sees through the gateway.
-            One authorization model, not two — which is what stops the control
-            plane and the data plane drifting into different answers.
+            The same grants decide what an agent sees through the gateway.
           </p>
           <Table
             columns={["Role", "Scope"]}
@@ -76,9 +71,9 @@ export function SessionScreen() {
 
           <h2>Permissions at global scope</h2>
           <p className="muted">
-            Global scope only. A tenant administrator holds theirs at{" "}
-            <code>t/&lt;tenant&gt;</code> and this list is empty for them —
-            flattening the union would claim more than they have.
+            Held at global scope. A tenant administrator holds theirs at{" "}
+            <code>t/&lt;tenant&gt;</code> instead, so this list is empty for
+            them — Grants above shows what they hold and where.
           </p>
           {me.permissions.length > 0 ? (
             <div className="chips">
@@ -88,8 +83,7 @@ export function SessionScreen() {
             </div>
           ) : (
             <p className="muted">
-              None. Anything you hold is scoped to a tenant, which is the normal
-              shape for a tenant administrator.
+              None. Anything you hold is scoped to a tenant — see Grants above.
             </p>
           )}
         </>

@@ -104,9 +104,8 @@ export function APIKeysScreen() {
             <span className="badge badge-write">shown once</span>
           </div>
           <p className="muted">
-            Copy this now. It is stored only as an Argon2id hash, so nothing —
-            including this console — can show it again. If it is lost, mint
-            another key and revoke this one.
+            Copy it now. Nothing stores it, including this console, so it cannot be
+            shown again — if it is lost, mint another key and revoke this one.
           </p>
           <pre className="out">{minted.secret}</pre>
           <div className="row">
@@ -142,10 +141,9 @@ export function APIKeysScreen() {
 
           <h2>Narrow it</h2>
           <p className="muted">
-            A key can narrow what its owner holds but never widen it: effective
-            grants are the intersection, recomputed at every resolution.
-            Selecting nothing gives the key everything its owner has — which
-            also means it shrinks automatically when they are revoked.
+            A key can narrow what its owner holds, never widen it. Select nothing and
+            the key carries whatever its owner has, shrinking automatically when they
+            are revoked.
           </p>
           {(owner.data?.grants ?? []).map((g) => {
             const on = narrow.some(
@@ -172,9 +170,8 @@ export function APIKeysScreen() {
           })}
           {(owner.data?.grants.length ?? 0) === 0 && (
             <p className="muted">
-              This user holds no grants, so any key minted here resolves to an
-              empty catalog. That is a legitimate thing to do — grant something
-              first and the same key starts working.
+              This user holds no grants, so a key minted here resolves to an empty
+              catalog. Grant something and the same key starts working.
             </p>
           )}
 
@@ -258,9 +255,8 @@ export function APIKeysScreen() {
         empty="No keys. This user cannot be acted as by any agent."
       />
       <p className="muted">
-        Revoked keys stay listed. A credential that was in use and is not any
-        more is exactly what an incident review needs to see, and removing the
-        row would remove the evidence.
+        Revoked keys stay listed, so an incident review can still see what existed
+        and when it was last used.
       </p>
 
       <Republish what="Minted and revoked keys" />

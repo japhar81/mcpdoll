@@ -136,13 +136,12 @@ export function LoginScreen() {
 
         <div className="login-note">
           <p>
-            The tenant is part of who you are, not a filter: the same email in
-            two tenants is two different people.
+            The same email in two tenants is two different people, so the tenant is
+            part of who you are.
           </p>
           <p>
             What you can do here is decided by your grants — the same ones that
-            decide what an agent sees through the gateway. There is one
-            authorization model, not two.
+            decide what an agent sees through the gateway.
           </p>
         </div>
 
@@ -176,11 +175,9 @@ export function LoginScreen() {
             </button>
             <div className="login-note">
               <p>
-                <strong>The configured token holds every permission.</strong> It
-                exists so CI can build a snapshot before any user does, and so a
-                deployment whose database is down is still inspectable. Every
-                use of it is logged. An API key works here too, and carries only
-                what its owner granted it.
+                <strong>The deployment token holds every permission.</strong> Every
+                use of it is logged. An API key works here too and carries only what
+                its owner granted it.
               </p>
               <p>
                 Leave it blank if the control plane was started with{" "}

@@ -14,9 +14,8 @@ export function ServersScreen() {
         <code>advisory</code> serves it and records the drift.
       </p>
       <p className="muted">
-        One backend serves many tenants: the tenant count is how many addresses
-        it is bound to. Same tools, different data per tenant, which is why the
-        addresses live on the backend&apos;s own page rather than in this list.
+        One backend serves many tenants. The tenant count is how many addresses
+        it is bound to; open a backend to see them.
       </p>
       <Table
         columns={[

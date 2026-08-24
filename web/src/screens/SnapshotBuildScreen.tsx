@@ -40,9 +40,9 @@ export function SnapshotBuildScreen() {
     >
       <p className="muted">
         Discovers every backend the registry names, canonicalizes what they
-        publish, resolves bundles and audiences, and signs the result. Every
-        problem is a build failure: a snapshot some instances would refuse is
-        worse than no snapshot.
+        publish, resolves toolsets and per-tenant bindings, and signs the result.
+        Any problem fails the build rather than producing a snapshot some
+        instances would refuse.
       </p>
 
       <div className="card">
@@ -64,10 +64,8 @@ export function SnapshotBuildScreen() {
         </label>
         {allowUnreachable && (
           <div className="note warn">
-            Tools from a backend that is merely <em>temporarily</em> down would
-            vanish from every catalog, invalidating clients' prompt caches. Use
-            this to publish around a decommissioned backend, not around an
-            outage.
+            Their tools vanish from every catalog that had them. Use this for
+            a decommissioned backend, not for one that is briefly down.
           </div>
         )}
         {!dryRun && (
@@ -119,8 +117,8 @@ export function SnapshotBuildScreen() {
 
           <h2>What discovery found</h2>
           <p className="muted">
-            The negotiated version is how a legacy backend becomes visible
-            without anyone having declared it legacy.
+            Protocol is what each backend negotiated, which may be older than
+            what the gateway serves its own clients.
           </p>
           <Table
             columns={[
@@ -153,8 +151,8 @@ export function SnapshotBuildScreen() {
 
           <h2>Trust entry</h2>
           <p className="muted">
-            A data plane needs this in its <code>trusted_signing_keys</code> to
-            accept what was just built.
+            Each data plane needs this in its{" "}
+            <code>trusted_signing_keys</code> to accept what was just built.
           </p>
           <pre className="out">{m.data.public_key}</pre>
         </>

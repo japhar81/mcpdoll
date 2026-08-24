@@ -22,8 +22,9 @@ export function KeysScreen() {
     >
       <div className="note warn">
         <strong>
-          Whoever holds a signing key can publish configuration to every
-          data-plane instance.
+          Whoever holds a signing key can publish configuration to every data-plane
+          instance. The private half is written to the control plane's key directory
+          and is never returned over this connection.
         </strong>{" "}
         The private half is written to the control plane's key directory and is
         never returned over this connection — not to be awkward, but because an
@@ -58,10 +59,9 @@ export function KeysScreen() {
           />
           <h2>Trust entry</h2>
           <p className="muted">
-            Add this to each data plane's <code>trusted_signing_keys</code>{" "}
-            <em>before</em> signing anything with the new key. A verifier holds
-            several keys at once precisely so a rotation does not need a
-            lockstep restart.
+            Add this to each data plane's <code>trusted_signing_keys</code> before
+            signing anything with the new key. A data plane trusts several keys at
+            once, so a rotation needs no restart.
           </p>
           <pre className="out">{m.data.trust_entry}</pre>
         </>

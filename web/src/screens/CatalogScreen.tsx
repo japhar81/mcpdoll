@@ -74,9 +74,8 @@ export function CatalogScreen() {
 
       {applied === null && (
         <p className="muted">
-          Paste an agent&apos;s key and connect. A key with no grants is a
-          legitimate thing to try — it shows an empty catalog, which is the
-          correct state for a user nobody has granted anything yet.
+          Paste an agent&apos;s key and connect. A key whose owner holds no
+          grants shows an empty catalog rather than an error.
         </p>
       )}
 
@@ -96,10 +95,9 @@ export function CatalogScreen() {
           />
 
           <div className="note">
-            <strong>Every catalog is private.</strong> It is derived from this
+            <strong>Every catalog is private.</strong> It is built from this
             principal&apos;s grants, so no two principals necessarily see the
-            same list and none of it may be shared from a common cache. That is
-            the permanent cost of per-user access control (ADR 0016).
+            same list and no cache may share one between them.
           </div>
 
           <Table
