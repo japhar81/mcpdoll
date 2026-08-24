@@ -13,9 +13,10 @@
 # by grants in the database, not by this document (ADR 0016): a toolset is the
 # unit an admin grants, and the tenant comes from the credential.
 #
-# Bump `version` on every publish. The data plane refuses a snapshot no newer than
-# the one it is serving, which is what stops a replayed older document rolling
-# policy backwards.
+# `version` is this document's revision, bumped in the change that edits it. It
+# is not the snapshot version — that is assigned at build time, because a
+# grants-only republish edits no file here and still has to produce a snapshot
+# the data plane will accept.
 org: org_local
 version: 1
 

@@ -49,6 +49,7 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 		allowUnreachable bool
 		dryRun           bool
 		databaseURL      string
+		version          int64
 	)
 
 	cmd := &cobra.Command{
@@ -87,6 +88,7 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 				DiscoverTimeout:  discoverTimeout,
 				Concurrency:      concurrency,
 				AllowUnreachable: allowUnreachable,
+				Version:          version,
 			}
 
 			// Tenancy and RBAC live in the database, and a registry that binds
@@ -169,6 +171,8 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 		"validate and report without writing a file")
 	cmd.Flags().StringVar(&databaseURL, "database-url", "",
 		"where tenants, users, and grants live; defaults to MCPDOLL_DATABASE_URL")
+	cmd.Flags().Int64Var(&version, "version", 0,
+		"snapshot version; 0 uses a Unix timestamp, which is monotonic without coordination")
 	_ = cmd.MarkFlagRequired("key")
 
 	return cmd

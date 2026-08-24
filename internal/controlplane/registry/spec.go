@@ -52,10 +52,16 @@ type Spec struct {
 	// Org owns everything in the document.
 	Org string `yaml:"org"`
 
-	// Version is the snapshot version this document produces. It must increase
-	// on every publish: the data plane refuses a snapshot no newer than the one
-	// it is serving, which is what stops a replayed older document rolling
-	// policy backwards.
+	// Version is this document's own revision, bumped in the pull request that
+	// changes it. It is not the snapshot version.
+	//
+	// It was, until grants moved into the database (ADR 0018). A grants-only
+	// republish edits no file, so a snapshot version taken from here would not
+	// move, and the data plane would silently refuse the rebuild — leaving an
+	// admin who had just revoked something looking at a console that said it
+	// worked. The snapshot version is assigned at build time now; this stays
+	// because a reviewer reading a diff wants to know which revision they are
+	// looking at.
 	Version int64 `yaml:"version"`
 
 	Catalog    CatalogSpec     `yaml:"catalog"`
@@ -323,7 +329,7 @@ func (s *Spec) Validate() error {
 		add("org is required")
 	}
 	if s.Version <= 0 {
-		add("version must be a positive integer that increases on every publish (got %d)", s.Version)
+		add("version must be a positive integer; bump it in the change that edits this document (got %d)", s.Version)
 	}
 	if s.Catalog.TTL <= 0 {
 		add("catalog.ttl must be positive")

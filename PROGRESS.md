@@ -92,6 +92,27 @@ Recorded because each one argues for the no-mocks approach.
    missing". Fixed by recording the deferral source in the signed envelope and
    routing responses to whoever asked. See ADR 0012.
 
+5. **`View.Tenant` takes a slug; the credential resolver passed it an id.** The
+   API-key resolver looked the tenant up by `principal.TenantId` against a map
+   keyed by slug, got nil, and refused every valid credential — so the gateway
+   authenticated nobody. Both are `string`, so the compiler had nothing to say.
+
+6. **The dev header resolver's default subject would have made every failed
+   authentication succeed.** Chained behind the API key resolver, a wrong key
+   fell through to the header resolver, which had no subject header, fell back
+   to its default, and returned a principal. A test that presented a *wrong*
+   key found it; the default is empty now, and the chain's ordering is the
+   security property rather than a convenience.
+
+7. **`--grant role@scope` split on the last `@`.** Role names never contain
+   one, but a tool name can, and a scope naming that tool was cut in half into a
+   grant that validated and authorized something else.
+
+8. **The bootstrap's "did every endpoint get rewritten" guard checked a key
+   that no longer existed.** It grepped for `endpoint: http://localhost`; a
+   binding names its host as `primary:`. The check passed vacuously on every
+   unrewritten address.
+
 ## Completed slices
 
 ### Slice 1 — canonicalization + content-addressed digests
@@ -216,6 +237,41 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
 [0008](docs/adr/0008-dual-plugin-runtime.md),
 [0013](docs/adr/0013-wasm-abi-buffer-ownership.md)
 
+### Slice 8 — tenancy, RBAC, and the single endpoint
+
+The restructure. A tenant owns its users; a user is granted toolsets at
+hierarchical scopes; a toolset binds to a different backend deployment per
+tenant. There are no audiences and no `/mcp/{audience}` — the tenant and the
+toolset both come from the credential.
+
+- **authz**: `*` ⊃ `t/<tenant>` ⊃ `t/<tenant>/ts/<toolset>` ⊃ `.../<tool>`, a
+  closed permission set, and two engines (built-in and Casbin) pinned to
+  identical decisions by a 484-case conformance test.
+- **store**: tenants, users, grants, API keys, and the declarative `SetGrants`
+  that makes "what should this person hold" the question rather than a sequence
+  of deltas.
+- **snapshot**: tenants, toolsets, per-tenant bindings, and compiled RBAC — all
+  signed. `PrincipalView` composes lazily on first connect and is cached by
+  snapshot version, so a swap drops every view rather than invalidating them one
+  at a time.
+- **edge**: one `/mcp`. API keys verified against the snapshot with one hash and
+  no database, so a control-plane outage is still invisible to a tool call.
+- **tri-surface**: twelve new operations for tenants, users, grants, keys, and
+  the role catalog — API, CLI, and console each.
+
+Verified against the live stack: four principals, one toolset name, four
+different catalogs, and `globex/support` reaching a different container than
+`acme/support` through identical tool names.
+
+ADRs: [0014](docs/adr/0014-tenancy-and-principals.md),
+[0015](docs/adr/0015-rbac-scopes-and-engines.md),
+[0016](docs/adr/0016-toolsets-replace-audiences.md),
+[0017](docs/adr/0017-per-tenant-backends-and-pools.md),
+[0018](docs/adr/0018-grants-in-the-snapshot.md),
+[0019](docs/adr/0019-single-mcp-endpoint.md),
+[0020](docs/adr/0020-pluggable-identity-and-authz.md),
+[0021](docs/adr/0021-offline-credential-verification.md)
+
 ## Blockers
 
 - **`mcp-gateway-architecture.md` was never supplied.** The brief names it as the
@@ -226,21 +282,30 @@ ADRs: [0007](docs/adr/0007-seven-hooks.md),
 
 ## Next, in priority order
 
-1. **The restructure (ADRs 0014–0020).** `authz` and `store` are in; the
-   registry, snapshot, edge, and tri-surface management are not. See
-   `docs/deferred.md` for exactly what remains.
-2. **Admission + the job queue.** Postgres schema, `sqlc`, the
-   registry API, then the admission stages and human approval. The snapshotter is
-   already the piece admission would feed.
-4. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
+1. **A real identity provider, and the control plane enforcing its own RBAC.**
+   These are one piece of work. The role model exists and separation of duties
+   is expressible, but the control-plane API checks a single bearer token and no
+   permission — so every console user is the same principal. Closing it needs a
+   session that resolves to a person, which needs OIDC (ADR 0020).
+2. **A revocation path that does not wait for a snapshot.** The one place where
+   snapshot latency is an exposure rather than a trade: a leaked key stays valid
+   until somebody republishes. ADR 0018 named the fix — a signed revocation list
+   loaded out of band — and said it must be an explicit second mechanism rather
+   than an optimization hidden inside snapshot loading.
+3. **A grants-only rebuild that skips discovery.** Every grant change currently
+   re-probes every tenant's backends. Toggling ten grants is ten discovery
+   sweeps, which is exactly the shape ADR 0018 warned about.
+4. **Admission + the job queue.** The snapshotter is already the piece admission
+   would feed.
+5. **The gRPC plugin host and the LLM guard.** The proto contract is defined and
    the host registry refuses a gRPC plugin loudly rather than ignoring it.
-5. **A control-plane dashboard and alert rules.** The gateway dashboard is
+6. **A control-plane dashboard and alert rules.** The gateway dashboard is
    provisioned as code; `mcpdoll.drift.events` and `mcpdoll.snapshot.rejects`
    are the two metrics that most obviously want an alert.
 
 ## The tri-surface law
 
-`make parity` is green: **17 operations, 17 CLI commands, 17 console routes.**
+`make parity` is green: **29 operations, 29 CLI commands, 29 console routes.**
 
 It checks three real artifacts, never a hand-maintained list — the spec, the
 built binary's `__commands --json`, and a route manifest generated from the

@@ -223,6 +223,8 @@ export interface BuildOptions {
   dry_run?: boolean;
   discover_timeout_ms?: number;
   concurrency?: number;
+  /** Absent means a Unix timestamp — monotonic without coordination. */
+  version?: number;
 }
 
 export const buildSnapshot = (options: BuildOptions) =>

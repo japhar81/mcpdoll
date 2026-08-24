@@ -132,13 +132,12 @@ rm -f "${KEYS}.new"
 
 # -------------------------------------------------------------- snapshot ----
 
-# A fresh version on every run. The store refuses a snapshot no newer than the
-# one it is serving, so a rebuild that reused version 1 would be silently
-# ignored and the stack would keep serving stale configuration.
-VERSION="$(date +%s)"
+# The build assigns the version itself — a Unix timestamp, monotonic without
+# anybody coordinating. Stamping one into the registry here used to be
+# necessary and is now the bug it was working around: the console's rebuild
+# would have reused whatever was stamped and been silently refused.
 KEY_ID="${MCPDOLL_KEY_ID:-dev}"
-log "building snapshot version ${VERSION}"
-sed -i "s/^version: [0-9]*/version: ${VERSION}/" "${STATE}/registry.yaml"
+log "building a snapshot"
 
 # --database-url is what carries the tenants and the API key digests into the
 # artifact. Without it the build fails on the first binding, correctly: its

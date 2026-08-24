@@ -114,7 +114,11 @@ func TestBuildDiscoversLiveBackends(t *testing.T) {
 	e := newEnv(t)
 	result := e.build(t, e.spec(t, 1, ""))
 
-	require.Equal(t, int64(1), result.Snapshot.Version)
+	// Not the registry's `version: 1`. The snapshot version is assigned at
+	// build time, because a grants-only republish edits no document and still
+	// has to produce something the data plane will accept (ADR 0018).
+	require.Greater(t, result.Snapshot.Version, int64(1_700_000_000),
+		"the build should have stamped a Unix timestamp")
 	require.NotEmpty(t, result.Snapshot.Id)
 	require.NotEmpty(t, result.Snapshot.RegistryDigest,
 		"the registry digest lets a snapshot be traced back to the document it came from")
@@ -445,4 +449,27 @@ func testTenants() []*snapshotpb.Tenant {
 	return []*snapshotpb.Tenant{{
 		Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active",
 	}}
+}
+
+func TestTwoBuildsProduceIncreasingVersions(t *testing.T) {
+	// Not parallel: it asserts on wall-clock ordering.
+	e := newEnv(t)
+	spec := e.spec(t, 1, "")
+
+	first := e.build(t, spec)
+	second, err := snapshotter.Build(context.Background(), snapshotter.Options{
+		Spec: spec, Signer: e.signer, Tenants: testTenants(),
+		DiscoverTimeout: 10 * time.Second,
+		// One past the first, rather than sleeping a second for the clock to
+		// move. What is being tested is that an explicit version is honoured
+		// and that the data plane's monotonicity rule can be satisfied by two
+		// builds from an unchanged document — which is the grants-only case.
+		Version: first.Snapshot.Version + 1,
+	})
+	require.NoError(t, err)
+	require.Greater(t, second.Snapshot.Version, first.Snapshot.Version)
+
+	// The document did not change, so its digest must not have. That is what
+	// makes "did the registry change, or only the grants?" answerable.
+	require.Equal(t, first.Snapshot.RegistryDigest, second.Snapshot.RegistryDigest)
 }

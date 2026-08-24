@@ -9,6 +9,7 @@ import {
   putGrants,
 } from "../lib/api.ts";
 import { ErrorBlock, Screen, Table } from "../components/Screen.tsx";
+import { Republish } from "../components/Republish.tsx";
 import type { Grant } from "../lib/types.ts";
 
 /**
@@ -186,12 +187,12 @@ export function GrantsScreen() {
             </button>
           </div>
           <p className="muted">
-            Saving submits the whole list. Anything removed above is revoked —
-            and takes effect for the data plane at the next snapshot, not
-            immediately.
+            Saving submits the whole list. Anything removed above is revoked.
           </p>
         </div>
       )}
+
+      {!editing && shown.length > 0 && <Republish what="Grant changes" />}
     </Screen>
   );
 }

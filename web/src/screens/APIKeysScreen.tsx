@@ -10,6 +10,7 @@ import {
   revokeAPIKey,
 } from "../lib/api.ts";
 import { ErrorBlock, Screen, Table } from "../components/Screen.tsx";
+import { Republish } from "../components/Republish.tsx";
 import type { Grant, MintedAPIKey } from "../lib/types.ts";
 
 /**
@@ -201,10 +202,11 @@ export function APIKeysScreen() {
             <span className="badge badge-bad">immediate</span>
           </div>
           <p className="muted">
-            The credential stops resolving at once — this is the one revocation
-            that does not wait for a snapshot. The row stays listed so an
-            incident review can still see that the key existed and when it was
-            last used.
+            The key is marked revoked at once, but the gateway verifies against
+            the snapshot it holds — so the credential keeps working until a new
+            one is published. Publish immediately after revoking; a leaked key
+            is the one case where snapshot latency is a real exposure, and it is
+            recorded as such in <code>docs/deferred.md</code>.
           </p>
           {revoke.error != null && <ErrorBlock error={revoke.error} />}
           <div className="row">
@@ -260,6 +262,8 @@ export function APIKeysScreen() {
         more is exactly what an incident review needs to see, and removing the
         row would remove the evidence.
       </p>
+
+      <Republish what="Minted and revoked keys" />
     </Screen>
   );
 }

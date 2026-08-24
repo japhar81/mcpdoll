@@ -94,6 +94,17 @@ type Options struct {
 	Catalog    authz.Catalog
 	Principals []*snapshotpb.Principal
 
+	// Version is the snapshot version. It must exceed whatever the data plane
+	// is serving, or the swap is silently refused.
+	//
+	// Not taken from the registry document. It was, and that broke the moment
+	// grants moved into the database (ADR 0018): a grants-only republish edits
+	// no file, so the document's version would not move and the rebuild would
+	// be ignored — leaving an admin who just revoked something looking at a
+	// console that says it worked. Zero means "now", as a Unix timestamp, which
+	// is what ADR 0018 said this would become.
+	Version int64
+
 	// AllowUnreachable builds a snapshot even when a backend cannot be reached,
 	// omitting its tools.
 	//
@@ -119,6 +130,10 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		opts.Concurrency = 8
 	}
 
+	if opts.Version == 0 {
+		opts.Version = time.Now().Unix()
+	}
+
 	spec := opts.Spec
 	result := &Result{}
 
@@ -127,7 +142,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	b := snapshot.NewBuilder(spec.Version).
+	b := snapshot.NewBuilder(opts.Version).
 		WithID(ids.New(ids.KindSnapshot)).
 		WithCatalogDefaults(spec.Catalog.TTL, spec.Catalog.DegradedTTL)
 

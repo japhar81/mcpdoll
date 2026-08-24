@@ -242,6 +242,10 @@ type BuildSnapshotRequest struct {
 	DiscoverTimeoutMs int `json:"discover_timeout_ms,omitempty"`
 	// Concurrency is how many backends to discover at once.
 	Concurrency int `json:"concurrency,omitempty"`
+	// Version overrides the snapshot version. Absent means a Unix timestamp,
+	// which is what a grants-only republish wants: monotonic without anybody
+	// coordinating, and nothing to forget to bump.
+	Version int64 `json:"version,omitempty"`
 }
 
 func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +284,7 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 		Signer:           signer,
 		AllowUnreachable: req.AllowUnreachable,
 		Concurrency:      req.Concurrency,
+		Version:          req.Version,
 	}
 
 	// Tenancy and RBAC come from the database. Without them a binding names a

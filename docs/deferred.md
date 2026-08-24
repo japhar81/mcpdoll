@@ -85,31 +85,50 @@ Consequence: a publish today is programmatic, not reviewed. The gateway serves
 admitted definitions (ADR 0006) but "admitted" currently means "built into the
 snapshot" rather than "approved by a human who is not the publisher".
 
-### The restructure is partly landed
+### The restructure has landed; three pieces of it have not
 
-ADRs 0014–0020 are the design of record. Built so far: `internal/platform/authz`
-(scopes, roles, two engines, conformance) and `internal/controlplane/store`
-(tenancy, credentials, grants).
+ADRs 0014–0021 are the design of record, and the system now matches them.
+Built: `internal/platform/authz` (scopes, roles, two engines, conformance),
+`internal/controlplane/store` (tenancy, credentials, grants), toolsets replacing
+bundles and audiences, per-tenant bindings with a declared primary, a
+tenant-partitioned snapshot carrying grants and credentials, the single `/mcp`
+endpoint with lazily-composed `PrincipalView`s, tenant/user/grant/key management
+on all three surfaces, and offline credential verification in the data plane.
 
-Not yet built, and each is a breaking change when it lands:
+What is still missing from the design:
 
-- **Toolsets replacing bundles and audiences** in the registry (ADR 0016).
-- **Per-tenant backend bindings with pools and a primary** (ADR 0017).
-- **A tenant-partitioned snapshot carrying grants** (ADR 0018).
-- **The single `/mcp` endpoint** and `PrincipalView` (ADR 0019). Until this
-  lands the gateway still serves `/mcp/{audience}`, which the ADRs say no
-  longer exists.
-- **Tenant/user/grant/key management on all three surfaces** (ADR 0004). The
-  store has the operations; nothing exposes them yet.
-- **Identity providers and the gRPC SPI** (ADR 0020). Local passwords are
-  implemented in the store; OIDC, SAML, and the pluggable transport are not.
+- **Identity providers and the gRPC SPI** (ADR 0020). Local passwords and API
+  keys work; OIDC, SAML, and the pluggable authn/authz transport do not exist.
+  This is the largest remaining gap: an enterprise deployment authenticates
+  people through its IdP, and today a human signs in with a local password.
+- **A revocation path that does not wait for a snapshot** — see below. It is the
+  one place where snapshot latency is a real exposure rather than a trade.
+- **A grants-only rebuild that skips discovery.** ADR 0018 called this out as a
+  consequence and it is not addressed: every grant change triggers a full
+  republish, which re-probes every tenant's backends. Toggling ten grants is ten
+  discovery sweeps. The fix is to cache the last discovery pass and reuse it
+  when the registry digest is unchanged.
 
-Consequence: the running system is still the pre-restructure one. The ADRs
-describe where it is going, not where it is.
+### A leaked API key stays valid until the next snapshot
+
+Everything in this system takes effect at snapshot latency, and ADR 0018 argues
+that is right. A leaked credential is the exception, and this is where it is
+recorded rather than hidden in that ADR's consequences.
+
+`revokeAPIKey` writes to the database immediately. The data plane verifies
+against the snapshot it holds (ADR 0021), so the key keeps working until a new
+snapshot is built and swapped — seconds if somebody publishes, indefinitely if
+nobody does. The console's key screen says so at the moment of revoking and
+offers the publish button beside it, which is mitigation rather than a fix.
+
+The fix ADR 0018 named: a signed revocation list the data plane loads out of
+band. It has to be signed, and it has to be a distinct mechanism rather than an
+optimization inside snapshot loading, or "why was this denied?" stops having one
+auditable answer.
 
 ### The console: built, but read-and-inspect only
 
-`make parity` passes: all sixteen operations reach the API, the CLI, and the
+`make parity` passes: all twenty-nine operations reach the API, the CLI, and the
 console. The tri-surface law is satisfied *for the operations that exist*.
 
 What the console does not have, because the underlying capability does not
@@ -118,14 +137,15 @@ exist either (see the entries above and below):
 - **No approval or publish workflow.** There is nothing to approve until
   admission and human sign-off exist.
 - **No request-trace waterfall.** The trace data is produced; nothing stores it.
-- **No React Flow bundle composer or drift diff.** ADR 0001 records the design
+- **No React Flow toolset composer or drift diff.** ADR 0001 records the design
   language for these in detail; none of it is built. `reactflow` is not even a
   dependency yet.
 - **No live events.** Every screen polls or refetches on demand. RAGdoll's SSE
   bus is not ported.
-- **No login.** The API token is typed into the sidebar and kept in
-  `localStorage`. A real deployment needs a session from the identity provider,
-  which does not exist either.
+- **No real login.** There is a sign-in screen and the token is held in
+  `localStorage`, but it is the control plane's single bearer token rather than
+  a session for a person. Every console user is therefore the same principal
+  with the same access — see "separation of duties" below.
 
 ### TypeScript types generated from the spec
 
@@ -198,21 +218,32 @@ snapshot_version)`) and the snapshot marks which tools require an idempotency ke
 (`requires_idempotency_key`, derived from effect class at build time). Neither
 cache is implemented.
 
-### RBAC roles and separation of duties
+### Separation of duties is expressible but not enforced end to end
 
-Roles are named in the design (publisher, approver, operator, consumer, auditor)
-but there is no role model, because there is no control-plane API to enforce it
-at. Audience-level authorization against IdP groups *is* enforced and tested
-(`TestAudienceAuthorization`).
+The role model exists (`internal/platform/authz`), the permission set is closed,
+and `snapshot:build` is deliberately separate from `snapshot:publish` so that
+"the person who prepares a change is not the person who ships it" is
+*expressible*. It is not yet *enforced*: the control-plane API authenticates
+with a single bearer token and checks no permission on any operation.
+
+So today an operator who can reach the API can do everything, and the grants in
+the database govern only what the data plane serves. Closing this means the
+control plane resolving a session to a principal and running each operation
+through a `Decider` — which is a small change to `apiserver` and a large one to
+how the console signs in, and it wants the identity provider above to land
+first.
 
 ### Real identity provider
 
-Only `HeaderIdentityResolver` exists, which trusts client-supplied headers. It
-**refuses to be constructed** when the environment is production
-(`TestHeaderIdentityResolverRefusesProduction`) — a header-trusting resolver
-reaching production would be a total authorization bypass, so that is a
-constructor error rather than a documented caveat. OIDC/JWT validation and SCIM
-are not built.
+API keys are the working mechanism for agents (ADR 0021). For people there are
+local passwords, and `HeaderIdentityResolver`, which trusts client-supplied
+headers and **refuses to be constructed** when the environment is production —
+a header-trusting resolver reaching production would be a total authorization
+bypass, so that is a constructor error rather than a documented caveat. It is
+also chained strictly behind the API key resolver outside production, so a valid
+key always wins over a claimed subject.
+
+OIDC/JWT validation, SAML, SCIM, and the gRPC SPI of ADR 0020 are not built.
 
 ### Deployment: no Helm chart
 

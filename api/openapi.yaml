@@ -1194,10 +1194,18 @@ components:
           description: Validate and report without writing the snapshot file.
         discover_timeout_ms: { type: integer }
         concurrency: { type: integer }
+        version:
+          type: integer
+          format: int64
+          description: |
+            Overrides the snapshot version. Absent means a Unix timestamp,
+            which is what a grants-only republish wants: monotonic without
+            anybody coordinating, and nothing to forget to bump. The data plane
+            refuses anything no newer than what it is serving.
 
     BuildReport:
       type: object
-      required: [version, snapshot_id, org, registry_digest, key_id, public_key, namespaces, servers, tools, bundles, audiences, plugins, backends, dry_run]
+      required: [version, snapshot_id, org, registry_digest, key_id, public_key, namespaces, servers, tools, toolsets, plugins, backends, dry_run]
       properties:
         version: { type: integer, format: int64 }
         snapshot_id: { type: string }
