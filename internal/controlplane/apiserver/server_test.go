@@ -205,11 +205,11 @@ func TestAnInvalidRegistryReportsEveryProblem(t *testing.T) {
 	require.Equal(t, apiserver.CodeValidation, apiErr.Code)
 	// One problem per entry, not one paragraph: a console renders a list, and a
 	// document with six errors should take one round trip to fix rather than
-	// six. The document below has exactly six distinct faults.
-	require.Len(t, apiErr.Problems, 6)
+	// six. The document below has exactly five distinct faults.
+	require.Len(t, apiErr.Problems, 5)
 	joined := strings.Join(apiErr.Problems, "\n")
 	require.Contains(t, joined, `share the prefix "crm"`)
-	require.Contains(t, joined, `unknown bundle "bnd_absent"`)
+	require.Contains(t, joined, `unknown namespace "ns_absent"`)
 }
 
 func TestAMissingRegistryIsNotFoundRatherThanInvalid(t *testing.T) {
@@ -393,20 +393,19 @@ func TestGatewayOperationsReportAnUnreachableDataPlane(t *testing.T) {
 	require.Equal(t, apiserver.CodeUnavailable, apiErr.Code)
 }
 
-func TestListAudiencesStillAnswersWhenTheGatewayIsDown(t *testing.T) {
+func TestListTenantsStillAnswersWhenTheGatewayIsDown(t *testing.T) {
 	t.Parallel()
 	h := newServer(t, func(c *apiserver.Config) {
 		c.GatewayURL = "http://127.0.0.1:1"
 	})
 
-	rec := do(t, h, http.MethodGet, "/api/v1/gateway/audiences", nil)
+	rec := do(t, h, http.MethodGet, "/api/v1/gateway/tenants", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var list api.AudienceList
+	var list api.TenantList
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
-	// The registered audiences are the useful answer even with no live gateway,
+	// The live half is missing; Ready:false says so rather than hiding it.
 	// and Ready:false says the live half is missing rather than hiding it.
-	require.Len(t, list.Registered, 1)
 	require.False(t, list.Ready)
 }
 
@@ -415,7 +414,7 @@ func TestCallToolRejectsAnUnknownResponseAction(t *testing.T) {
 	h := newServer(t, func(c *apiserver.Config) { c.GatewayURL = "http://127.0.0.1:1" })
 
 	rec := do(t, h,
-		http.MethodPost, "/api/v1/gateway/audiences/support/tools/crm.get:call",
+		http.MethodPost, "/api/v1/gateway/tools/crm.get:call",
 		apiserver.CallToolRequest{
 			RequestState: "opaque",
 			Responses:    map[string]string{"req_1": "maybe"},
@@ -490,17 +489,14 @@ servers:
   - id: srv_1
     name: one
     namespace: ns_missing
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: nonsense
-bundles:
-  - id: bnd_1
-    name: B
-    entries:
-      - namespace: ns_absent
-audiences:
-  - id: aud_1
-    slug: a
-    bundles: [bnd_absent]
+toolsets:
+  - id: ts_1
+    name: b
+    namespaces: [ns_absent]
 `
 
 const registryYAML = `org: org_test
@@ -518,7 +514,9 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: read
     data_classification: confidential
     tools:
@@ -527,16 +525,10 @@ servers:
       delete_customer:
         exclude: true
 
-bundles:
+toolsets:
   - id: bnd_support
-    name: Support
+    name: support
     priority: 10
-    entries:
-      - namespace: ns_crm
+    namespaces: [ns_crm]
 
-audiences:
-  - id: aud_support
-    slug: support-agents
-    name: Support Agents
-    bundles: [bnd_support]
 ` + pluginsBlock

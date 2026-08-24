@@ -140,7 +140,9 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: read
     data_classification: confidential
     compliance_scope: [sox]
@@ -153,32 +155,21 @@ servers:
   - id: srv_hr
     name: hr-legacy
     namespace: ns_hr
-    endpoint: http://localhost:9102
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9102
     default_effect_class: read
 
-bundles:
-  - id: bnd_support
-    name: Support
+toolsets:
+  - id: ts_support
+    name: support
     priority: 10
-    entries:
-      - namespace: ns_crm
-  - id: bnd_all
-    name: All
+    namespaces: [ns_crm]
+  - id: ts_people
+    name: people
     priority: 20
-    entries:
-      - namespace: ns_crm
-      - namespace: ns_hr
+    namespaces: [ns_hr]
 
-audiences:
-  - id: aud_support
-    slug: support-agents
-    name: Support Agents
-    bundles: [bnd_support]
-  - id: aud_platform
-    slug: platform-agents
-    name: Platform Agents
-    bundles: [bnd_all]
-    allowed_idp_groups: [eng-platform]
 
 plugins:
   - id: plg_ent

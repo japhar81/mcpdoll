@@ -341,24 +341,24 @@ paths:
               schema: { $ref: "#/components/schemas/BackendHealthReport" }
         "502": { $ref: "#/components/responses/Unavailable" }
 
-  /api/v1/gateway/audiences:
+  /api/v1/gateway/tenants:
     get:
-      operationId: listAudiences
-      summary: List the audiences a data plane serves
+      operationId: listTenants
+      summary: List the tenants a data plane serves
       tags: [gateway]
       x-mcpdoll-surfaces:
-        cli: mcpdoll gateway audiences
-        ui: /gateway/audiences
+        cli: mcpdoll gateway tenants
+        ui: /gateway/tenants
       responses:
         "200":
-          description: The audiences
+          description: The tenants
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/AudienceList" }
+              schema: { $ref: "#/components/schemas/TenantList" }
 
-  /api/v1/gateway/audiences/{slug}/catalog:
+  /api/v1/gateway/catalog:
     get:
-      operationId: getAudienceCatalog
+      operationId: getCatalog
       summary: List the tools an identity actually sees
       description: |
         Connects to the data plane as a real MCP client, as the given identity,
@@ -370,9 +370,8 @@ paths:
       tags: [gateway]
       x-mcpdoll-surfaces:
         cli: mcpdoll gateway catalog
-        ui: /gateway/audiences/:slug/catalog
+        ui: /gateway/catalog
       parameters:
-        - $ref: "#/components/parameters/AudienceSlug"
         - name: subject
           in: query
           description: Principal subject to present
@@ -389,7 +388,7 @@ paths:
               schema: { $ref: "#/components/schemas/Catalog" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /api/v1/gateway/audiences/{slug}/tools/{toolName}:call:
+  /api/v1/gateway/tools/{toolName}:call:
     post:
       operationId: callTool
       summary: Call a tool through the gateway as a chosen identity
@@ -401,9 +400,8 @@ paths:
       tags: [gateway]
       x-mcpdoll-surfaces:
         cli: mcpdoll gateway call
-        ui: /gateway/audiences/:slug/playground
+        ui: /gateway/playground
       parameters:
-        - $ref: "#/components/parameters/AudienceSlug"
         - name: toolName
           in: path
           required: true
@@ -429,13 +427,6 @@ components:
       in: path
       required: true
       description: The backend's registry id
-      schema: { type: string }
-
-    AudienceSlug:
-      name: slug
-      in: path
-      required: true
-      description: The audience's URL slug
       schema: { type: string }
 
   responses:
@@ -513,7 +504,7 @@ components:
         A registry document with defaults resolved. Not the on-disk YAML: an
         unset `serving_mode` reads as `strict` here because that is what the
         engine will do, and rule bodies are summarised to counts.
-      required: [org, version, namespaces, servers, bundles, audiences]
+      required: [org, version, namespaces, servers, toolsets]
       properties:
         org: { type: string }
         version: { type: integer, format: int64 }
@@ -523,12 +514,9 @@ components:
         servers:
           type: array
           items: { $ref: "#/components/schemas/Server" }
-        bundles:
+        toolsets:
           type: array
-          items: { $ref: "#/components/schemas/Bundle" }
-        audiences:
-          type: array
-          items: { $ref: "#/components/schemas/Audience" }
+          items: { $ref: "#/components/schemas/Toolset" }
         policies:
           type: array
           items: { $ref: "#/components/schemas/Policy" }
@@ -553,12 +541,14 @@ components:
 
     Server:
       type: object
-      required: [id, name, namespace, endpoint, serving_mode, default_effect_class]
+      required: [id, name, namespace, bindings, serving_mode, default_effect_class]
       properties:
         id: { type: string }
         name: { type: string }
         namespace: { type: string }
-        endpoint: { type: string }
+        bindings:
+          type: array
+          items: { $ref: "#/components/schemas/Binding" }
         serving_mode:
           type: string
           enum: [strict, advisory]
@@ -589,41 +579,58 @@ components:
           type: array
           items: { type: string }
           description: |
-            Withheld from every audience. Kept separate from `tool_overrides`
+            Withheld from every toolset. Kept separate from `tool_overrides`
             because an exclusion is not an override with a blank class — the
             tool does not reach the snapshot at all.
 
-    Bundle:
+    Toolset:
       type: object
+      description: |
+        A named, grantable group of tools. Replaces Bundle: a bundle grouped
+        namespaces for publication, whereas a toolset is the unit an
+        administrator hands to a user — and its name appears inside every grant
+        scope, `t/<tenant>/ts/<toolset>`. See ADR 0016.
       required: [id, name, priority, namespaces]
       properties:
         id: { type: string }
         name: { type: string }
-        priority: { type: integer, format: int32 }
+        priority:
+          type: integer
+          format: int32
+          description: Leading component of the stable catalog ordering.
         token_budget: { type: integer, format: int32 }
         namespaces:
           type: array
           items: { type: string }
+          description: Contributes every admitted tool in each named namespace.
+        tools:
+          type: array
+          items: { type: string }
+          description: |
+            Individually named tools, qualified. A toolset draws from several
+            namespaces, so a bare name would be ambiguous between them.
+        exclude:
+          type: array
+          items: { type: string }
 
-    Audience:
+    Binding:
       type: object
-      required: [id, slug, bundles]
+      description: |
+        One tenant's hosts for a backend. The same logical backend is a
+        different deployment per tenant, and each is discovered and admitted
+        separately (ADR 0017).
+      required: [tenant, primary]
       properties:
-        id: { type: string }
-        slug:
+        tenant: { type: string }
+        primary:
           type: string
-          description: The path segment this audience is published at, `/mcp/{slug}`.
-        name: { type: string }
-        bundles:
+          description: |
+            The definition source. Replicas are compared against it; one that
+            diverges leaves the routable pool without changing the catalog.
+        replicas:
           type: array
           items: { type: string }
-        policies:
-          type: array
-          items: { type: string }
-        allowed_idp_groups:
-          type: array
-          items: { type: string }
-          description: Absent means any authenticated principal may connect.
+
 
     Policy:
       type: object
@@ -697,7 +704,7 @@ components:
 
     RegistrySummary:
       type: object
-      required: [valid, org, version, namespaces, servers, bundles, audiences, policies, plugins]
+      required: [valid, org, version, namespaces, servers, toolsets, policies, plugins]
       properties:
         file: { type: string }
         valid: { type: boolean }
@@ -705,8 +712,7 @@ components:
         version: { type: integer, format: int64 }
         namespaces: { type: integer }
         servers: { type: integer }
-        bundles: { type: integer }
-        audiences: { type: integer }
+        toolsets: { type: integer }
         policies: { type: integer }
         plugins: { type: integer }
 
@@ -723,7 +729,7 @@ components:
 
     Snapshot:
       type: object
-      required: [version, snapshot_id, org, built_at, age, key_id, algorithm, registry_digest, servable, audiences]
+      required: [version, snapshot_id, org, built_at, age, key_id, algorithm, registry_digest, servable, tenants]
       properties:
         source:
           type: string
@@ -747,27 +753,23 @@ components:
             instance, so signature validity alone is not the question anybody
             wants answered.
         unservable_reason: { type: string }
-        audiences:
+        tenants:
           type: array
-          items: { $ref: "#/components/schemas/AudienceSummary" }
+          items: { $ref: "#/components/schemas/TenantSnapshotSummary" }
         tools:
           type: array
           items: { $ref: "#/components/schemas/ToolSummary" }
 
-    AudienceSummary:
+    TenantSnapshotSummary:
       type: object
-      required: [slug, name, tools, ttl_ms, cache_scope, token_estimate]
+      description: |
+        One tenant's slice of a snapshot. What any given principal in that
+        tenant sees is a subset, decided by their grants.
+      required: [slug, name, tools, token_estimate]
       properties:
         slug: { type: string }
         name: { type: string }
         tools: { type: integer }
-        ttl_ms: { type: integer }
-        cache_scope:
-          type: string
-          enum: [public, private]
-          description: |
-            A catalog that has been filtered for a principal must never come
-            back `public`.
         token_estimate: { type: integer }
 
     ToolSummary:
@@ -795,7 +797,7 @@ components:
             whatever file a caller names is an arbitrary file read.
         tools:
           type: boolean
-          description: List every tool rather than summarising by audience.
+          description: List every tool rather than summarising by tenant.
 
     VerifySnapshotRequest:
       type: object
@@ -812,13 +814,13 @@ components:
 
     VerifyReport:
       type: object
-      required: [valid, version, key_id, audiences, tools]
+      required: [valid, version, key_id, tenants, tools]
       properties:
         source: { type: string }
         valid: { type: boolean }
         version: { type: integer, format: int64 }
         key_id: { type: string }
-        audiences:
+        tenants:
           type: array
           items: { type: string }
         tools: { type: integer }
@@ -860,8 +862,7 @@ components:
         namespaces: { type: integer }
         servers: { type: integer }
         tools: { type: integer }
-        bundles: { type: integer }
-        audiences: { type: integer }
+        toolsets: { type: integer }
         plugins: { type: integer }
         backends:
           type: array
@@ -929,7 +930,7 @@ components:
 
     GatewayStatus:
       type: object
-      required: [gateway_url, status, ready, snapshot_version, audiences]
+      required: [gateway_url, status, ready, snapshot_version, tenants, tools]
       properties:
         gateway_url: { type: string }
         status: { type: string }
@@ -940,23 +941,36 @@ components:
           description: |
             What is being served. Two instances reporting different versions is
             the signal that a rollout is mid-flight.
-        audiences: { type: integer }
+        tenants:
+          type: integer
+          description: |
+            Tenants the gateway is serving. Replaces the audience count: with
+            one endpoint and per-principal catalogs, "how many audiences" no
+            longer describes anything (ADR 0019).
+        tools: { type: integer }
 
-    AudienceList:
+    TenantList:
       allOf:
         - $ref: "#/components/schemas/GatewayStatus"
         - type: object
           description: |
-            The live count comes from the data plane, which reports a number
-            rather than names: enumerating endpoints to an unauthenticated
-            caller would tell an attacker which ones exist. The names below
-            come from the registry, and are what the *next* snapshot will
-            publish.
+            The live counts come from the data plane, which reports numbers
+            rather than names: enumerating tenants to an unauthenticated caller
+            is the same information leak enumerating audiences was.
           required: [registered]
           properties:
             registered:
               type: array
-              items: { $ref: "#/components/schemas/Audience" }
+              items: { $ref: "#/components/schemas/TenantSummary" }
+
+    TenantSummary:
+      type: object
+      required: [slug, name, status, tools]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        status: { type: string }
+        tools: { type: integer }
 
     BackendHealthReport:
       type: object
@@ -1057,13 +1071,10 @@ components:
         The tool list one identity receives. Produced by making the same
         request the agent makes, rather than by re-deriving policy — which is
         how people get this answer wrong.
-      required: [audience, protocol_version, server_name, ttl_ms, cache_scope, tools]
+      required: [tenant, protocol_version, server_name, ttl_ms, cache_scope, tools]
       properties:
-        audience: { type: string }
+        tenant: { type: string }
         subject: { type: string }
-        groups:
-          type: array
-          items: { type: string }
         protocol_version: { type: string }
         server_name: { type: string }
         ttl_ms: { type: integer }
@@ -1086,6 +1097,11 @@ components:
     CallToolRequest:
       type: object
       properties:
+        credential:
+          type: string
+          description: |
+            The API key to act as. Inspection presents what the principal
+            presents rather than re-deriving what they should see (ADR 0019).
         subject: { type: string }
         groups:
           type: array
@@ -1107,10 +1123,9 @@ components:
 
     CallResult:
       type: object
-      required: [tool, audience, is_error, needs_input, duration_ms, text]
+      required: [tool, is_error, needs_input, duration_ms, text]
       properties:
         tool: { type: string }
-        audience: { type: string }
         is_error:
           type: boolean
           description: |

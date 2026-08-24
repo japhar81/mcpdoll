@@ -187,7 +187,9 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
     default_effect_class: read
     data_classification: confidential
     tools:
@@ -196,18 +198,12 @@ servers:
       delete_customer:
         exclude: true
 
-bundles:
+toolsets:
   - id: bnd_support
-    name: Support
+    name: support
     priority: 10
-    entries:
-      - namespace: ns_crm
+    namespaces: [ns_crm]
 
-audiences:
-  - id: aud_support
-    slug: support-agents
-    name: Support Agents
-    bundles: [bnd_support]
 
 plugins:
   - id: plg_ent

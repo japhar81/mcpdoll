@@ -169,11 +169,12 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	// Collisions are detected per tenant, not across the build: two tenants
+	// Collisions are detected per *tenant*, not per binding: two tenants
 	// publishing `crm.lookup_customer` is the normal case and the whole point
-	// of per-tenant admission. Two *namespaces* colliding within one tenant is
-	// still a failure.
-	claimed := map[bindingKey]map[string]string{}
+	// of per-tenant admission, but two backends colliding within one tenant is
+	// still a failure — and they are different servers, so keying this by
+	// binding would never have compared them.
+	claimed := map[string]map[string]string{}
 
 	for _, srv := range spec.Servers {
 		ns := namespacesByID[srv.Namespace]
@@ -250,8 +251,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 				ObservedAt:        report.observedAt,
 			}
 
-			if claimed[key] == nil {
-				claimed[key] = map[string]string{}
+			if claimed[binding.Tenant] == nil {
+				claimed[binding.Tenant] = map[string]string{}
 			}
 
 			for _, tool := range tools {
@@ -277,7 +278,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 							"budget; shorten the namespace prefix or exclude the tool",
 						qualified, len(qualified), registry.MaxQualifiedNameLength)
 				}
-				if prior, dup := claimed[key][qualified]; dup {
+				if prior, dup := claimed[binding.Tenant][qualified]; dup {
 					return nil, fmt.Errorf(
 						"snapshotter: %q is published for tenant %q by both %q and %q; "+
 							"resolve the collision by excluding one or moving it to another "+
@@ -297,7 +298,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 						qualified))
 					continue
 				}
-				claimed[key][qualified] = srv.Name
+				claimed[binding.Tenant][qualified] = srv.Name
 
 				b.AddTool(snapshot.ToolInput{
 					ServerID:     srv.ID,

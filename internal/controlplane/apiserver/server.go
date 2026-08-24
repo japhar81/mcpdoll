@@ -152,9 +152,9 @@ func (s *Server) routes() {
 
 		r.Get("/gateway/status", s.handleGatewayStatus)
 		r.Get("/gateway/backends", s.handleListBackends)
-		r.Get("/gateway/audiences", s.handleListAudiences)
-		r.Get("/gateway/audiences/{slug}/catalog", s.handleAudienceCatalog)
-		r.Post("/gateway/audiences/{slug}/tools/{toolName}:call", s.handleCallTool)
+		r.Get("/gateway/tenants", s.handleListTenants)
+		r.Get("/gateway/catalog", s.handleCatalog)
+		r.Post("/gateway/tools/{toolName}:call", s.handleCallTool)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -373,7 +373,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.log, http.StatusOK, report)
 }
 
-func (s *Server) handleListAudiences(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	out := api.TenantList{Registered: []api.TenantSummary{}}
 
 	// A gateway that cannot be reached is not a failure of this operation: the
@@ -389,7 +389,7 @@ func (s *Server) handleListAudiences(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.log, http.StatusOK, out)
 }
 
-func (s *Server) handleAudienceCatalog(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	catalog, err := s.inspectorClient(r).Catalog(r.Context(), inspector.CatalogRequest{
 		Credential:       r.Header.Get("X-MCPDoll-Inspect-Credential"),
 		Identity:         identityFromQuery(r),

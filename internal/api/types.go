@@ -340,9 +340,8 @@ type CatalogTool struct {
 
 // CallResult is the outcome of exercising one tool through the gateway.
 type CallResult struct {
-	Tool     string `json:"tool" yaml:"tool"`
-	Audience string `json:"audience" yaml:"audience"`
-	IsError  bool   `json:"is_error" yaml:"is_error"`
+	Tool    string `json:"tool" yaml:"tool"`
+	IsError bool   `json:"is_error" yaml:"is_error"`
 	// NeedsInput reports an MRTR deferral: the call did not fail, it is waiting
 	// for a human.
 	NeedsInput bool   `json:"needs_input" yaml:"needs_input"`

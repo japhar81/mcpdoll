@@ -16,6 +16,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/snapshotter"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
+	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
 // These tests build snapshots from *live* fixture backends. That is the point: the
@@ -71,7 +72,9 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: %s
+    bindings:
+      - tenant: acme
+        primary: %s
     default_effect_class: read
     tools:
       update_customer:
@@ -79,20 +82,15 @@ servers:
   - id: srv_hr
     name: hr-legacy
     namespace: ns_hr
-    endpoint: %s
+    bindings:
+      - tenant: acme
+        primary: %s
     default_effect_class: read
-bundles:
-  - id: bnd_all
+toolsets:
+  - id: ts_all
     name: everything
     priority: 10
-    entries:
-      - namespace: ns_crm
-      - namespace: ns_hr
-audiences:
-  - id: aud_agents
-    slug: agents
-    name: Agents
-    bundles: [bnd_all]
+    namespaces: [ns_crm, ns_hr]
 %s`, version, e.modern.URL(), e.legacy.URL(), extra)
 
 	spec, err := registry.Parse([]byte(doc))
@@ -103,7 +101,8 @@ audiences:
 func (e *env) build(t *testing.T, spec *registry.Spec) *snapshotter.Result {
 	t.Helper()
 	result, err := snapshotter.Build(context.Background(), snapshotter.Options{
-		Spec: spec, Signer: e.signer, DiscoverTimeout: 10 * time.Second,
+		Spec: spec, Signer: e.signer,
+		Tenants: testTenants(), DiscoverTimeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 	return result
@@ -133,7 +132,7 @@ func TestBuildDiscoversLiveBackends(t *testing.T) {
 	require.NoError(t, err)
 	view, err := snapshot.Build(snap)
 	require.NoError(t, err)
-	require.Equal(t, []string{"agents"}, view.AudienceSlugs())
+	require.Equal(t, []string{"acme"}, view.TenantSlugs())
 }
 
 // TestBuildRecordsNegotiatedVersionPerBackend: a legacy backend negotiating down
@@ -228,10 +227,12 @@ func TestBuildCanonicalizesSchemas(t *testing.T) {
 func TestBuildRejectsUnreachableBackendByDefault(t *testing.T) {
 	e := newEnv(t)
 	spec := e.spec(t, 1, "")
-	spec.Servers[1].Endpoint = "http://127.0.0.1:1" // nothing listens here
+	// Port 1 is reserved and never listening.
+	spec.Servers[1].Bindings[0].Primary = "http://127.0.0.1:1"
 
 	_, err := snapshotter.Build(context.Background(), snapshotter.Options{
-		Spec: spec, Signer: e.signer, DiscoverTimeout: 2 * time.Second,
+		Spec: spec, Signer: e.signer,
+		Tenants: testTenants(), DiscoverTimeout: 2 * time.Second,
 	})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "could not be discovered")
@@ -244,10 +245,11 @@ func TestBuildRejectsUnreachableBackendByDefault(t *testing.T) {
 func TestBuildAllowUnreachable(t *testing.T) {
 	e := newEnv(t)
 	spec := e.spec(t, 1, "")
-	spec.Servers[1].Endpoint = "http://127.0.0.1:1"
+	spec.Servers[1].Bindings[0].Primary = "http://127.0.0.1:1"
 
 	result, err := snapshotter.Build(context.Background(), snapshotter.Options{
-		Spec: spec, Signer: e.signer, DiscoverTimeout: 2 * time.Second,
+		Spec: spec, Signer: e.signer,
+		Tenants: testTenants(), DiscoverTimeout: 2 * time.Second,
 		AllowUnreachable: true,
 	})
 	require.NoError(t, err)
@@ -285,15 +287,16 @@ func TestBuildRejectsQualifiedNameCollision(t *testing.T) {
 		ID:                 "srv_crm_two",
 		Name:               "crm-staging",
 		Namespace:          "ns_crm",
-		Endpoint:           second.URL(),
+		Bindings:           []registry.BindingSpec{{Tenant: "acme", Primary: second.URL()}},
 		DefaultEffectClass: "read",
 	})
 
 	_, err := snapshotter.Build(context.Background(), snapshotter.Options{
-		Spec: spec, Signer: e.signer, DiscoverTimeout: 10 * time.Second,
+		Spec: spec, Signer: e.signer,
+		Tenants: testTenants(), DiscoverTimeout: 10 * time.Second,
 	})
 	require.Error(t, err)
-	require.ErrorContains(t, err, "is published by both")
+	require.ErrorContains(t, err, "is published for tenant")
 	require.ErrorContains(t, err, "crm-prod")
 	require.ErrorContains(t, err, "crm-staging")
 	require.ErrorContains(t, err, "never auto-renames",
@@ -321,15 +324,16 @@ func TestBuildIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestBuildRejectsOverBudgetBundle: an over-budget bundle fails the build rather
-// than shipping a catalog that will not fit a context window.
-func TestBuildRejectsOverBudgetBundle(t *testing.T) {
+// TestBuildRejectsOverBudgetToolset: an over-budget toolset fails the build
+// rather than shipping a catalog that will not fit a context window.
+func TestBuildRejectsOverBudgetToolset(t *testing.T) {
 	e := newEnv(t)
 	spec := e.spec(t, 1, "")
-	spec.Bundles[0].TokenBudget = 1
+	spec.Toolsets[0].TokenBudget = 1
 
 	_, err := snapshotter.Build(context.Background(), snapshotter.Options{
-		Spec: spec, Signer: e.signer, DiscoverTimeout: 10 * time.Second,
+		Spec: spec, Signer: e.signer,
+		Tenants: testTenants(), DiscoverTimeout: 10 * time.Second,
 	})
 	require.ErrorContains(t, err, "token budget")
 }
@@ -362,7 +366,6 @@ policies:
         reason: write tools are admin-only
         max_ttl: 1m
 `)
-	spec.Audiences[0].Policies = []string{"pol_hide"}
 
 	result := e.build(t, spec)
 	require.Len(t, result.Snapshot.Policies, 1)
@@ -372,36 +375,49 @@ policies:
 	require.Equal(t, "hide", registry.DecisionName(rule.Decision))
 	require.EqualValues(t, 60_000, rule.MaxTtlMs)
 
+	// Policies apply snapshot-wide now: with audiences gone there is nothing
+	// to attach one to, and a policy that applied to some principals and not
+	// others would be a second access-control mechanism beside grants.
 	view, err := snapshot.Build(result.Snapshot)
 	require.NoError(t, err)
-	av := view.Audience("agents")
-	require.Equal(t, 60_000, av.TTLMs, "the policy's max_ttl narrows the catalog TTL")
-	require.True(t, av.IdentityFiltered,
-		"a group-conditioned hide makes the catalog identity-specific even without the explicit flag")
-	require.Equal(t, "private", av.CacheScope())
+	require.Len(t, view.Proto().Policies, 1)
+	require.EqualValues(t, 60_000, view.Proto().Policies[0].Rules[0].MaxTtlMs,
+		"the policy's max_ttl survives into the snapshot and narrows the TTL")
 }
 
-// TestBuildQualifiesBundleToolNames: the document names tools unqualified inside
-// a namespace; the snapshot must carry qualified names.
-func TestBuildQualifiesBundleToolNames(t *testing.T) {
+// TestToolsetsNameToolsQualified: a toolset draws from several namespaces, so
+// an individually named tool must carry its prefix — a bare name would be
+// ambiguous between them.
+func TestToolsetsNameToolsQualified(t *testing.T) {
 	e := newEnv(t)
 	spec := e.spec(t, 1, "")
-	spec.Bundles[0].Entries[0].Tools = []string{"lookup_customer"}
-	spec.Bundles[0].Entries[1].Exclude = []string{"get_org_chart"}
+	spec.Toolsets = append(spec.Toolsets, registry.ToolsetSpec{
+		ID: "ts_one", Name: "one", Priority: 20,
+		Tools: []string{"lookup_customer"}, // no prefix
+	})
+
+	// Caught by the registry validator before a build is even attempted.
+	err := spec.Validate()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "without a namespace prefix")
+}
+
+// TestToolsetExclusionDropsATool: a toolset can take a whole namespace and drop
+// specific tools from it, which is the common shape of a curated set.
+func TestToolsetExclusionDropsATool(t *testing.T) {
+	e := newEnv(t)
+	spec := e.spec(t, 1, "")
+	spec.Toolsets[0].Exclude = []string{"hr.get_org_chart"}
 
 	result := e.build(t, spec)
-	entry := result.Snapshot.Bundles[0].Entries[0]
-	require.Equal(t, []string{"crm.lookup_customer"}, entry.QualifiedNames)
-	require.Equal(t, []string{"hr.get_org_chart"},
-		result.Snapshot.Bundles[0].Entries[1].ExcludeQualifiedNames)
 
-	view, err := snapshot.Build(result.Snapshot)
-	require.NoError(t, err)
 	var served []string
-	for _, tool := range view.Audience("agents").Tools {
-		served = append(served, tool.Def.QualifiedName)
+	for _, tool := range result.Snapshot.Tools {
+		served = append(served, tool.QualifiedName)
 	}
-	require.Equal(t, []string{"crm.lookup_customer", "hr.lookup_employee"}, served)
+	require.NotContains(t, served, "hr.get_org_chart",
+		"an excluded tool is admitted for nobody, because no toolset contributes it")
+	require.Contains(t, served, "hr.lookup_employee")
 }
 
 func qualifiedNames(r *snapshotter.Result) []string {
@@ -419,4 +435,14 @@ func qualifiedNames(r *snapshotter.Result) []string {
 		}
 	}
 	return out
+}
+
+// testTenants is the tenant every fixture binding names.
+//
+// A binding for a tenant the build does not carry is a failure: its tools would
+// be admitted for a tenant no principal could belong to.
+func testTenants() []*snapshotpb.Tenant {
+	return []*snapshotpb.Tenant{{
+		Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active",
+	}}
 }
