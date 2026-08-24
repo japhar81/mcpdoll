@@ -395,6 +395,13 @@ func (e *Edge) serveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Who the credential turned out to be. Stamped on the response because the
+	// request cannot carry it — the tenant comes from the key, not from the
+	// path (ADR 0019) — and a client that guessed would be guessing about
+	// exactly the thing this endpoint decides.
+	w.Header().Set(HeaderResolvedTenant, principal.Tenant)
+	w.Header().Set(HeaderResolvedSubject, principal.Subject)
+
 	e.streamable.ServeHTTP(w, r.WithContext(withRequestScope(r.Context(), requestScope{
 		Principal: principal,
 	})))

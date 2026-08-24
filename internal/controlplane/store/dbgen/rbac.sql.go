@@ -70,6 +70,68 @@ func (q *Queries) DeleteRole(ctx context.Context, role string) error {
 	return err
 }
 
+const listAllAPIKeyGrants = `-- name: ListAllAPIKeyGrants :many
+SELECT id, api_key_id, role, scope FROM api_key_grants ORDER BY api_key_id, scope, role
+`
+
+func (q *Queries) ListAllAPIKeyGrants(ctx context.Context) ([]ApiKeyGrant, error) {
+	rows, err := q.db.Query(ctx, listAllAPIKeyGrants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApiKeyGrant{}
+	for rows.Next() {
+		var i ApiKeyGrant
+		if err := rows.Scan(
+			&i.ID,
+			&i.ApiKeyID,
+			&i.Role,
+			&i.Scope,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllGrants = `-- name: ListAllGrants :many
+SELECT id, user_id, role, scope, granted_by, created_at FROM grants ORDER BY user_id, scope, role
+`
+
+// Every user's grants in one query. A snapshot build needs all of them, and
+// asking per user turns a publish into one round trip per person on staff.
+func (q *Queries) ListAllGrants(ctx context.Context) ([]Grant, error) {
+	rows, err := q.db.Query(ctx, listAllGrants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Grant{}
+	for rows.Next() {
+		var i Grant
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Role,
+			&i.Scope,
+			&i.GrantedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGrantsByTenant = `-- name: ListGrantsByTenant :many
 SELECT g.id, g.user_id, g.role, g.scope, g.granted_by, g.created_at FROM grants g
 JOIN users u ON u.id = g.user_id

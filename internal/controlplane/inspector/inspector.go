@@ -177,6 +177,15 @@ func (c *Client) Catalog(ctx context.Context, req CatalogRequest) (api.Catalog, 
 		out.ProtocolVersion = init.ProtocolVersion
 		out.ServerName = init.ServerInfo.Name
 	}
+
+	// Who the gateway decided this credential is. The request could not say —
+	// the tenant comes from the key, and reporting back what the caller claimed
+	// would answer a different question than the one this screen asks.
+	tenant, subject := observed.resolved()
+	out.Tenant = tenant
+	if subject != "" {
+		out.Subject = subject
+	}
 	for _, tool := range res.Tools {
 		namespace, _, _ := strings.Cut(tool.Name, ".")
 		description := tool.Description
@@ -371,18 +380,47 @@ type statusRecorder struct {
 	mu    sync.Mutex
 	code  int
 	isSet bool
+	// The gateway names who it decided the credential is, on every response.
+	// Read here rather than parsed out of the `instructions` string: the
+	// instructions are prose written for a model, and an inspector that scraped
+	// them would break the first time somebody improved the wording.
+	tenant  string
+	subject string
 }
 
-func (r *statusRecorder) record(code int) {
+func (r *statusRecorder) record(code int, header http.Header) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if tenant := header.Get(HeaderResolvedTenant); tenant != "" {
+		r.tenant = tenant
+	}
+	if subject := header.Get(HeaderResolvedSubject); subject != "" {
+		r.subject = subject
+	}
+
 	if code < 400 {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if !r.isSet {
 		r.code, r.isSet = code, true
 	}
 }
+
+// resolved returns who the gateway says the credential is.
+func (r *statusRecorder) resolved() (tenant, subject string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tenant, r.subject
+}
+
+// The gateway stamps these on every MCP response. They are the answer to "who
+// did this credential turn out to be", which is not derivable from the request:
+// the tenant comes from the key, not from the path (ADR 0019).
+const (
+	HeaderResolvedTenant  = "X-MCPDoll-Tenant"
+	HeaderResolvedSubject = "X-MCPDoll-Subject-Resolved"
+)
 
 func (r *statusRecorder) status() int {
 	r.mu.Lock()
@@ -411,7 +449,7 @@ func (t *staticHeaders) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	resp, err := t.base.RoundTrip(out)
 	if resp != nil && t.observed != nil {
-		t.observed.record(resp.StatusCode)
+		t.observed.record(resp.StatusCode, resp.Header)
 	}
 	return resp, err
 }

@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/registry"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/snapshotter"
+	"github.com/mcpdoll/mcpdoll/internal/controlplane/store"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
@@ -46,13 +48,15 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 		concurrency      int
 		allowUnreachable bool
 		dryRun           bool
+		databaseURL      string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Resolve a registry document into a signed snapshot",
 		Long: "Discovers every backend the registry names, canonicalizes what they publish,\n" +
-			"resolves bundles and audiences, validates the result, and signs it.\n\n" +
+			"resolves toolsets and per-tenant bindings, validates the result, and signs\n" +
+			"it.\n\n" +
 			"Every problem is a build failure. A snapshot that some data-plane instances\n" +
 			"would refuse is worse than no snapshot at all.",
 		Example: "  mcpdoll snapshot build -r deploy/local/registry.yaml \\\n" +
@@ -77,14 +81,45 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 				return configError(err)
 			}
 
-			env.Printf("discovering %d backend(s)…\n", len(spec.Servers))
-			result, err := snapshotter.Build(cmd.Context(), snapshotter.Options{
+			opts := snapshotter.Options{
 				Spec:             spec,
 				Signer:           signer,
 				DiscoverTimeout:  discoverTimeout,
 				Concurrency:      concurrency,
 				AllowUnreachable: allowUnreachable,
-			})
+			}
+
+			// Tenancy and RBAC live in the database, and a registry that binds
+			// any tenant cannot be built without them. Reading it here rather
+			// than requiring the API means a snapshot can be built where the
+			// signing key lives, which is the whole reason this command exists
+			// alongside the operation.
+			dsn := firstNonEmpty(databaseURL, os.Getenv("MCPDOLL_DATABASE_URL"))
+			if dsn != "" {
+				db, err := store.Open(cmd.Context(), dsn)
+				if err != nil {
+					return configError(err)
+				}
+				defer db.Close()
+
+				state, err := db.SnapshotState(cmd.Context())
+				if err != nil {
+					return configError(err)
+				}
+				opts.Tenants = state.Tenants
+				opts.Principals = state.Principals
+				opts.Catalog = state.Catalog
+				env.Printf("carrying %d tenant(s) and %d principal(s) from the database\n",
+					len(state.Tenants), len(state.Principals))
+			} else if bindsAnyTenant(spec) {
+				return configError(fmt.Errorf(
+					"this registry binds backends to tenants, so the build needs the " +
+						"database those tenants live in: pass --database-url or set " +
+						"MCPDOLL_DATABASE_URL"))
+			}
+
+			env.Printf("discovering %d backend(s)…\n", len(spec.Servers))
+			result, err := snapshotter.Build(cmd.Context(), opts)
 			if err != nil {
 				return validationError(err)
 			}
@@ -132,6 +167,8 @@ func newSnapshotBuildCmd(env *Env) *cobra.Command {
 		"build even if a backend cannot be reached, omitting its tools")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
 		"validate and report without writing a file")
+	cmd.Flags().StringVar(&databaseURL, "database-url", "",
+		"where tenants, users, and grants live; defaults to MCPDOLL_DATABASE_URL")
 	_ = cmd.MarkFlagRequired("key")
 
 	return cmd
@@ -507,4 +544,21 @@ func shortDigest(d string) string {
 		return d[len(prefix) : len(prefix)+12]
 	}
 	return d
+}
+
+// bindsAnyTenant reports whether the registry names a tenant anywhere.
+//
+// The distinction matters for the error message. A registry with no bindings
+// builds fine without a database — that is what this system did before tenancy
+// existed — so demanding one unconditionally would break a legitimate use. A
+// registry that *does* bind is unbuildable without it, and saying so here is
+// better than the snapshotter's "this build does not carry tenant X", which
+// reads as a registry problem.
+func bindsAnyTenant(spec *registry.Spec) bool {
+	for _, srv := range spec.Servers {
+		if len(srv.Bindings) > 0 {
+			return true
+		}
+	}
+	return false
 }

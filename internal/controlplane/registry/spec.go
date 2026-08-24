@@ -1,8 +1,12 @@
 // Copyright 2026 The MCPDoll Authors.
 
 // Package registry defines MCPDoll's declarative registry: the document that
-// says which backends exist, how their tools are classified, and which audiences
-// see what.
+// says which backends exist, how their tools are classified, and which toolsets
+// group them.
+//
+// It does not say who sees what. That moved to grants in the control plane's
+// database (ADR 0016): this document names the toolsets, and a grant pairs one
+// with a scope.
 //
 // The registry is expressed as YAML rather than only as database rows. That is a
 // deliberate choice with three consequences worth stating:
@@ -66,7 +70,7 @@ type Spec struct {
 
 // CatalogSpec holds org-wide list-result defaults.
 type CatalogSpec struct {
-	// TTL is the ceiling on the ttlMs the edge advertises. A bundle or policy
+	// TTL is the ceiling on the ttlMs the edge advertises. A toolset or policy
 	// may narrow it, never widen it.
 	TTL time.Duration `yaml:"ttl"`
 	// DegradedTTL is the shortened TTL used when a catalog is served from
@@ -164,7 +168,7 @@ type ToolSpec struct {
 	// EffectClass is "read", "write" or "destructive".
 	EffectClass string `yaml:"effect_class"`
 	// Exclude omits the tool from the registry entirely, so it can never be
-	// bundled or called. Use this for a backend tool the organization has
+	// admitted or called. Use this for a backend tool the organization has
 	// decided not to expose.
 	Exclude bool `yaml:"exclude"`
 }
@@ -188,7 +192,6 @@ type HealthSpec struct {
 	EjectAfterFailures int           `yaml:"eject_after_failures"`
 }
 
-// BundleSpec is a curated set of tools presented as one catalog.
 // ToolsetSpec is a named, grantable group of tools.
 //
 // It replaces the old `bundle`, and the rename carries meaning: a bundle
@@ -199,9 +202,9 @@ type ToolsetSpec struct {
 	ID   string `yaml:"id"`
 	Name string `yaml:"name"`
 
-	// Priority orders a principal's catalog, as bundle priority used to
-	// (ADR 0010). Ordering must stay deterministic per principal or every
-	// client's prompt cache churns on republish.
+	// Priority orders a principal's catalog (ADR 0010). Ordering must stay
+	// deterministic per principal, or every client's prompt cache churns on
+	// republish.
 	Priority int32 `yaml:"priority"`
 
 	TokenBudget int32         `yaml:"token_budget"`

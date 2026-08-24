@@ -36,3 +36,15 @@ RETURNING *;
 
 -- name: ListAPIKeyGrants :many
 SELECT * FROM api_key_grants WHERE api_key_id = $1 ORDER BY scope, role;
+
+-- name: ListActiveAPIKeys :many
+-- Every key that could authenticate right now, across every tenant. This is
+-- what a snapshot build reads: the data plane holds no database, so the keys
+-- have to travel in the artifact (ADR 0021). Revoked and expired keys are
+-- excluded here rather than filtered later — publishing a key that cannot
+-- authenticate would put a dead credential's digest into a signed file for no
+-- reason.
+SELECT * FROM api_keys
+WHERE revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+ORDER BY created_at;

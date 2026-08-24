@@ -2,7 +2,16 @@
 #
 # This is the reviewable source a snapshot is built from: `mcpdoll snapshot build`
 # discovers each backend below, canonicalizes what it publishes, and resolves the
-# bundles and audiences into a signed artifact.
+# toolsets into a signed artifact.
+#
+# Two tenants, deliberately. `acme` gets everything; `globex` gets one backend at
+# a different address. That is the shape ADR 0017 exists for — the same logical
+# backend is a different deployment per tenant, so the same toolset name resolves
+# to different data depending on whose key is presented.
+#
+# There are no audiences here and no allowed_idp_groups. Who sees what is decided
+# by grants in the database, not by this document (ADR 0016): a toolset is the
+# unit an admin grants, and the tenant comes from the credential.
 #
 # Bump `version` on every publish. The data plane refuses a snapshot no newer than
 # the one it is serving, which is what stops a replayed older document rolling
@@ -43,9 +52,9 @@ namespaces:
     team: team_platform
     project: prj_internal
 
-  # The hostile backend is registered but deliberately not bundled into the
-  # default audience. It exists so `make dev` has something to demonstrate
-  # admission review and the LLM guard against.
+  # The hostile backend is registered but sits in its own toolset, so it reaches
+  # only a principal granted that toolset by name. It exists so `make dev` has
+  # something to demonstrate admission review and the LLM guard against.
   - id: ns_websearch
     name: websearch
     prefix: web
@@ -57,7 +66,15 @@ servers:
   - id: srv_crm
     name: crm-prod
     namespace: ns_crm
-    endpoint: http://localhost:9101
+    # The point of per-tenant bindings, made concrete: two tenants, two
+    # deployments of the same backend, discovered and admitted separately.
+    # Acme's CRM and Globex's CRM will eventually publish different tool
+    # versions, and each tenant's catalog has to follow its own.
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9101
+      - tenant: globex
+        primary: http://localhost:9106
     serving_mode: strict
     criticality: high
     data_classification: confidential
@@ -70,7 +87,9 @@ servers:
   - id: srv_hr
     name: hr-legacy
     namespace: ns_hr
-    endpoint: http://localhost:9102
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9102
     serving_mode: strict
     criticality: normal
     data_classification: confidential
@@ -81,7 +100,9 @@ servers:
   - id: srv_warehouse
     name: warehouse-flaky
     namespace: ns_warehouse
-    endpoint: http://localhost:9103
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9103
     # Advisory rather than strict: this backend is still stabilising its catalog,
     # so divergence is recorded instead of quarantining it. Clients still only
     # ever see admitted definitions.
@@ -97,7 +118,9 @@ servers:
   - id: srv_deploy
     name: deploy-confirming
     namespace: ns_deploy
-    endpoint: http://localhost:9105
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9105
     serving_mode: strict
     criticality: critical
     data_classification: internal
@@ -109,44 +132,40 @@ servers:
   - id: srv_websearch
     name: websearch-hostile
     namespace: ns_websearch
-    endpoint: http://localhost:9104
+    bindings:
+      - tenant: acme
+        primary: http://localhost:9104
     serving_mode: strict
     criticality: low
     data_classification: public
     default_effect_class: read
 
-bundles:
-  # The everyday catalog. Deliberately excludes the destructive deploy tools and
-  # the hostile backend.
-  - id: bnd_support
+toolsets:
+  # A toolset is what an admin grants. Its name appears verbatim in every scope
+  # string — `t/acme/ts/support` — so renaming one silently changes who can
+  # reach it, which is why the name lives here rather than being a display
+  # label.
+  - id: ts_support
     name: support
-    project: prj_go_to_market
     priority: 10
     ttl: 5m
     token_budget: 20000
-    entries:
-      - namespace: ns_crm
-      - namespace: ns_hr
-      - namespace: ns_warehouse
+    namespaces: [ns_crm, ns_hr, ns_warehouse]
 
   # Platform operators additionally get the deployment tools.
-  - id: bnd_platform
+  - id: ts_platform
     name: platform
-    project: prj_internal
     priority: 20
     token_budget: 20000
-    entries:
-      - namespace: ns_deploy
+    namespaces: [ns_deploy]
 
-  # The hostile backend, isolated in its own bundle so it can only reach an
-  # audience that asks for it by name.
-  - id: bnd_untrusted
+  # The hostile backend, isolated in its own toolset so it reaches only a
+  # principal granted `t/<tenant>/ts/untrusted` by name.
+  - id: ts_untrusted
     name: untrusted
-    project: prj_internal
     priority: 90
     token_budget: 20000
-    entries:
-      - namespace: ns_websearch
+    namespaces: [ns_websearch]
 
 policies:
   - id: pol_destructive_confirm
@@ -164,46 +183,14 @@ policies:
     priority: 20
     rules:
       # A tool over restricted data is hidden from anyone outside the group that
-      # owns it. Group-conditioned hiding makes the catalog identity-specific, so
-      # the gateway marks it cacheScope: private automatically.
+      # owns it. Group-conditioned hiding makes the catalog identity-specific,
+      # which the builder records — though every catalog is private now anyway,
+      # because every catalog is derived from one principal's grants.
       - data_classifications: [restricted]
         required_idp_groups: [data-restricted]
         decision: hide
         reason: restricted-classification tools are visible only to authorized groups
         identity_specific: true
-
-audiences:
-  - id: aud_support
-    slug: support-agents
-    name: Support Agents
-    project: prj_go_to_market
-    bundles: [bnd_support]
-    policies: [pol_restricted_data]
-    rate_limits:
-      requests_per_minute: 600
-      concurrent_requests: 32
-      tokens_per_minute: 2000000
-
-  - id: aud_platform
-    slug: platform-agents
-    name: Platform Agents
-    project: prj_internal
-    bundles: [bnd_support, bnd_platform]
-    policies: [pol_destructive_confirm, pol_restricted_data]
-    allowed_idp_groups: [eng-platform]
-    rate_limits:
-      requests_per_minute: 300
-      concurrent_requests: 16
-      tokens_per_minute: 1000000
-
-  # An audience that includes the hostile backend, for demonstrating the guard.
-  # Restricted to the security team so nothing else can reach it.
-  - id: aud_research
-    slug: threat-research
-    name: Threat Research
-    project: prj_internal
-    bundles: [bnd_untrusted]
-    allowed_idp_groups: [sec-research]
 
 plugins:
   # The `artifact_digest` values below are stamped by deploy/dev-up.sh when it

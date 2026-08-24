@@ -51,6 +51,10 @@ type View struct {
 	// The compiled RBAC this snapshot carries.
 	catalog    authz.Catalog
 	principals map[string]*snapshotpb.Principal
+	// byKeyPrefix indexes principals by the public half of their credential,
+	// which is what makes authentication one map lookup and one hash rather
+	// than a scan (ADR 0021).
+	byKeyPrefix map[string]*snapshotpb.Principal
 
 	// engine compiles a principal's grants into a decider. Held on the view so
 	// a deployment using a different engine (ADR 0020) gets it everywhere.
@@ -155,6 +159,7 @@ func BuildWithEngine(snap *snapshotpb.Snapshot, engine authz.Engine) (*View, err
 		toolsByTenant: map[string][]*Tool{},
 		toolsByDigest: map[string]*snapshotpb.ToolDefinition{},
 		principals:    map[string]*snapshotpb.Principal{},
+		byKeyPrefix:   map[string]*snapshotpb.Principal{},
 		cache:         map[string]*PrincipalView{},
 		engine:        engine,
 	}
@@ -350,8 +355,34 @@ func (v *View) indexRBAC(rbac *snapshotpb.RBAC) error {
 				p.Subject, p.TenantId)
 		}
 		v.principals[p.Id] = p
+
+		if p.KeyPrefix != "" {
+			if _, dup := v.byKeyPrefix[p.KeyPrefix]; dup {
+				// Two principals reachable by one credential is not a
+				// duplicate id; it is an ambiguity about who is calling, and
+				// the answer would depend on map iteration order.
+				return fmt.Errorf(
+					"snapshot: key prefix %q is claimed by two principals", p.KeyPrefix)
+			}
+			if p.KeySecretSha256 == "" {
+				return fmt.Errorf(
+					"snapshot: principal %q carries a key prefix with no digest, so "+
+						"any secret would verify against it", p.Subject)
+			}
+			v.byKeyPrefix[p.KeyPrefix] = p
+		}
 	}
 	return nil
+}
+
+// PrincipalByKeyPrefix returns the principal a credential prefix addresses.
+//
+// The prefix alone proves nothing — the caller still has to verify the secret
+// against KeySecretSha256. Separating the two is what lets the lookup be
+// indexed while the comparison stays constant-time.
+func (v *View) PrincipalByKeyPrefix(prefix string) (*snapshotpb.Principal, bool) {
+	p, ok := v.byKeyPrefix[prefix]
+	return p, ok
 }
 
 // Principal composes and caches one principal's catalog.

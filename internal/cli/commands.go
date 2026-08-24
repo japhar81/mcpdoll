@@ -178,7 +178,7 @@ func newRegistryCmd(env *Env) *cobra.Command {
 		Use:   "registry",
 		Short: "Work with registry documents",
 		Long: "The registry document declares which backends exist, how their tools are\n" +
-			"classified, and which audiences see what. It is the reviewable source a\n" +
+			"classified, and which toolsets they belong to. It is the reviewable source a\n" +
 			"snapshot is built from.",
 	}
 	cmd.AddCommand(
@@ -237,7 +237,7 @@ type registryReport struct {
 
 func (r registryReport) Table() Table {
 	return Table{
-		Columns: []string{"FILE", "ORG", "VERSION", "NS", "SERVERS", "BUNDLES", "AUDIENCES", "POLICIES", "PLUGINS"},
+		Columns: []string{"FILE", "ORG", "VERSION", "NS", "SERVERS", "TOOLSETS", "POLICIES", "PLUGINS"},
 		Rows: [][]string{{
 			r.File, r.Org, fmt.Sprint(r.Version),
 			fmt.Sprint(r.Namespaces), fmt.Sprint(r.Servers), fmt.Sprint(r.Toolsets),

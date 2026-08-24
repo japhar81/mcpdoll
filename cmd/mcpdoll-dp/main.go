@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -140,7 +141,7 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	})
 	defer pool.Close()
 
-	identity, err := buildIdentity(cfg)
+	identity, err := buildIdentity(cfg, store.Current)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errStartup, err)
 	}
@@ -317,18 +318,34 @@ func shutdown(srv *http.Server, log *slog.Logger) {
 
 // buildIdentity wires the identity resolver.
 //
-// Only the header-based dev resolver exists today, and it refuses to be
-// constructed in production — a resolver that trusts client-supplied headers
-// reaching production would be a complete authorization bypass. A real OIDC
-// resolver is recorded in docs/deferred.md.
-func buildIdentity(cfg config.Config) (edge.IdentityResolver, error) {
-	resolver, err := edge.NewHeaderIdentityResolver(cfg.Env, "dev-user", []string{"platform"})
+// API keys are the real mechanism: the snapshot carries each active key's
+// prefix and the SHA-256 of its secret, so the gateway authenticates without a
+// database and without asking the control plane (ADR 0021). That is what makes
+// a control-plane outage invisible to a tool call.
+//
+// Outside production, the header resolver is chained behind it so a bare `curl`
+// with `X-MCPDoll-Subject` still works for local poking. It refuses to be
+// constructed in production, and the chain refuses to include it there — a
+// resolver that trusts client-supplied headers reaching production would be a
+// complete authorization bypass, so it is two refusals rather than one.
+//
+// OIDC and SAML are recorded in docs/deferred.md.
+func buildIdentity(cfg config.Config, current func() *snapshot.View) (edge.IdentityResolver, error) {
+	keys, err := edge.NewAPIKeyIdentityResolver(current)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"%w\n\nMCPDoll does not yet ship a production identity provider; "+
-				"see docs/deferred.md. Run with env=development or staging.", err)
+		return nil, err
 	}
-	return resolver, nil
+
+	switch strings.ToLower(cfg.Env) {
+	case "production", "prod":
+		return keys, nil
+	}
+
+	headers, err := edge.NewHeaderIdentityResolver(cfg.Env, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	return edge.ChainIdentityResolvers(keys, headers), nil
 }
 
 // buildStateSigner obtains the MRTR requestState signing key.

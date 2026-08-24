@@ -33,3 +33,11 @@ DELETE FROM grants WHERE user_id = $1 AND role = $2 AND scope = $3;
 
 -- name: RevokeGrantByID :exec
 DELETE FROM grants WHERE id = $1;
+
+-- name: ListAllGrants :many
+-- Every user's grants in one query. A snapshot build needs all of them, and
+-- asking per user turns a publish into one round trip per person on staff.
+SELECT * FROM grants ORDER BY user_id, scope, role;
+
+-- name: ListAllAPIKeyGrants :many
+SELECT * FROM api_key_grants ORDER BY api_key_id, scope, role;

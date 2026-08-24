@@ -485,15 +485,17 @@ func (s *Store) ResolveAPIKey(ctx context.Context, presented string) (Resolved, 
 	row, err := s.q.GetAPIKeyByPrefix(ctx, prefix)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Still pay the verification cost, so a wrong prefix and a wrong
-			// secret are indistinguishable in timing.
-			VerifySecret(secret, "")
+			// Still hash, so a wrong prefix and a wrong secret are
+			// indistinguishable in timing. Cheap now that this is SHA-256
+			// (ADR 0021), and still worth doing: the asymmetry is what an
+			// attacker probes for.
+			VerifyKeySecret(secret, "")
 			return Resolved{}, ErrNotFound
 		}
 		return Resolved{}, wrap(err, "reading the key")
 	}
 
-	if !VerifySecret(secret, row.Hash) {
+	if !VerifyKeySecret(secret, row.Hash) {
 		return Resolved{}, ErrNotFound
 	}
 

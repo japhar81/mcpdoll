@@ -340,6 +340,18 @@ message Principal {
   // has to remember to do it. There is one way to get effective grants, and
   // this is it.
   repeated Grant grants = 4;
+
+  // The credential this principal is reached by. A snapshot's principals are
+  // its API keys — one per key, not one per user — because a user with no key
+  // cannot reach the data plane at all, and publishing an unreachable
+  // principal would only make the artifact bigger.
+  //
+  // key_prefix is the public, indexed half. key_secret_sha256 is a digest of
+  // 192 CSPRNG bits, which is what lets the data plane verify a credential
+  // with one hash and no database (ADR 0021). It is not an Argon2id hash and
+  // must not become one: that runs on the request path.
+  string key_prefix = 5;
+  string key_secret_sha256 = 6;
 }
 
 // Grant is a Casbin `g` policy: a role held within a scope.

@@ -1685,9 +1685,20 @@ type Principal struct {
 	// Already intersected for an API key (ADR 0014), so the data plane never
 	// has to remember to do it. There is one way to get effective grants, and
 	// this is it.
-	Grants        []*Grant `protobuf:"bytes,4,rep,name=grants,proto3" json:"grants,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Grants []*Grant `protobuf:"bytes,4,rep,name=grants,proto3" json:"grants,omitempty"`
+	// The credential this principal is reached by. A snapshot's principals are
+	// its API keys — one per key, not one per user — because a user with no key
+	// cannot reach the data plane at all, and publishing an unreachable
+	// principal would only make the artifact bigger.
+	//
+	// key_prefix is the public, indexed half. key_secret_sha256 is a digest of
+	// 192 CSPRNG bits, which is what lets the data plane verify a credential
+	// with one hash and no database (ADR 0021). It is not an Argon2id hash and
+	// must not become one: that runs on the request path.
+	KeyPrefix       string `protobuf:"bytes,5,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
+	KeySecretSha256 string `protobuf:"bytes,6,opt,name=key_secret_sha256,json=keySecretSha256,proto3" json:"key_secret_sha256,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Principal) Reset() {
@@ -1746,6 +1757,20 @@ func (x *Principal) GetGrants() []*Grant {
 		return x.Grants
 	}
 	return nil
+}
+
+func (x *Principal) GetKeyPrefix() string {
+	if x != nil {
+		return x.KeyPrefix
+	}
+	return ""
+}
+
+func (x *Principal) GetKeySecretSha256() string {
+	if x != nil {
+		return x.KeySecretSha256
+	}
+	return ""
 }
 
 // Grant is a Casbin `g` policy: a role held within a scope.
@@ -2311,12 +2336,15 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x1e\n" +
 	"\n" +
 	"permission\x18\x02 \x01(\tR\n" +
-	"permission\"\x86\x01\n" +
+	"permission\"\xd1\x01\n" +
 	"\tPrincipal\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x18\n" +
 	"\asubject\x18\x03 \x01(\tR\asubject\x122\n" +
-	"\x06grants\x18\x04 \x03(\v2\x1a.mcpdoll.snapshot.v1.GrantR\x06grants\"1\n" +
+	"\x06grants\x18\x04 \x03(\v2\x1a.mcpdoll.snapshot.v1.GrantR\x06grants\x12\x1d\n" +
+	"\n" +
+	"key_prefix\x18\x05 \x01(\tR\tkeyPrefix\x12*\n" +
+	"\x11key_secret_sha256\x18\x06 \x01(\tR\x0fkeySecretSha256\"1\n" +
 	"\x05Grant\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\"\x7f\n" +

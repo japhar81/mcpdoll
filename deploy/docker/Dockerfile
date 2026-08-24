@@ -54,7 +54,9 @@ COPY deploy/local/registry.yaml   /srv/src/registry.yaml
 COPY deploy/docker/dataplane.yaml /srv/src/dataplane.yaml
 COPY deploy/docker/bootstrap.sh   /usr/local/bin/bootstrap.sh
 COPY deploy/docker/entrypoint-dp.sh /usr/local/bin/entrypoint-dp.sh
-RUN chmod +x /usr/local/bin/bootstrap.sh /usr/local/bin/entrypoint-dp.sh
+COPY deploy/docker/seed.sh        /usr/local/bin/seed.sh
+RUN chmod +x /usr/local/bin/bootstrap.sh /usr/local/bin/entrypoint-dp.sh \
+      /usr/local/bin/seed.sh
 
 RUN mkdir -p /srv/state && chown -R mcpdoll:mcpdoll /srv/state
 USER mcpdoll

@@ -1,13 +1,15 @@
 #!/bin/sh
-# Prepare the shared state the data plane and control plane serve from.
+# Prepare the signing key and the resolved registry.
 #
-# Runs once, to completion, after the fixture backends are healthy and before
-# anything that serves starts. Compose enforces that ordering with
-# `service_completed_successfully`, which is the whole reason this is a separate
-# container rather than an entrypoint that races.
+# Deliberately does NOT build a snapshot. A snapshot carries tenants and
+# principals, those live in the database, and the database is populated by the
+# control plane and `seed.sh` — so building here would need a control plane that
+# needs a data plane that needs this snapshot. Splitting the two halves is what
+# breaks that cycle: this half needs nothing running, and `seed.sh` builds the
+# snapshot once there is something to put in it.
 #
-# Idempotent: re-running it regenerates the snapshot against whatever the
-# fixtures currently publish, and leaves an existing signing key alone.
+# Idempotent: re-running re-resolves the registry and leaves an existing signing
+# key alone.
 set -eu
 
 STATE=/srv/state
@@ -39,6 +41,7 @@ fi
 log "resolving the registry for the compose network"
 sed \
   -e 's|http://localhost:9101|http://fixture-crm:9101|' \
+  -e 's|http://localhost:9106|http://fixture-crm-globex:9106|' \
   -e 's|http://localhost:9102|http://fixture-hr:9102|' \
   -e 's|http://localhost:9103|http://fixture-warehouse:9103|' \
   -e 's|http://localhost:9104|http://fixture-websearch:9104|' \
@@ -46,13 +49,13 @@ sed \
   -e 's|file://deploy/local/plugins/|file:///srv/plugins/|' \
   "${SRC}/registry.yaml" > "${STATE}/registry.yaml"
 
-# Every localhost endpoint must have been rewritten. A backend the substitution
+# Every localhost address must have been rewritten. A binding the substitution
 # missed would be discovered against the *bootstrap container's* own loopback,
 # where nothing is listening — and the failure would read as an unreachable
 # backend rather than as a stale mapping.
-if grep -q 'endpoint: http://localhost' "${STATE}/registry.yaml"; then
-  echo "bootstrap: a backend endpoint was not rewritten for the compose network:" >&2
-  grep -n 'endpoint: http://localhost' "${STATE}/registry.yaml" >&2
+if grep -qE '(primary|replicas):.*http://localhost' "${STATE}/registry.yaml"; then
+  echo "bootstrap: a backend address was not rewritten for the compose network:" >&2
+  grep -nE '(primary|replicas):.*http://localhost' "${STATE}/registry.yaml" >&2
   echo "bootstrap: add it to the sed mapping in deploy/docker/bootstrap.sh" >&2
   exit 1
 fi
@@ -89,19 +92,5 @@ for plugin in redact entitlements; do
   mv "${STATE}/registry.yaml.tmp" "${STATE}/registry.yaml"
 done
 
-# ------------------------------------------------------------ snapshot ------
-
-# A fresh version on every run. The store refuses a snapshot no newer than the
-# one it is serving, so a rebuild that reused version 1 would be silently
-# ignored and the stack would keep serving stale configuration.
-VERSION="$(date +%s)"
-log "building snapshot version ${VERSION}"
-sed -i "s/^version: [0-9]*/version: ${VERSION}/" "${STATE}/registry.yaml"
-
-mcpdoll snapshot build \
-  --registry "${STATE}/registry.yaml" \
-  --key "${STATE}/${KEY_ID}.key" \
-  --key-id "${KEY_ID}" \
-  --out "${STATE}/snapshot.pb"
-
 log "ready: $(ls -1 ${STATE} | tr '\n' ' ')"
+log "the snapshot is built by seed.sh, once the database has tenants to carry"

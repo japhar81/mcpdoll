@@ -3,12 +3,16 @@
 package edge
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 )
 
 // IdentityResolver turns an inbound request into the principal on whose behalf
@@ -39,6 +43,18 @@ func (e *ErrForbidden) Error() string {
 		e.Subject, e.Audience, e.Reason)
 }
 
+// Response headers naming who a credential resolved to.
+//
+// On the response rather than derivable from the request: the tenant comes from
+// the key (ADR 0019), so the caller genuinely does not know it until the
+// gateway says so. The console's inspection screens read these instead of
+// scraping the `instructions` prose, which is written for a model and will be
+// reworded.
+const (
+	HeaderResolvedTenant  = "X-MCPDoll-Tenant"
+	HeaderResolvedSubject = "X-MCPDoll-Subject-Resolved"
+)
+
 // Dev-mode identity headers. These are read only by [HeaderIdentityResolver].
 const (
 	HeaderSubject = "X-MCPDoll-Subject"
@@ -55,8 +71,10 @@ const (
 // resolver reaching production would be a total authorization bypass, and a
 // comment is not a control.
 type HeaderIdentityResolver struct {
-	// DefaultSubject is used when no subject header is present, so a bare
-	// `curl` against a dev gateway still works.
+	// DefaultSubject is used when no subject header is present. Leave it empty
+	// when this resolver sits behind another in a chain: a default there would
+	// turn every failed authentication into a successful one as somebody else,
+	// including a request that presented a *wrong* API key.
 	DefaultSubject string
 	DefaultGroups  []string
 }
@@ -122,4 +140,122 @@ func splitAndTrim(raw string) []string {
 		}
 	}
 	return out
+}
+
+// APIKeyIdentityResolver authenticates `mcpd.<prefix>.<secret>` against the
+// serving snapshot.
+//
+// No database and no call to the control plane: the snapshot carries each
+// active key's prefix and the SHA-256 of its secret, so verification is one map
+// lookup and one hash (ADR 0021). That is what makes a control-plane outage
+// invisible to a tool call, and it is the reason the digest is not Argon2id —
+// a memory-hard KDF on this path would be a denial-of-service primitive pointed
+// at ourselves.
+type APIKeyIdentityResolver struct {
+	// current returns the snapshot to verify against. A function rather than a
+	// value because the snapshot is swapped underneath: a resolver holding one
+	// view would keep authenticating keys a later snapshot revoked.
+	current func() *snapshot.View
+}
+
+// NewAPIKeyIdentityResolver builds a resolver over a snapshot source.
+func NewAPIKeyIdentityResolver(current func() *snapshot.View) (*APIKeyIdentityResolver, error) {
+	if current == nil {
+		return nil, errors.New("edge: an API key resolver needs a snapshot source")
+	}
+	return &APIKeyIdentityResolver{current: current}, nil
+}
+
+// Resolve implements IdentityResolver.
+//
+// Every failure returns the same error. A caller learns whether their
+// credential worked and nothing else — not whether the prefix existed, not
+// whether the snapshot is stale, not whether the key was revoked. Those
+// distinctions are in the log, where the operator can see them and an attacker
+// cannot.
+func (r *APIKeyIdentityResolver) Resolve(header http.Header) (backends.Principal, error) {
+	presented := strings.TrimSpace(
+		strings.TrimPrefix(header.Get("Authorization"), "Bearer "))
+	if presented == "" {
+		return backends.Principal{}, ErrUnauthenticated
+	}
+
+	view := r.current()
+	if view == nil {
+		return backends.Principal{}, ErrUnauthenticated
+	}
+
+	prefix, secret, err := splitPresentedKey(presented)
+	if err != nil {
+		return backends.Principal{}, ErrUnauthenticated
+	}
+
+	principal, ok := view.PrincipalByKeyPrefix(prefix)
+	if !ok {
+		// Hash anyway. An unknown prefix returning before the comparison would
+		// be measurably faster than a wrong secret, which is an oracle for
+		// enumerating which prefixes exist.
+		_ = verifyKeyDigest(secret, "")
+		return backends.Principal{}, ErrUnauthenticated
+	}
+	if !verifyKeyDigest(secret, principal.KeySecretSha256) {
+		return backends.Principal{}, ErrUnauthenticated
+	}
+
+	tenant := view.TenantByID(principal.TenantId)
+	if tenant == nil {
+		return backends.Principal{}, ErrUnauthenticated
+	}
+
+	// No groups and no claims. They come from an identity provider, and an API
+	// key is not one — a key that could assert group membership would let a
+	// credential grant itself whatever a group-conditioned policy allows.
+	return backends.Principal{
+		ID:      principal.Id,
+		Subject: principal.Subject,
+		Tenant:  tenant.Slug,
+	}, nil
+}
+
+// splitPresentedKey parses `mcpd.<prefix>.<secret>`.
+//
+// Duplicated from the store rather than imported: the data plane must not
+// depend on the control plane's database package, and the format is a wire
+// contract that a shared import would not make more stable. The dot separator
+// matters — the fields are base64url, whose alphabet contains both `-` and `_`.
+func splitPresentedKey(presented string) (prefix, secret string, err error) {
+	parts := strings.Split(presented, ".")
+	if len(parts) != 3 || parts[0] != "mcpd" || parts[1] == "" || parts[2] == "" {
+		return "", "", ErrUnauthenticated
+	}
+	return parts[1], parts[2], nil
+}
+
+// verifyKeyDigest compares a secret against a stored `sha256:<hex>` digest.
+func verifyKeyDigest(secret, stored string) bool {
+	sum := sha256.Sum256([]byte(secret))
+	computed := "sha256:" + hex.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(stored)) == 1
+}
+
+// ChainIdentityResolvers tries each resolver in order.
+//
+// Order is the security property, not a convenience: a real credential must be
+// checked before any fallback, or a client could present a valid key *and* a
+// forged subject header and have the header win. The chain is only ever
+// constructed with a development resolver at the end, and never in production.
+func ChainIdentityResolvers(resolvers ...IdentityResolver) IdentityResolver {
+	return chainResolver(resolvers)
+}
+
+type chainResolver []IdentityResolver
+
+func (c chainResolver) Resolve(header http.Header) (backends.Principal, error) {
+	for _, r := range c {
+		principal, err := r.Resolve(header)
+		if err == nil {
+			return principal, nil
+		}
+	}
+	return backends.Principal{}, ErrUnauthenticated
 }

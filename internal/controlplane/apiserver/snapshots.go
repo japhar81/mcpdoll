@@ -281,6 +281,21 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 		AllowUnreachable: req.AllowUnreachable,
 		Concurrency:      req.Concurrency,
 	}
+
+	// Tenancy and RBAC come from the database. Without them a binding names a
+	// tenant the build does not carry, which is a build failure — correctly, so
+	// the message names the missing half rather than producing a snapshot that
+	// admits tools for a tenant no principal could belong to.
+	if s.cfg.Store != nil {
+		state, err := s.cfg.Store.SnapshotState(r.Context())
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		opts.Tenants = state.Tenants
+		opts.Principals = state.Principals
+		opts.Catalog = state.Catalog
+	}
 	if req.DiscoverTimeoutMs > 0 {
 		opts.DiscoverTimeout = time.Duration(req.DiscoverTimeoutMs) * time.Millisecond
 	}

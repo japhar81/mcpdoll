@@ -45,6 +45,17 @@ type Querier interface {
 	ListAPIKeyGrants(ctx context.Context, apiKeyID uuid.UUID) ([]ApiKeyGrant, error)
 	ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ApiKey, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	// Every key that could authenticate right now, across every tenant. This is
+	// what a snapshot build reads: the data plane holds no database, so the keys
+	// have to travel in the artifact (ADR 0021). Revoked and expired keys are
+	// excluded here rather than filtered later — publishing a key that cannot
+	// authenticate would put a dead credential's digest into a signed file for no
+	// reason.
+	ListActiveAPIKeys(ctx context.Context) ([]ApiKey, error)
+	ListAllAPIKeyGrants(ctx context.Context) ([]ApiKeyGrant, error)
+	// Every user's grants in one query. A snapshot build needs all of them, and
+	// asking per user turns a publish into one round trip per person on staff.
+	ListAllGrants(ctx context.Context) ([]Grant, error)
 	ListAllUsers(ctx context.Context) ([]User, error)
 	// The login screen's list. A tenant-scoped provider (tenant_id set) is offered
 	// only to that tenant; a null tenant_id serves every tenant.

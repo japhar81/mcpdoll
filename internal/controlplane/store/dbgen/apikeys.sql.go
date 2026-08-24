@@ -208,6 +208,49 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 	return items, nil
 }
 
+const listActiveAPIKeys = `-- name: ListActiveAPIKeys :many
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at FROM api_keys
+WHERE revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+ORDER BY created_at
+`
+
+// Every key that could authenticate right now, across every tenant. This is
+// what a snapshot build reads: the data plane holds no database, so the keys
+// have to travel in the artifact (ADR 0021). Revoked and expired keys are
+// excluded here rather than filtered later — publishing a key that cannot
+// authenticate would put a dead credential's digest into a signed file for no
+// reason.
+func (q *Queries) ListActiveAPIKeys(ctx context.Context) ([]ApiKey, error) {
+	rows, err := q.db.Query(ctx, listActiveAPIKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApiKey{}
+	for rows.Next() {
+		var i ApiKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.Prefix,
+			&i.Hash,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :exec
 UPDATE api_keys SET revoked_at = now() WHERE id = $1
 `

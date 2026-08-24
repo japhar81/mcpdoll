@@ -4,14 +4,29 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
 )
+
+// Two hash functions live in this file, and the difference is deliberate.
+//
+//   - Passwords are Argon2id. A human password is drawn from a distribution an
+//     attacker can enumerate, so the defence has to be per-guess cost.
+//   - API key secrets are SHA-256. A key secret is 192 bits from a CSPRNG.
+//     There is nothing to enumerate, so a memory-hard KDF defends against
+//     nothing — and it would have to run on the data plane's request path, at
+//     64 MiB a time, which is a denial-of-service primitive pointed at
+//     ourselves. See ADR 0021.
+//
+// Anyone reading this and reaching for consistency should read that ADR first.
+// Making both Argon2id would reintroduce exactly the problem it names.
 
 // API key format: `mcpd.<prefix>.<secret>`.
 //
@@ -62,7 +77,7 @@ var ErrMalformedCredential = errors.New("malformed credential")
 // The plaintext is never persisted and cannot be recovered. That is the whole
 // point, and it is why the console has to be explicit that this is the only
 // time it will be shown.
-func NewAPIKey() (plaintext, prefix, hash string, err error) {
+func NewAPIKey() (plaintext, prefix, hash string, err error) { //nolint:nonamedreturns // four strings
 	prefixRaw := make([]byte, prefixBytes)
 	if _, err := rand.Read(prefixRaw); err != nil {
 		return "", "", "", fmt.Errorf("store: generating a key prefix: %w", err)
@@ -76,11 +91,8 @@ func NewAPIKey() (plaintext, prefix, hash string, err error) {
 	prefix = enc.EncodeToString(prefixRaw)
 	secret := enc.EncodeToString(secretRaw)
 
-	hash, err = HashSecret(secret)
-	if err != nil {
-		return "", "", "", err
-	}
-	return strings.Join([]string{keyMarker, prefix, secret}, keySeparator), prefix, hash, nil
+	return strings.Join([]string{keyMarker, prefix, secret}, keySeparator),
+		prefix, HashKeySecret(secret), nil
 }
 
 // SplitAPIKey separates a presented key into its prefix and secret.
@@ -92,7 +104,29 @@ func SplitAPIKey(presented string) (prefix, secret string, err error) {
 	return parts[1], parts[2], nil
 }
 
-// HashSecret derives a storable hash, salted per secret.
+// HashKeySecret digests an API key secret.
+//
+// Unsalted and cheap, on purpose. A salt defends against a precomputed table
+// over a guessable input space, and there is no table over 192 random bits;
+// what it would cost instead is the ability to look a key up by its digest,
+// which is exactly what lets the data plane verify offline from a signed
+// snapshot rather than asking the control plane per request (ADR 0021).
+func HashKeySecret(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// VerifyKeySecret reports whether a presented secret matches a stored digest.
+//
+// Constant-time comparison, because the digest is a fixed-length value an
+// attacker can submit guesses against one byte at a time if the comparison
+// short-circuits.
+func VerifyKeySecret(secret, stored string) bool {
+	computed := HashKeySecret(secret)
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(stored)) == 1
+}
+
+// HashSecret derives a storable hash for a *password*, salted per secret.
 //
 // The encoded form carries its own parameters, so a future change to the cost
 // settings does not invalidate existing hashes — they verify with the
@@ -110,7 +144,7 @@ func HashSecret(secret string) (string, error) {
 		enc.EncodeToString(salt), enc.EncodeToString(digest)), nil
 }
 
-// VerifySecret reports whether a secret matches a stored hash.
+// VerifySecret reports whether a password matches a stored Argon2id hash.
 //
 // Constant-time, and it does the full derivation even for a hash it cannot
 // parse — see below.

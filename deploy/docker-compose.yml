@@ -120,6 +120,18 @@ services:
       retries: 12
       start_period: 3s
 
+  fixture-crm-globex:
+    <<: *fixture
+    container_name: mcpdoll-fixture-crm-globex
+    # The same backend, a second tenant's deployment. Two containers rather than
+    # one shared: a binding that pointed both tenants at the same host would
+    # render correctly in the console and demonstrate nothing, because the whole
+    # claim of ADR 0017 is that the data behind a toolset differs per tenant.
+    command: ["fixture-backend", "-kind", "modern", "-addr", ":9106"]
+    healthcheck:
+      <<: *fixture-health
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9106/healthz"]
+
   fixture-hr:
     <<: *fixture
     container_name: mcpdoll-fixture-hr
@@ -183,12 +195,9 @@ services:
     networks: [mcpdoll]
     volumes:
       - state:/srv/state
-    depends_on:
-      fixture-crm: { condition: service_healthy }
-      fixture-hr: { condition: service_healthy }
-      fixture-warehouse: { condition: service_healthy }
-      fixture-websearch: { condition: service_healthy }
-      fixture-deploy: { condition: service_healthy }
+    # No fixture dependency: this half generates a key and resolves a registry,
+    # and neither touches a backend. Discovery happens in the snapshot build,
+    # which is `seed`'s job.
 
   # --------------------------------------------------------- data plane ----
 
@@ -209,7 +218,9 @@ services:
     volumes:
       - state:/srv/state:ro
     depends_on:
-      bootstrap: { condition: service_completed_successfully }
+      # `seed`, not `bootstrap`: the snapshot cannot exist until the database
+      # has tenants to put in it, so it is built at the end of seeding.
+      seed: { condition: service_completed_successfully }
     healthcheck:
       # readyz, not healthz: a data plane with no snapshot is alive and cannot
       # serve, and starting the control plane against it would only produce
@@ -242,14 +253,44 @@ services:
       - state:/srv/state
     depends_on:
       bootstrap: { condition: service_completed_successfully }
-      dataplane: { condition: service_healthy }
       postgres: { condition: service_healthy }
+      # Deliberately NOT the data plane. The control plane creates the tenants
+      # the first snapshot carries, and the data plane cannot start until that
+      # snapshot exists — waiting on it here would be a cycle. A control plane
+      # whose gateway is unreachable reports that as a state rather than
+      # failing, which is the same thing it has to do in production anyway.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/healthz"]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 3s
+
+  # --------------------------------------------------------------- seed ----
+
+  seed:
+    <<: *mcpdoll-image
+    container_name: mcpdoll-seed
+    command: ["seed.sh"]
+    # Through the API, not the database. The same path an operator uses, so a
+    # broken command fails here rather than the first time somebody types it.
+    restart: "no"
+    networks: [mcpdoll]
+    environment:
+      MCPDOLL_CP_TOKEN: ${MCPDOLL_CP_TOKEN:-dev-token-not-a-secret}
+      MCPDOLL_API_URL: http://controlplane:3001
+      MCPDOLL_DATABASE_URL: postgres://mcpdoll:mcpdoll@postgres:5432/mcpdoll?sslmode=disable
+    volumes:
+      - state:/srv/state
+    depends_on:
+      controlplane: { condition: service_healthy }
+      # The snapshot build discovers every backend, so they have to be up.
+      fixture-crm: { condition: service_healthy }
+      fixture-crm-globex: { condition: service_healthy }
+      fixture-hr: { condition: service_healthy }
+      fixture-warehouse: { condition: service_healthy }
+      fixture-websearch: { condition: service_healthy }
+      fixture-deploy: { condition: service_healthy }
 
   # ------------------------------------------------------------ console ----
 

@@ -39,7 +39,7 @@ const (
 	// ExitUnavailable is a target that could not be reached. A retry may help.
 	ExitUnavailable = 4
 	// ExitValidation is input that parsed but failed a rule — a name collision,
-	// an over-budget bundle.
+	// an over-budget toolset.
 	ExitValidation = 5
 	// ExitFailed is any other failure.
 	ExitFailed = 6

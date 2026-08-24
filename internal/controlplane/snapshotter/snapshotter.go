@@ -7,7 +7,7 @@
 // publish. Two rules govern the meeting:
 //
 //   - **Every problem is a build failure.** A dangling reference, a name
-//     collision, an over-budget bundle, two mutating plugins racing at the same
+//     collision, an over-budget toolset, two mutating plugins racing at the same
 //     hook: the build stops. The alternative is a snapshot that some data-plane
 //     instances refuse and others accept, or one that half-works in production.
 //     A build failure is a message with a name in it; a bad snapshot is an
