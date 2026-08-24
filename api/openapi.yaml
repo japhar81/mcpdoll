@@ -30,6 +30,9 @@ info:
 
   license:
     name: MIT
+    # SPDX, so the declaration is machine-readable and matches ./LICENSE rather
+    # than only agreeing with it by eye.
+    identifier: MIT
 
 servers:
   - url: http://localhost:3001

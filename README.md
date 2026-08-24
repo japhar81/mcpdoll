@@ -150,6 +150,12 @@ real database rather than mocks.
 built, what is partly built, and the one place where a design trade leaves a
 measurable exposure rather than closing it.
 
+## License
+
+MIT — see [LICENSE](LICENSE). Same terms as
+[ragdoll](https://github.com/japhar81/ragdoll), which this borrows its shape
+from (ADR 0001).
+
 ## Status
 
 Not deployed anywhere, and not ready to be. The largest gaps are an identity
