@@ -162,7 +162,14 @@ export function GrantsScreen() {
             <br />
             <code>*</code> everything · <code>t/acme</code> one tenant ·{" "}
             <code>t/acme/ts/support</code> one toolset ·{" "}
-            <code>t/acme/ts/support/crm.lookup</code> one tool
+            <code>t/acme/ts/support/lookup_customer</code> one tool
+          </p>
+          <p className="muted">
+            A tool scope names the backend&apos;s own tool, not the qualified
+            name in the catalog: <code>lookup_customer</code>, not{" "}
+            <code>crm.lookup_customer</code>. The prefix belongs to the
+            namespace, so a grant carrying it would authorize nothing — the
+            server refuses that form rather than storing it.
           </p>
           {role && roles.data && (
             <p className="muted">

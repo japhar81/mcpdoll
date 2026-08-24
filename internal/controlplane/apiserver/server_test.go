@@ -589,3 +589,17 @@ toolsets:
     namespaces: [ns_crm]
 
 ` + pluginsBlock
+
+func TestGrantScopesAreCheckedAgainstTheServingSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, func(*apiserver.Config) {})
+
+	// No store, so this stops at the 503 rather than reaching the check — the
+	// point of this case is that a malformed scope is reported as such rather
+	// than stored and silently authorizing nothing. The full check has a live
+	// snapshot to work from; see the scope tests in internal/platform/authz.
+	rec := do(t, h, http.MethodPut,
+		"/api/v1/users/"+uuid.Nil.String()+"/grants",
+		apiserver.PutGrantsRequest{Grants: []api.Grant{{Role: "tool_user", Scope: "nonsense"}}})
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}

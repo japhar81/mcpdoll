@@ -181,7 +181,13 @@ export interface UserList {
   users: User[];
 }
 
-/** One role held at one scope. Scopes nest: `*` ⊃ `t/x` ⊃ `t/x/ts/y` ⊃ `t/x/ts/y/z`. */
+/**
+ * One role held at one scope.
+ *
+ * Scopes nest: `*` ⊃ `t/<tenant>` ⊃ `t/<tenant>/ts/<toolset>` ⊃
+ * `t/<tenant>/ts/<toolset>/<tool>`. The last segment is the backend's own tool
+ * name, not the qualified name a client sees.
+ */
 export interface Grant {
   role: string;
   scope: string;

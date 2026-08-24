@@ -1430,6 +1430,11 @@ components:
         One role held at one scope. Scopes nest: `*` covers everything,
         `t/<tenant>` covers a tenant, `t/<tenant>/ts/<toolset>` a toolset, and
         `t/<tenant>/ts/<toolset>/<tool>` a single tool.
+
+        The tool segment is the backend's own tool name, not the qualified name
+        a client sees — `lookup_customer`, not `crm.lookup_customer`. The prefix
+        belongs to the namespace, so a scope carrying it authorizes nothing;
+        `putGrants` refuses that form rather than storing it.
       required: [role, scope]
       properties:
         role: { type: string }

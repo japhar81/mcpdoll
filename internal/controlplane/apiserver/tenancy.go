@@ -359,6 +359,104 @@ func (s *Server) userWithTenant(r *http.Request, id uuid.UUID) (store.User, stri
 	return user, tenant.Slug, nil
 }
 
+// --------------------------------------------------------- scope validation --
+
+// knownScopes is what the serving snapshot can actually be granted at.
+//
+// A grant at a scope nothing matches is not an error the system would ever
+// report: it stores fine, compiles fine, and authorizes nothing. The operator
+// sees an empty catalog and no reason for it. Checking here is the only place
+// the mistake is still attributable to the change that caused it.
+type knownScopes struct {
+	// loaded is false when no snapshot could be read. Every check then passes:
+	// refusing grants because the gateway has not published yet would make a
+	// fresh install unusable, and the check is a courtesy rather than a
+	// security boundary — the scope is enforced at serving time regardless.
+	loaded   bool
+	tenants  map[string]bool
+	toolsets map[string]bool // "tenant/toolset"
+	tools    map[string]bool // "tenant/toolset/tool"
+	// qualified maps the name a client sees back to the name a scope uses, so
+	// the error can say what the operator meant.
+	qualified map[string]string
+}
+
+func (s *Server) servingScopes() knownScopes {
+	out := knownScopes{
+		tenants: map[string]bool{}, toolsets: map[string]bool{},
+		tools: map[string]bool{}, qualified: map[string]string{},
+	}
+	if s.cfg.SnapshotPath == "" {
+		return out
+	}
+	signed, err := snapshot.ReadSignedSnapshot(s.cfg.SnapshotPath)
+	if err != nil {
+		return out
+	}
+	snap, err := snapshot.ParseUnverified(signed)
+	if err != nil {
+		return out
+	}
+	view, err := snapshot.Build(snap)
+	if err != nil {
+		return out
+	}
+
+	out.loaded = true
+	for _, slug := range view.TenantSlugs() {
+		out.tenants[slug] = true
+		tenant := view.Tenant(slug)
+		for _, tool := range view.ToolsForTenant(tenant.Id) {
+			out.toolsets[slug+"/"+tool.Toolset.Name] = true
+			key := slug + "/" + tool.Toolset.Name + "/" + tool.Def.Name
+			out.tools[key] = true
+			out.qualified[slug+"/"+tool.Toolset.Name+"/"+tool.Def.QualifiedName] = tool.Def.Name
+		}
+	}
+	return out
+}
+
+// check returns a problem description, or "" if the scope is grantable.
+func (k knownScopes) check(scope string) string {
+	parsed, ok := authz.ParseScope(scope)
+	if !ok {
+		return "scope " + scope + " is malformed; it must be *, t/<tenant>, " +
+			"t/<tenant>/ts/<toolset>, or t/<tenant>/ts/<toolset>/<tool>"
+	}
+	if !k.loaded || scope == authz.GlobalScope || parsed.Tenant == "" {
+		return ""
+	}
+	if !k.tenants[parsed.Tenant] {
+		return "scope " + scope + " names tenant " + parsed.Tenant +
+			", which the serving snapshot does not carry; it would authorize nothing"
+	}
+	if parsed.Toolset == "" {
+		return ""
+	}
+	if !k.toolsets[parsed.Tenant+"/"+parsed.Toolset] {
+		return "scope " + scope + " names toolset " + parsed.Toolset +
+			", which admits nothing for tenant " + parsed.Tenant +
+			"; it would authorize nothing"
+	}
+	if parsed.Tool == "" {
+		return ""
+	}
+	if k.tools[parsed.Tenant+"/"+parsed.Toolset+"/"+parsed.Tool] {
+		return ""
+	}
+	// The commonest way to get this wrong, by a wide margin: a tool scope
+	// names the backend's own tool name, and what an operator sees in every
+	// catalog is the *qualified* name with the namespace prefix on it. The two
+	// differ by exactly the thing that is invisible in the UI.
+	if actual, ok := k.qualified[parsed.Tenant+"/"+parsed.Toolset+"/"+parsed.Tool]; ok {
+		return "scope " + scope + " uses the qualified name; a tool scope names " +
+			"the backend's own tool, so this should end in " + actual +
+			" — the namespace prefix is not part of it"
+	}
+	return "scope " + scope + " names a tool that toolset does not carry for " +
+		"tenant " + parsed.Tenant + "; it would authorize nothing"
+}
+
 // ------------------------------------------------------------------- grants --
 
 func (s *Server) handleListGrants(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +504,7 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	scopes := s.servingScopes()
 	want := make([]authz.Grant, 0, len(req.Grants))
 	for _, g := range req.Grants {
 		if _, known := catalog[g.Role]; !known {
@@ -414,6 +513,10 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 			// change that does not take effect.
 			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
 				"no role named "+g.Role+" exists; it would authorize nothing")
+			return
+		}
+		if problem := scopes.check(g.Scope); problem != "" {
+			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, problem)
 			return
 		}
 		want = append(want, authz.Grant{Role: g.Role, Scope: g.Scope})

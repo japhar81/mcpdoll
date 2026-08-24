@@ -428,10 +428,15 @@ func newUsersGrantsSetCmd(env *Env) *cobra.Command {
 			"answered is \"what should this person hold\", and expressing that as a sequence\n" +
 			"of deltas is exactly how a revocation gets forgotten.\n\n" +
 			"Each --grant is role@scope. Scopes nest:\n" +
-			"  *                              everything\n" +
-			"  t/acme                         one tenant\n" +
-			"  t/acme/ts/support              one toolset in it\n" +
-			"  t/acme/ts/support/crm.lookup   one tool\n\n" +
+			"  *                                  everything\n" +
+			"  t/acme                             one tenant\n" +
+			"  t/acme/ts/support                  one toolset in it\n" +
+			"  t/acme/ts/support/lookup_customer  one tool\n\n" +
+			"A tool scope names the backend's own tool, not the qualified name a\n" +
+			"client sees: `lookup_customer`, not `crm.lookup_customer`. The prefix is\n" +
+			"a namespace property, so a grant written with it would survive a\n" +
+			"namespace rename by authorizing nothing. The server refuses that form\n" +
+			"rather than storing it.\n\n" +
 			"Passing no --grant revokes everything, which is how you strip an account\n" +
 			"without deleting it.",
 		Args:        cobra.ExactArgs(1),
