@@ -131,6 +131,63 @@ GLOBEX=$(docker exec mcpdoll-cp awk '/globex\/support/ {print $2}' /srv/state/de
 
 Same toolset name, same tool names, different backend deployment.
 
+### Talking to the gateway directly
+
+The endpoint is MCP over streamable HTTP — JSON-RPC in, Server-Sent Events out.
+No handshake: the gateway is stateless, so `tools/list` works on a bare request.
+`Accept` must name both types, which the protocol requires.
+
+```sh
+KEY=$(docker exec mcpdoll-cp awk '/acme\/support/ {print $2}' /srv/state/demo-keys.txt)
+
+# What this key can see. There is no tenant or toolset in the request —
+# both come from the credential.
+curl -sS -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' | jq '.result | {ttlMs, cacheScope, tools: [.tools[].name]}'
+```
+
+```json
+{
+  "ttlMs": 300000,
+  "cacheScope": "private",
+  "tools": ["crm.get_payment_method", "crm.list_open_tickets", "crm.lookup_customer",
+            "crm.update_customer", "hr.get_org_chart", "hr.lookup_employee",
+            "whs.check_stock", "whs.reserve_stock"]
+}
+```
+
+Calling one:
+
+```sh
+curl -sS -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+       "params":{"name":"crm.lookup_customer","arguments":{"customer_id":"cus_1"}}}' \
+  | sed -n 's/^data: //p' | jq -r '.result.content[].text'
+```
+
+The `sed` strips the SSE framing (`data: ` on each line). Every response also
+names who the gateway decided you are, which the request could not have said:
+
+```sh
+curl -sS -D- -o /dev/null -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | grep -i '^x-mcpdoll'
+#   X-Mcpdoll-Tenant: acme
+#   X-Mcpdoll-Subject-Resolved: support@acme.example
+```
+
+A revoked or unknown key gets `401 unauthenticated`; a key whose principal the
+serving snapshot does not carry gets `403` with the reason.
+
 `make dev` runs the same stack as host processes instead, which is a faster
 edit-to-running loop for Go changes.
 
