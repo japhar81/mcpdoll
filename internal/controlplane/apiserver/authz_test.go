@@ -107,3 +107,15 @@ func TestRevocationsReportSaysWhenNothingWillTakeEffect(t *testing.T) {
 	require.Contains(t, report.Warning, "no revocations_path")
 	require.NotNil(t, report.Revocations)
 }
+
+func TestTheRoleCatalogNeedsNoPermission(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, func(*apiserver.Config) {})
+
+	// It gated behind registry:read, which a tenant admin holds only at their
+	// own tenant — so the grants editor, whose entire job is issuing grants,
+	// could not load the list of roles to issue. The catalog is the same for
+	// everyone and is in the source; there is nothing here to protect.
+	rec := do(t, h, http.MethodGet, "/api/v1/roles", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+}

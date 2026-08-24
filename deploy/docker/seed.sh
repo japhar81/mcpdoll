@@ -104,6 +104,29 @@ echo "${DEMO_USERS}" | while IFS='|' read -r tenant email label grants; do
   log "granted ${email}: ${grants}"
 done
 
+# ----------------------------------------------------------- console admin --
+
+# Somebody who can actually use the console.
+#
+# `SeedPlatformAdmin` already creates admin@mcpdoll.local with a *generated*
+# password printed once to stderr — correct for production and useless for a dev
+# stack, where the container has been recreated a dozen times and that line is
+# long gone. So this seeds a second administrator with a password the README can
+# name.
+#
+# Only ever run by the dev stack. The password is deliberately self-describing:
+# anything reading `demo-password-not-a-secret` in a production database is a
+# finding, not a mystery.
+if have_user platform dev-admin@mcpdoll.local; then
+  log "console admin already exists"
+else
+  log "creating the console admin"
+  mcpdoll users create dev-admin@mcpdoll.local --tenant platform \
+    --name "Console Admin" --password "demo-password-not-a-secret" >/dev/null
+  mcpdoll users grants set dev-admin@mcpdoll.local --tenant platform \
+    --grant "platform_admin@*" >/dev/null
+fi
+
 # ------------------------------------------------------------------ keys ----
 
 if [ ! -s "${KEYS}" ]; then

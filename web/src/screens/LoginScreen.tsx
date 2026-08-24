@@ -27,7 +27,11 @@ export function LoginScreen() {
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // One error per form. A single shared state renders a token failure under the
+  // password fields, which reads as "my password is wrong" when the password
+  // was never submitted.
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
 
   // Where the user was headed before being sent here, so signing in resumes
   // rather than dumping them on the front page.
@@ -41,14 +45,15 @@ export function LoginScreen() {
   async function submitPassword(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
+    setPasswordError(null);
+    setTokenError(null);
 
     const result = await auth.signInWithPassword(tenant.trim(), email.trim(), password);
     if (result === "ok") {
       navigate(from, { replace: true });
       return;
     }
-    setError(
+    setPasswordError(
       result === "unauthorized"
         ? "The tenant, email, or password is wrong."
         : "The control plane could not be reached. Is it running on :3001?",
@@ -59,16 +64,19 @@ export function LoginScreen() {
   async function submitToken(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
+    setPasswordError(null);
+    setTokenError(null);
 
     const result = await auth.signIn(token);
     if (result === "ok") {
       navigate(from, { replace: true });
       return;
     }
-    setError(
+    setTokenError(
       result === "unauthorized"
-        ? "The control plane did not accept that credential."
+        ? "The control plane did not accept that credential. Check that the " +
+            "field holds what you typed — a password manager will fill a saved " +
+            "login into it if you let it."
         : "The control plane could not be reached. Is it running on :3001?",
     );
     setBusy(false);
@@ -115,7 +123,7 @@ export function LoginScreen() {
             />
           </label>
 
-          {error && <div className="login-error">{error}</div>}
+          {passwordError && <div className="login-error">{passwordError}</div>}
 
           <button
             className="primary login-submit"
@@ -149,11 +157,20 @@ export function LoginScreen() {
               <input
                 type="password"
                 spellCheck={false}
+                // Not a login, and telling the browser so matters: without
+                // this a password manager fills a saved credential into it,
+                // the field looks full, and the submission fails for a reason
+                // nothing on screen explains.
+                autoComplete="new-password"
+                name="mcpdoll-deployment-token"
+                data-1p-ignore
+                data-lpignore="true"
                 placeholder="mcpd.… or the configured token"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
               />
             </label>
+            {tokenError && <div className="login-error">{tokenError}</div>}
             <button className="secondary login-submit" type="submit" disabled={busy}>
               {busy ? "Checking…" : "Sign in with a token"}
             </button>

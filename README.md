@@ -66,12 +66,7 @@ make down    # stop, keeping the database and the signing key
 ```
 
 `make up` starts Postgres, six fixture MCP backends, both planes, the console,
-and an LGTM observability stack. It seeds two tenants and four agent
-credentials, then prints them:
-
-```sh
-docker exec mcpdoll-cp cat /srv/state/demo-keys.txt
-```
+and an LGTM observability stack.
 
 | | |
 |---|---|
@@ -79,6 +74,49 @@ docker exec mcpdoll-cp cat /srv/state/demo-keys.txt
 | Data plane | http://localhost:8080/mcp — one endpoint; the key names the tenant |
 | Control plane | http://localhost:3001 |
 | Grafana | http://localhost:3300 — folder `MCPDoll` |
+
+### Signing in
+
+Every credential below is a **development** value, seeded by
+`deploy/docker/seed.sh` and never by the product. They are named so that
+anything finding `demo-password-not-a-secret` in a real database has a finding
+rather than a mystery.
+
+| Tenant | Email | Password | What it can do |
+|---|---|---|---|
+| `platform` | `dev-admin@mcpdoll.local` | `demo-password-not-a-secret` | Everything. **Start here.** |
+| `acme` | `platform@acme.example` | `demo-password-not-a-secret` | Tenant admin for `acme` |
+| `acme` | `support@acme.example` | `demo-password-not-a-secret` | Tool access only — signs in, sees nothing |
+
+The second and third are worth a look precisely because they are *restricted*.
+Signed in as `platform@acme.example`, `/tenants` lists only `acme` — the control
+plane filters rather than refusing — and the registry and gateway screens return
+403, because those are org-wide and a tenant admin has no business reading
+another tenant's backend addresses. Signed in as `support@acme.example`, almost
+everything is refused, which is the correct state for an account granted tool
+access and nothing else.
+
+There is also a `platform_admin` created on first boot with a *generated*
+password printed once to the control plane's stderr. That is the production
+path; the seeded admin above exists because a dev container gets recreated and
+that line scrolls away.
+
+The login screen's second form takes the deployment token
+(`dev-token-not-a-secret`) or any API key. The token holds every permission and
+exists so CI can build a snapshot before a user does — it is not the way to use
+the console.
+
+### Agent credentials
+
+Four agent keys are minted at seed time and written to the state volume:
+
+```sh
+docker exec mcpdoll-cp cat /srv/state/demo-keys.txt
+```
+
+Paste one into the console at `/gateway/catalog` to see exactly what that agent
+sees. They are real, working secrets — which is why that file is gitignored, and
+why this whole section says *development* twice.
 
 The claim in one command, twice:
 

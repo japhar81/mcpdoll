@@ -242,8 +242,11 @@ func (s *Server) routes() {
 		r.With(s.requireScoped("keyId", authz.PermKeyManage, s.keyScopeOf)).
 			Delete("/keys/{keyId}", s.handleRevokeAPIKey)
 
-		r.With(s.require(authz.PermRegistryRead, global)).
-			Get("/roles", s.handleListRoles)
+		// No permission beyond being authenticated. The role catalog is the
+		// same for everyone, it is in the source, and the grants editor is
+		// unusable without it — so gating it behind registry:read made a
+		// tenant admin unable to do the one thing their role exists for.
+		r.Get("/roles", s.handleListRoles)
 
 		// Reading the revocation state is an operational question — "is what I
 		// revoked actually in effect?" — so it sits with gateway inspection

@@ -222,6 +222,23 @@ snapshot_version)`) and the snapshot marks which tools require an idempotency ke
 (`requires_idempotency_key`, derived from effect class at build time). Neither
 cache is implemented.
 
+### A tenant admin cannot see the registry, and the console does not explain it
+
+Registry, snapshot, and gateway operations require their permission at **global**
+scope, because the registry is one org-wide document: it lists every backend and
+every tenant's binding addresses, and a tenant admin reading another tenant's
+hostnames is a leak.
+
+The consequence is that a tenant admin's console is mostly 403s. They can do
+their whole job — users, grants, keys, and a tenant list filtered to what they
+hold — and every other screen refuses. That is *correct* and it is a bad
+experience, because nothing on those screens says why.
+
+The fix is a scoped view of the registry rather than a scoped permission on the
+whole document: a tenant admin should see the backends bound to their tenant and
+the toolsets those tools land in, and nothing else. That is a new operation
+rather than a permission change, which is why it is here and not done.
+
 ### Separation of duties is enforced; the console does not yet render from it
 
 The control plane resolves every request to a principal and checks every

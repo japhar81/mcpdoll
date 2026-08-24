@@ -295,6 +295,17 @@ for entry in "${DEMO_USERS[@]}"; do
   fi
 done
 
+# Somebody who can actually use the console. `SeedPlatformAdmin` creates one
+# with a generated password printed once, which is right for production and
+# useless here — so this seeds a second with a password the README can name.
+if ! have_user platform dev-admin@mcpdoll.local; then
+  ./bin/mcpdoll users create dev-admin@mcpdoll.local --tenant platform \
+    --name "Console Admin" --password demo-password-not-a-secret --quiet >/dev/null
+  ./bin/mcpdoll users grants set dev-admin@mcpdoll.local --tenant platform \
+    --grant "platform_admin@*" --quiet >/dev/null
+  info "console admin: dev-admin@mcpdoll.local in tenant platform"
+fi
+
 if [[ ! -s "${KEYS}" ]]; then
   {
     echo "# MCPDoll demo credentials, minted $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
