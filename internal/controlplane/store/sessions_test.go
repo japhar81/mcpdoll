@@ -172,8 +172,9 @@ func TestRevokingAUserCoversEveryCredentialTheyHold(t *testing.T) {
 	for _, e := range entries {
 		refused[e.PrincipalID.String()] = true
 	}
-	// Both keys and the session. Revoking the keys alone would leave the person
-	// gone from the console with their automation still running.
+	// Both keys and the session. Revoking only the sessions would leave the
+	// person gone from the console with their automation still running, which
+	// is the failure an offboarding checklist cannot see.
 	require.True(t, refused[keyOne.ID.String()])
 	require.True(t, refused[keyTwo.ID.String()])
 	require.GreaterOrEqual(t, len(entries), 3)
@@ -272,4 +273,68 @@ func timeNow(t *testing.T, s *store.Store, ctx context.Context) time.Time {
 	var now time.Time
 	require.NoError(t, s.Pool().QueryRow(ctx, "SELECT now()").Scan(&now))
 	return now
+}
+
+func TestRevokingAKeyLeavesTheConsoleAlone(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	require.NoError(t, err)
+	key, secret, err := s.MintAPIKey(ctx, user.ID, "agent", nil, nil)
+	require.NoError(t, err)
+	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	require.NoError(t, err)
+
+	// The two axes are independent, and each revocation should hit exactly one.
+	require.NoError(t, s.RevokeAPIKey(ctx, key.ID))
+	_, err = s.ResolveAPIKey(ctx, secret)
+	require.Error(t, err, "the agent credential should be dead")
+
+	_, _, err = s.ResolveSession(ctx, token)
+	require.NoError(t, err,
+		"revoking an agent key must not sign the person out of the console")
+}
+
+func TestDisablingAUserKillsBothAxes(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ctx := context.Background()
+	tenant := newTenant(t, s)
+
+	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	require.NoError(t, err)
+	_, secret, err := s.MintAPIKey(ctx, user.ID, "agent", nil, nil)
+	require.NoError(t, err)
+	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	require.NoError(t, err)
+
+	_, err = s.UpdateUser(ctx, user.ID, "", "disabled")
+	require.NoError(t, err)
+	_, err = s.RevokeUser(ctx, user.ID, "offboarded")
+	require.NoError(t, err)
+
+	// The console half is caught by ResolveSession re-reading the owner's
+	// status, and the agent half by the key resolving against the same owner.
+	_, _, err = s.ResolveSession(ctx, token)
+	require.Error(t, err, "a disabled user must not stay signed in")
+	_, err = s.ResolveAPIKey(ctx, secret)
+	require.Error(t, err, "a disabled user's agents must stop")
+
+	// And the key is in the published list, which is what makes the *data
+	// plane* refuse it within a second rather than at the next snapshot. The
+	// session does not need to be there — session resolution already caught it
+	// — but it is, and listing it costs nothing.
+	entries, err := s.ListRevocations(ctx)
+	require.NoError(t, err)
+	kinds := map[string]int{}
+	for _, e := range entries {
+		if e.UserID != nil && *e.UserID == user.ID {
+			kinds[e.Kind]++
+		}
+	}
+	require.Equal(t, 1, kinds["api_key"])
+	require.Equal(t, 1, kinds["session"])
 }

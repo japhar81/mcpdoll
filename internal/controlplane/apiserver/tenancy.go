@@ -378,7 +378,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Disabling is the offboarding path, and it is the more common of the two
-	// cases ADR 0023 exists for. Revoking the keys alone would leave it
+	// cases ADR 0023 exists for. Revoking only their *sessions* would leave it
 	// incomplete in the way that is hardest to notice: the person is gone from
 	// the console and their automation is still running.
 	problem := ""

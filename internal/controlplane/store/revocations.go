@@ -60,12 +60,21 @@ func (s *Store) Revoke(
 	return revocationStateFrom(row), nil
 }
 
-// RevokeUser refuses a user's sessions and every key they hold.
+// RevokeUser refuses every credential a user holds: their API keys and their
+// sessions.
 //
-// Revoking the keys alone would leave offboarding incomplete in the way that is
-// hardest to notice: the person is gone from the console and their automation
-// is still running. Sessions go too, because a session already handed out is a
-// live credential and marking the row is not the same as stopping it.
+// Both, because they fail differently and only one of them is loud. Revoking
+// only their sessions leaves the person gone from the console with their
+// automation still running — the failure hardest to notice, because everything
+// an offboarding checklist *looks* at says they are gone. Revoking only their
+// keys is the reverse and far more obvious: their agents stop and they can
+// still sign in.
+//
+// The keys are what reach the data plane, so they are what the signed
+// revocation list is for. The sessions are control-plane credentials and are
+// already refused by [Store.ResolveSession], which re-reads the owner's status
+// on every call — marking the rows and listing them is defence in depth and
+// makes the state visible, not the mechanism.
 func (s *Store) RevokeUser(ctx context.Context, userID uuid.UUID, reason string) (RevocationState, error) {
 	keyIDs, err := s.q.ListAPIKeyIDsByUser(ctx, userID)
 	if err != nil {

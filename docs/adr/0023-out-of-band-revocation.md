@@ -106,12 +106,21 @@ already exists for exactly this: without a distinct context, a signature minted
 over one artifact would verify against the other, and an attacker who could get
 any snapshot signed could present its bytes as a revocation list.
 
-### Disabling a user revokes them, not just their keys
+### Disabling a user revokes every credential they hold
 
-`updateUser status=disabled` writes revocations for the user and every key they
-own. Revoking the keys alone would leave the offboarding incomplete in the way
-that is hardest to notice — the person is gone from the console and their
-automation is still running.
+`updateUser status=disabled` revokes the user's API keys *and* their sessions.
+Both, because they fail differently and only one of the failures is loud:
+
+- Revoking only the **sessions** leaves the person gone from the console with
+  their automation still running. This is the one that gets missed, because
+  everything an offboarding checklist looks at says they are gone.
+- Revoking only the **keys** is the reverse, and obvious within minutes: their
+  agents stop and they can still sign in.
+
+The keys are what reach the data plane, so they are what the signed list
+carries. Sessions are control-plane credentials and are already refused by
+session resolution, which re-reads the owner's status on every call — listing
+them is defence in depth and makes the state visible, not the mechanism.
 
 ## Alternatives considered
 
