@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 )
 
 func TestClassifyGivesAFailingBackendItsGraceWindow(t *testing.T) {
@@ -71,7 +73,7 @@ func TestRegistryBlocksWithAReasonAModelCanActOn(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
 	r.Set(Backend{
-		ServerID: "srv_1", ServerName: "warehouse", ServingMode: "strict",
+		Target: backends.Target{ServerID: "srv_1", TenantID: "tn"}, ServerID: "srv_1", ServerName: "warehouse", ServingMode: "strict",
 		State: StateDrifted,
 		Drift: []ToolDrift{{
 			Name: "check_stock", QualifiedName: "whs.check_stock",
@@ -91,7 +93,7 @@ func TestForgetUnblocksABackendRemovedFromTheSnapshot(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
 	r.Set(Backend{
-		ServerID: "srv_1", ServerName: "warehouse", ServingMode: "strict",
+		Target: backends.Target{ServerID: "srv_1", TenantID: "tn"}, ServerID: "srv_1", ServerName: "warehouse", ServingMode: "strict",
 		Drift: []ToolDrift{{
 			QualifiedName: "whs.check_stock", Kind: DriftSemantic, Detail: "x",
 		}},
@@ -101,7 +103,7 @@ func TestForgetUnblocksABackendRemovedFromTheSnapshot(t *testing.T) {
 
 	// A stale block would refuse calls to a tool a later publish legitimately
 	// reinstated, and nothing would ever clear it.
-	r.Forget(map[string]bool{})
+	r.Forget(map[backends.Target]bool{})
 	_, blocked = r.Blocked("whs.check_stock")
 	require.False(t, blocked)
 	require.Empty(t, r.All())
@@ -110,14 +112,18 @@ func TestForgetUnblocksABackendRemovedFromTheSnapshot(t *testing.T) {
 func TestSummaryCountsEveryState(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
-	r.Set(Backend{ServerID: "a", ServerName: "a", State: StateHealthy})
-	r.Set(Backend{ServerID: "b", ServerName: "b", State: StateDegraded})
-	r.Set(Backend{ServerID: "c", ServerName: "c", State: StateUnavailable})
 	r.Set(Backend{
-		ServerID: "d", ServerName: "d", State: StateDrifted, ServingMode: "strict",
+		Target: backends.Target{ServerID: "a", TenantID: "tn"}, ServerID: "a", ServerName: "a", State: StateHealthy})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "b", TenantID: "tn"}, ServerID: "b", ServerName: "b", State: StateDegraded})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "c", TenantID: "tn"}, ServerID: "c", ServerName: "c", State: StateUnavailable})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "d", TenantID: "tn"}, ServerID: "d", ServerName: "d", State: StateDrifted, ServingMode: "strict",
 		Drift: []ToolDrift{{QualifiedName: "x.y", Kind: DriftRemoved}},
 	})
-	r.Set(Backend{ServerID: "e", ServerName: "e", State: StateUnknown})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "e", TenantID: "tn"}, ServerID: "e", ServerName: "e", State: StateUnknown})
 
 	s := r.Summary()
 	require.Equal(t, Summary{
@@ -142,9 +148,12 @@ func TestEWMAStartsAtTheFirstSampleRatherThanZero(t *testing.T) {
 func TestRegistryAllIsOrderedByName(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
-	r.Set(Backend{ServerID: "3", ServerName: "zeta"})
-	r.Set(Backend{ServerID: "1", ServerName: "alpha"})
-	r.Set(Backend{ServerID: "2", ServerName: "mu"})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "3", TenantID: "tn"}, ServerID: "3", ServerName: "zeta"})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "1", TenantID: "tn"}, ServerID: "1", ServerName: "alpha"})
+	r.Set(Backend{
+		Target: backends.Target{ServerID: "2", TenantID: "tn"}, ServerID: "2", ServerName: "mu"})
 
 	names := []string{}
 	for _, b := range r.All() {

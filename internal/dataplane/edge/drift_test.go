@@ -47,7 +47,7 @@ func TestDriftARewordedDescriptionKeepsServing(t *testing.T) {
 	require.Equal(t, health.StateHealthy, backend.State)
 	require.Empty(t, backend.BlockedTools())
 
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "whs.check_stock", Arguments: map[string]any{"sku": "SKU-1"}})
 	require.NoError(t, err)
 	require.False(t, res.IsError, "a reworded description must not stop a tool working")
@@ -57,7 +57,7 @@ func TestDriftAChangedSchemaIsRefusedUnderStrict(t *testing.T) {
 	h := newHarness(t, harnessOptions{WithProber: true, SkipHostile: true})
 	ctx := context.Background()
 
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "whs.check_stock", Arguments: map[string]any{"sku": "SKU-1"}})
 	require.NoError(t, err)
 	require.False(t, res.IsError, "precondition: the tool works before the backend changes")
@@ -72,7 +72,7 @@ func TestDriftAChangedSchemaIsRefusedUnderStrict(t *testing.T) {
 	require.Equal(t, health.StateDrifted, backend.State)
 	require.Equal(t, []string{"whs.check_stock"}, backend.BlockedTools())
 
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	res, err = fresh.CallTool(ctx, &sdk.CallToolParams{Name: "whs.check_stock", Arguments: map[string]any{"sku": "SKU-1"}})
 	require.NoError(t, err, "a refusal is a tool error, not a protocol error")
 	require.True(t, res.IsError)
@@ -96,7 +96,7 @@ func TestDriftTheCatalogIsUnchangedByDriftEitherWay(t *testing.T) {
 	h := newHarness(t, harnessOptions{WithProber: true, SkipHostile: true})
 	ctx := context.Background()
 
-	before := h.Connect(t, "platform-agents", nil)
+	before := h.Connect(t, nil)
 	listed, err := before.ListTools(ctx, nil)
 	require.NoError(t, err)
 	admitted := findTool(t, listed.Tools, "whs.check_stock")
@@ -104,7 +104,7 @@ func TestDriftTheCatalogIsUnchangedByDriftEitherWay(t *testing.T) {
 	h.Misbehaving.DriftAs(fixtures.DriftSemantic)
 	h.Prober.ProbeAll(ctx)
 
-	after := h.Connect(t, "platform-agents", nil)
+	after := h.Connect(t, nil)
 	listedAfter, err := after.ListTools(ctx, nil)
 	require.NoError(t, err)
 
@@ -138,7 +138,7 @@ func TestDriftAdvisoryModeServesThroughIt(t *testing.T) {
 	// caller does not know about. Whether it succeeds is the backend's
 	// business — the gateway's job here was to let it try, which is exactly
 	// what advisory means and why choosing it is a decision.
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "whs.check_stock", Arguments: map[string]any{"sku": "SKU-1"}})
 	require.NoError(t, err)
 	require.NotContains(t, contentText(res), "retrying will not help",
@@ -168,7 +168,7 @@ func TestDriftAnUnadmittedToolIsReportedButStaysUnservable(t *testing.T) {
 	// publishes it deliberately, not so it leaks in through the side door.
 	require.Equal(t, health.StateHealthy, backend.State)
 
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	listed, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.NotContains(t, toolNames(listed.Tools), "whs.exfiltrate_all")
@@ -193,7 +193,7 @@ func TestDriftRecoveryClearsTheBlock(t *testing.T) {
 
 	// A block that outlived the drift would need a gateway restart to clear,
 	// which is precisely the kind of operational trap this must not set.
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "whs.check_stock", Arguments: map[string]any{"sku": "SKU-1"}})
 	require.NoError(t, err)
 	require.False(t, res.IsError)

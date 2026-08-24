@@ -39,7 +39,7 @@ func TestInboundTokenNeverReachesABackend(t *testing.T) {
 	headers.Set(edge.HeaderSubject, "alice@example.com")
 	headers.Set(edge.HeaderGroups, "support")
 
-	session := h.Connect(t, "platform-agents", headers)
+	session := h.Connect(t, headers)
 
 	// Reach every backend so each one's received headers are recorded.
 	calls := []struct {
@@ -112,7 +112,7 @@ func TestTokenSourceIsTheOnlySourceOfBackendCredentials(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", inboundToken)
 	headers.Set(edge.HeaderSubject, "alice@example.com")
-	session := h.Connect(t, "platform-agents", headers)
+	session := h.Connect(t, headers)
 
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name: "crm.lookup_customer", Arguments: map[string]any{"customer_id": "cus_1"},
@@ -158,12 +158,16 @@ func (s *recordingTokenSource) Exchange(
 // catalog would serve one principal's tool list to another. The snapshot-level
 // test proves the flag is computed; this one proves it survives to the wire.
 func TestFilteredCatalogIsNeverPublicOverTheWire(t *testing.T) {
-	t.Run("unfiltered catalog is public", func(t *testing.T) {
+	t.Run("every catalog is private", func(t *testing.T) {
+		// There is no unfiltered case any more: a catalog *is* a principal's
+		// grants (ADR 0016), so the condition that once permitted "public" is
+		// never true. This is the cost of per-user access control, paid in
+		// shared cacheability, and it is stated rather than discovered.
 		h := newHarness(t, harnessOptions{})
-		session := h.Connect(t, "platform-agents", nil)
+		session := h.Connect(t, nil)
 		res, err := session.ListTools(context.Background(), nil)
 		require.NoError(t, err)
-		require.Equal(t, "public", res.CacheScope)
+		require.Equal(t, "private", res.CacheScope)
 	})
 
 	t.Run("a filtering pipeline forces private", func(t *testing.T) {
@@ -172,7 +176,7 @@ func TestFilteredCatalogIsNeverPublicOverTheWire(t *testing.T) {
 		h := newHarness(t, harnessOptions{
 			Pipeline: &filteringPipeline{hidePrefix: "dep."},
 		})
-		session := h.Connect(t, "platform-agents", nil)
+		session := h.Connect(t, nil)
 
 		res, err := session.ListTools(context.Background(), nil)
 		require.NoError(t, err)
@@ -210,40 +214,43 @@ func (p *filteringPipeline) OnToolResult(context.Context, *edge.ToolResultReques
 	return &edge.ToolResultDecision{Decision: "allow"}, nil
 }
 
-// TestAudienceAuthorization: an audience restricted to a group must refuse a
-// principal outside it, with 403 rather than 404 so a misconfigured group
-// assignment does not look like a typo.
-func TestAudienceAuthorization(t *testing.T) {
-	h := newHarness(t, harnessOptions{RestrictAudienceTo: []string{"billing-admins"}})
+// TestAnUnauthenticatedRequestIsRefused replaces the audience-authorization
+// test, whose premise is gone: there is no audience to be a member of.
+//
+// What replaced it is stricter. There is no anonymous principal and no default
+// tenant, so a request without a resolvable credential has nothing to compose a
+// catalog from — and defaulting would be a way to get a catalog without proving
+// who you are (ADR 0019).
+func TestAnUnauthenticatedRequestIsRefused(t *testing.T) {
+	h := newHarness(t, harnessOptions{NoDefaultSubject: true, SkipHostile: true})
 
-	t.Run("a member is admitted", func(t *testing.T) {
-		headers := http.Header{}
-		headers.Set(edge.HeaderSubject, "admin@example.com")
-		headers.Set(edge.HeaderGroups, "billing-admins,support")
-		session := h.Connect(t, "platform-agents", headers)
-		_, err := session.ListTools(context.Background(), nil)
-		require.NoError(t, err)
-	})
+	req, err := http.NewRequest(http.MethodPost, h.URL(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 
-	t.Run("a non-member is forbidden", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, h.URL("platform-agents"),
-			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set(edge.HeaderSubject, "intern@example.com")
-		req.Header.Set(edge.HeaderGroups, "interns")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
 
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Contains(t, resp.Header.Get("WWW-Authenticate"), "Bearer",
+		"a 401 must say how to authenticate")
 }
 
-// TestHeaderIdentityResolverRefusesProduction: the dev resolver trusts
-// client-supplied headers, so letting it run in production would be a total
-// authorization bypass. A constructor error is a control; a comment is not.
+// TestAPrincipalWithNoGrantsSeesAnEmptyCatalog: the catalog is the grants, so
+// a principal holding nothing gets nothing — and that is a successful request,
+// not an error. It is the correct state for a just-provisioned user.
+func TestAPrincipalWithNoGrantsSeesAnEmptyCatalog(t *testing.T) {
+	h := newHarness(t, harnessOptions{NoGrants: true, SkipHostile: true})
+
+	session := h.Connect(t, nil)
+	res, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Empty(t, res.Tools)
+}
+
 func TestHeaderIdentityResolverRefusesProduction(t *testing.T) {
 	for _, env := range []string{"production", "prod", "PRODUCTION", "Prod"} {
 		_, err := edge.NewHeaderIdentityResolver(env, "u", nil)
@@ -261,7 +268,7 @@ func TestHeaderIdentityResolverRefusesProduction(t *testing.T) {
 func TestUnauthenticatedRequestIsRejected(t *testing.T) {
 	h := newHarness(t, harnessOptions{NoDefaultSubject: true})
 
-	req, err := http.NewRequest(http.MethodPost, h.URL("platform-agents"),
+	req, err := http.NewRequest(http.MethodPost, h.URL(),
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")

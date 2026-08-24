@@ -28,7 +28,7 @@ import (
 // on.
 func TestBackendDownKeepsCatalogStable(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	before, err := session.ListTools(ctx, nil)
@@ -41,7 +41,7 @@ func TestBackendDownKeepsCatalogStable(t *testing.T) {
 
 	// The catalog is unchanged, on a fresh session so this is about the gateway
 	// and not the client's cache.
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	after, err := fresh.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, toolNames(before.Tools), toolNames(after.Tools),
@@ -78,7 +78,7 @@ func TestBackendDownKeepsCatalogStable(t *testing.T) {
 // without operator action.
 func TestBackendRecoveryIsAutomatic(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	h.Misbehaving.SetDown(true)
@@ -106,7 +106,7 @@ func TestBackendRecoveryIsAutomatic(t *testing.T) {
 // when trying again is worthwhile rather than left to guess.
 func TestCircuitOpensAndTellsTheModelWhenToRetry(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	h.Misbehaving.SetDown(true)
@@ -122,7 +122,7 @@ func TestCircuitOpensAndTellsTheModelWhenToRetry(t *testing.T) {
 		last = res
 	}
 
-	require.Equal(t, backends.StateOpen, h.Pool.CircuitState("srv_whs"),
+	require.Equal(t, backends.StateOpen, h.Pool.CircuitState(backends.Target{ServerID: "srv_whs", TenantID: "tn_acme"}),
 		"repeated failures must open the breaker")
 	require.Equal(t, "open", backends.StateOpen.String())
 
@@ -134,7 +134,7 @@ func TestCircuitOpensAndTellsTheModelWhenToRetry(t *testing.T) {
 	require.Contains(t, contentText(last), "will not be retried before")
 
 	// A healthy backend's breaker is untouched.
-	require.Equal(t, backends.StateClosed, h.Pool.CircuitState("srv_crm"))
+	require.Equal(t, backends.StateClosed, h.Pool.CircuitState(backends.Target{ServerID: "srv_crm", TenantID: "tn_acme"}))
 }
 
 // TestCircuitDoesNotOpenOnToolErrors: a tool refusing an argument is the tool
@@ -142,7 +142,7 @@ func TestCircuitOpensAndTellsTheModelWhenToRetry(t *testing.T) {
 // healthy backend because a client kept passing a bad id.
 func TestCircuitDoesNotOpenOnToolErrors(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	for range 10 {
@@ -153,7 +153,7 @@ func TestCircuitDoesNotOpenOnToolErrors(t *testing.T) {
 		require.True(t, res.IsError, "precondition: the tool returns a tool-level error")
 	}
 
-	require.Equal(t, backends.StateClosed, h.Pool.CircuitState("srv_crm"),
+	require.Equal(t, backends.StateClosed, h.Pool.CircuitState(backends.Target{ServerID: "srv_crm", TenantID: "tn_acme"}),
 		"tool-level errors are not backend failures")
 
 	// And the backend still serves a good request.
@@ -168,7 +168,7 @@ func TestCircuitDoesNotOpenOnToolErrors(t *testing.T) {
 // leave the gateway blocked on a backend that will answer eventually.
 func TestSlowBackendRespectsCallerCancellation(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	h.Misbehaving.SetLatency(600 * time.Millisecond)
 
@@ -190,7 +190,7 @@ func TestSlowBackendRespectsCallerCancellation(t *testing.T) {
 // only the failing calls.
 func TestFlappingBackendDoesNotCorruptTheCatalog(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	before, err := session.ListTools(ctx, nil)
@@ -214,7 +214,7 @@ func TestFlappingBackendDoesNotCorruptTheCatalog(t *testing.T) {
 	require.Positive(t, okCount, "some calls should have succeeded")
 	require.Positive(t, errCount, "some calls should have failed")
 
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	after, err := fresh.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, toolNames(before.Tools), toolNames(after.Tools),
@@ -231,7 +231,7 @@ func TestFlappingBackendDoesNotCorruptTheCatalog(t *testing.T) {
 // organization.
 func TestControlPlaneAbsenceDoesNotStopServing(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	// Nothing is publishing snapshots; the store has exactly one and no source.
@@ -260,7 +260,7 @@ func TestDisappearedToolStillFailsClosed(t *testing.T) {
 
 	h.Misbehaving.RemoveTool("check_stock")
 
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	list, err := fresh.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Contains(t, toolNames(list.Tools), "whs.check_stock",

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mcpdoll/mcpdoll/fixtures"
+	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/edge"
 )
 
@@ -29,7 +30,7 @@ import (
 // silently negotiated down.
 func TestConformanceProtocolVersion(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	init := session.InitializeResult()
 	require.NotNil(t, init)
@@ -51,7 +52,7 @@ func TestConformanceServerDiscover(t *testing.T) {
 		`"io.modelcontextprotocol/clientCapabilities":{}` +
 		`}}}`
 
-	req, err := http.NewRequest(http.MethodPost, h.URL("platform-agents"), strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, h.URL(), strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -76,6 +77,11 @@ func TestConformanceServerDiscover(t *testing.T) {
 
 	require.Contains(t, discover.SupportedVersions, "2026-07-28")
 	require.NotNil(t, discover.Capabilities.Tools, "the gateway must advertise tools")
+	// Public, and correctly so. `server/discover` carries protocol metadata —
+	// supported versions and capabilities — which is identical for every
+	// principal. Only the *catalog* is per-principal (ADR 0016), so only the
+	// catalog is private; marking this private too would give up shared
+	// caching of something that has nothing to hide.
 	require.Equal(t, "public", discover.CacheScope,
 		"server/discover carries the cacheable fields like any other list result")
 }
@@ -159,7 +165,7 @@ func TestConformanceHeaderValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPost, h.URL("platform-agents"), strings.NewReader(tc.body))
+			req, err := http.NewRequest(http.MethodPost, h.URL(), strings.NewReader(tc.body))
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json, text/event-stream")
@@ -206,7 +212,7 @@ func TestConformanceHeaderValidation(t *testing.T) {
 // prefixing, and its stable ordering.
 func TestConformanceListTools(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	res, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -247,7 +253,7 @@ func TestConformanceListTools(t *testing.T) {
 // cache against, so two identical requests must produce identical lists.
 func TestConformanceListToolsIsStableAcrossCalls(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	first, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -260,26 +266,26 @@ func TestConformanceListToolsIsStableAcrossCalls(t *testing.T) {
 
 // TestConformanceCacheableFields asserts `ttlMs` and `cacheScope` on list
 // results. Both are the gateway's responsibility: the SDK defaults cacheScope to
-// "public" and leaves ttlMs at zero, so a missing implementation would silently
+// "private" and leaves ttlMs at zero, so a missing implementation would silently
 // tell every client the catalog is immediately stale and freely shareable.
 func TestConformanceCacheableFields(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	res, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
 
 	require.Equal(t, int((5 * time.Minute).Milliseconds()), res.TTLMs,
 		"ttlMs must carry the merged catalog TTL, not the SDK's zero default")
-	require.Equal(t, "public", res.CacheScope,
-		"an unfiltered catalog is shareable")
+	require.Equal(t, "private", res.CacheScope,
+		"every catalog is private now (ADR 0016)")
 }
 
 // TestConformanceCallTool proves a real client can call a tool across the
 // gateway and that the call actually reached the backend.
 func TestConformanceCallTool(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	before := h.Modern.Calls("lookup_customer")
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
@@ -298,7 +304,7 @@ func TestConformanceCallTool(t *testing.T) {
 // endpoint, one session, tools from several independently-published backends.
 func TestConformanceCallToolAcrossBackends(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	crm, err := session.CallTool(ctx, &sdk.CallToolParams{
@@ -332,7 +338,7 @@ func TestConformanceCallToolAcrossBackends(t *testing.T) {
 // 2025-11-25 to a legacy backend, and neither side needs to know about the other.
 func TestConformanceProtocolDowngradeToLegacyBackend(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	// Client side: modern.
 	require.Equal(t, "2026-07-28", session.InitializeResult().ProtocolVersion)
@@ -346,7 +352,7 @@ func TestConformanceProtocolDowngradeToLegacyBackend(t *testing.T) {
 	require.False(t, res.IsError, contentText(res))
 
 	// Backend side: negotiated down, through the SDK's real negotiation path.
-	require.Equal(t, "2025-11-25", h.Pool.NegotiatedVersion("srv_hr"),
+	require.Equal(t, "2025-11-25", h.Pool.NegotiatedVersion(backends.Target{ServerID: "srv_hr", TenantID: "tn_acme"}),
 		"the legacy backend advertises no 2026-07-28 support, so the pool must negotiate down")
 
 	// And the modern backend stayed modern, proving the downgrade is per-backend
@@ -356,7 +362,7 @@ func TestConformanceProtocolDowngradeToLegacyBackend(t *testing.T) {
 		Arguments: map[string]any{"customer_id": "cus_1"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "2026-07-28", h.Pool.NegotiatedVersion("srv_crm"))
+	require.Equal(t, "2026-07-28", h.Pool.NegotiatedVersion(backends.Target{ServerID: "srv_crm", TenantID: "tn_acme"}))
 }
 
 // TestConformanceToolErrorPropagates: a tool-level error must arrive as
@@ -364,7 +370,7 @@ func TestConformanceProtocolDowngradeToLegacyBackend(t *testing.T) {
 // see it and self-correct.
 func TestConformanceToolErrorPropagates(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "crm.lookup_customer",
@@ -379,7 +385,7 @@ func TestConformanceToolErrorPropagates(t *testing.T) {
 // a tool it does not serve.
 func TestConformanceUnknownToolIsRejected(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	_, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "crm.no_such_tool",
@@ -402,7 +408,7 @@ func TestConformanceUnknownToolIsRejected(t *testing.T) {
 // cannot change what clients see.
 func TestConformanceServesAdmittedNotObserved(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	before, err := session.ListTools(ctx, nil)
@@ -418,7 +424,7 @@ func TestConformanceServesAdmittedNotObserved(t *testing.T) {
 
 	// A fresh session, so the assertion is about what the gateway serves rather
 	// than about the client's cache.
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	after, err := fresh.ListTools(ctx, nil)
 	require.NoError(t, err)
 
@@ -438,7 +444,7 @@ func TestConformanceServesAdmittedNotObserved(t *testing.T) {
 // is the edge's job.
 func TestConformanceHostileDescriptionIsServedAsAdmitted(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	res, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -451,15 +457,15 @@ func TestConformanceHostileDescriptionIsServedAsAdmitted(t *testing.T) {
 func TestConformanceEndpointSurface(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 
-	t.Run("unknown audience is 404", func(t *testing.T) {
-		resp, err := http.Post(h.URL("no-such-audience"), "application/json",
+	t.Run("a path that is not /mcp is 404", func(t *testing.T) {
+		// There is one endpoint now, and deliberately no /mcp/{audience}
+		// alias: accepting a slug and ignoring it would be the most confusing
+		// possible behaviour (ADR 0019).
+		resp, err := http.Post(h.Server.URL+"/not-mcp", "application/json",
 			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusNotFound, resp.StatusCode)
-		body, _ := io.ReadAll(resp.Body)
-		require.Contains(t, string(body), "no-such-audience",
-			"the error should name the audience so a typo is obvious")
 	})
 
 	t.Run("healthz", func(t *testing.T) {
@@ -475,14 +481,15 @@ func TestConformanceEndpointSurface(t *testing.T) {
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		var ready struct {
-			Status    string `json:"status"`
-			Version   int64  `json:"snapshot_version"`
-			Audiences int    `json:"audiences"`
+			Status  string `json:"status"`
+			Version int64  `json:"snapshot_version"`
+			Tenants int    `json:"tenants"`
+			Tools   int    `json:"tools"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&ready))
 		require.Equal(t, "ok", ready.Status)
 		require.Positive(t, ready.Version)
-		require.Equal(t, 1, ready.Audiences)
+		require.Positive(t, ready.Tenants)
 	})
 }
 
@@ -492,7 +499,7 @@ func TestConformanceEndpointSurface(t *testing.T) {
 func TestConformanceStatelessRejectsGET(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 
-	req, err := http.NewRequest(http.MethodGet, h.URL("platform-agents"), nil)
+	req, err := http.NewRequest(http.MethodGet, h.URL(), nil)
 	require.NoError(t, err)
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := http.DefaultClient.Do(req)
@@ -507,7 +514,7 @@ func TestConformanceStatelessRejectsGET(t *testing.T) {
 // with no restart.
 func TestConformanceSnapshotSwapChangesCatalogWithoutRestart(t *testing.T) {
 	h := newHarness(t, harnessOptions{SkipHostile: true})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	before, err := session.ListTools(ctx, nil)
@@ -531,7 +538,7 @@ func TestConformanceSnapshotSwapChangesCatalogWithoutRestart(t *testing.T) {
 
 	// A fresh client — or the same one after its TTL expires — sees the new
 	// catalog, with no gateway restart.
-	fresh := h.Connect(t, "platform-agents", nil)
+	fresh := h.Connect(t, nil)
 	after, err := fresh.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Contains(t, toolNames(after.Tools), "web.search_web",

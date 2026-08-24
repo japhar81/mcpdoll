@@ -474,15 +474,17 @@ const (
 
 // cacheScopeFor is the single place the value is decided.
 //
-// Centralising it makes the invariant auditable: there is exactly one expression
-// in the codebase that can produce "public", and it is guarded by the filtering
-// flag. A filtered catalog served as public would let a shared cache hand one
-// principal's view to another.
+// It now returns "private" unconditionally. Under ADR 0016 a catalog *is* a
+// principal's grants, so the condition that once permitted "public" — nothing
+// identity-specific applied — is never true.
+//
+// The function and its parameter are kept rather than folded into a constant so
+// the invariant retains a name, a test, and one place where a future public
+// case would have to be argued for. There is exactly one expression in the
+// codebase that decides a catalog's cache scope, and this is it.
 func cacheScopeFor(identityFiltered bool) string {
-	if identityFiltered {
-		return CacheScopePrivate
-	}
-	return CacheScopePublic
+	_ = identityFiltered
+	return CacheScopePrivate
 }
 
 // ------------------------------------------------------------ arguments ------

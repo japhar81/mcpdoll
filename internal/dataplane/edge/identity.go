@@ -102,7 +102,12 @@ func (r *HeaderIdentityResolver) Resolve(header http.Header) (backends.Principal
 		}
 	}
 
+	// The snapshot addresses principals by id, and this resolver has no
+	// directory to look one up in — so the subject *is* the id here. A real
+	// resolver (an API key, an OIDC token) maps to the id the control plane
+	// published, which is what makes grants findable.
 	return backends.Principal{
+		ID:      subject,
 		Subject: subject,
 		Groups:  groups,
 		Claims:  claims,

@@ -18,6 +18,7 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/backends"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -34,7 +35,7 @@ type fakeLister struct {
 	version string
 }
 
-func (f *fakeLister) ListTools(context.Context, string, backends.Principal) ([]*sdk.Tool, error) {
+func (f *fakeLister) ListTools(context.Context, backends.Target, backends.Principal) ([]*sdk.Tool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -44,7 +45,7 @@ func (f *fakeLister) ListTools(context.Context, string, backends.Principal) ([]*
 	return f.tools, nil
 }
 
-func (f *fakeLister) NegotiatedVersion(string) string {
+func (f *fakeLister) NegotiatedVersion(backends.Target) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.version
@@ -92,26 +93,30 @@ func newStoreWithSnapshot(t *testing.T, servingMode snapshotpb.ServingMode) *sna
 	b := snapshot.NewBuilder(1).
 		WithID("snap_1").
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
+	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
+	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
+	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
+		},
+	}})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_whs", Name: "warehouse", Prefix: "whs"})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_whs", Name: "warehouse", NamespaceId: "ns_whs",
-		Endpoint: "http://127.0.0.1:1", ServingMode: servingMode,
+		Bindings: []*snapshotpb.Binding{{TenantId: "tn_test", Primary: "http://127.0.0.1:1"}}, ServingMode: servingMode,
 	})
 	// The admitted definition is built from the same tool the healthy fake
 	// returns, so "no drift" means the whole canonicalize-digest-compare path
 	// agreed rather than that the test asserted its own inputs match.
 	admitted := checkStock()
 	b.AddTool(snapshot.ToolInput{
-		ServerID: "srv_whs", NamespaceID: "ns_whs", Prefix: "whs",
+		ServerID: "srv_whs", NamespaceID: "ns_whs",
+		TenantID: "tn_test", ToolsetID: "ts_test", Prefix: "whs",
 		Name: admitted.Name, Title: admitted.Title, Description: admitted.Description,
 		InputSchema: admitted.InputSchema.(json.RawMessage),
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
 	})
-	b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd", Name: "b", Priority: 10,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_whs"}},
-	})
-	b.AddAudience(&snapshotpb.Audience{Id: "aud", Slug: "a", Name: "A", BundleIds: []string{"bnd"}})
 
 	snap, err := b.Build()
 	require.NoError(t, err)
@@ -135,6 +140,10 @@ func newProber(t *testing.T, lister Lister, store *snapshot.Store) *Prober {
 	})
 }
 
+// whsTarget is the fixture's one binding: the warehouse server for the test
+// tenant. Health is keyed by (server, tenant) now, not by server.
+var whsTarget = backends.Target{ServerID: "srv_whs", TenantID: "tn_test"}
+
 func TestAHealthyBackendProducesNoDrift(t *testing.T) {
 	t.Parallel()
 	lister := &fakeLister{tools: []*sdk.Tool{checkStock()}, version: "2026-07-28"}
@@ -142,7 +151,7 @@ func TestAHealthyBackendProducesNoDrift(t *testing.T) {
 
 	p.ProbeAll(context.Background())
 
-	b, ok := p.Registry().Backend("srv_whs")
+	b, ok := p.Registry().Backend(whsTarget)
 	require.True(t, ok)
 	require.Equal(t, StateHealthy, b.State)
 	require.Empty(t, b.Drift)
@@ -166,21 +175,21 @@ func TestAFailingBackendIsDegradedThenUnavailable(t *testing.T) {
 	})
 
 	p.ProbeAll(context.Background())
-	b, _ := p.Registry().Backend("srv_whs")
+	b, _ := p.Registry().Backend(whsTarget)
 	require.Equal(t, StateHealthy, b.State)
 
 	lister.set(nil, errors.New("connection refused"))
 
 	now = now.Add(2 * time.Minute)
 	p.ProbeAll(context.Background())
-	b, _ = p.Registry().Backend("srv_whs")
+	b, _ = p.Registry().Backend(whsTarget)
 	require.Equal(t, StateDegraded, b.State)
 	require.Equal(t, 1, b.ConsecutiveFailures)
 	require.Contains(t, b.Error, "connection refused")
 
 	now = now.Add(20 * time.Minute)
 	p.ProbeAll(context.Background())
-	b, _ = p.Registry().Backend("srv_whs")
+	b, _ = p.Registry().Backend(whsTarget)
 	require.Equal(t, StateUnavailable, b.State)
 	require.Equal(t, 2, b.ConsecutiveFailures)
 }
@@ -194,7 +203,7 @@ func TestDriftSurvivesABackendGoingDown(t *testing.T) {
 	p := newProber(t, lister, newStoreWithSnapshot(t, snapshotpb.ServingMode_SERVING_MODE_STRICT))
 
 	p.ProbeAll(context.Background())
-	b, _ := p.Registry().Backend("srv_whs")
+	b, _ := p.Registry().Backend(whsTarget)
 	require.Equal(t, StateDrifted, b.State)
 	require.Equal(t, []string{"whs.check_stock"}, b.BlockedTools())
 
@@ -204,7 +213,7 @@ func TestDriftSurvivesABackendGoingDown(t *testing.T) {
 	lister.set(nil, errors.New("connection refused"))
 	p.ProbeAll(context.Background())
 
-	b, _ = p.Registry().Backend("srv_whs")
+	b, _ = p.Registry().Backend(whsTarget)
 	// Degraded rather than unavailable: it succeeded moments ago, so it is
 	// inside its grace window. Which failure state it is in does not matter
 	// here — the block must hold in either.
@@ -223,7 +232,7 @@ func TestAdvisoryModeRecordsDriftWithoutBlocking(t *testing.T) {
 	p := newProber(t, lister, newStoreWithSnapshot(t, snapshotpb.ServingMode_SERVING_MODE_ADVISORY))
 
 	p.ProbeAll(context.Background())
-	b, _ := p.Registry().Backend("srv_whs")
+	b, _ := p.Registry().Backend(whsTarget)
 
 	// The drift is seen and reported; the tool keeps serving. That difference
 	// is the entire content of the advisory setting.
@@ -243,7 +252,7 @@ func TestCosmeticDriftNeverBlocksEvenUnderStrict(t *testing.T) {
 	p := newProber(t, lister, newStoreWithSnapshot(t, snapshotpb.ServingMode_SERVING_MODE_STRICT))
 
 	p.ProbeAll(context.Background())
-	b, _ := p.Registry().Backend("srv_whs")
+	b, _ := p.Registry().Backend(whsTarget)
 
 	// Healthy, not drifted: the state machine only treats blocking drift as a
 	// state change, so a docs edit does not page anyone.
@@ -284,7 +293,7 @@ func TestRunProbesImmediatelyRatherThanAfterOneInterval(t *testing.T) {
 	go func() { p.Run(ctx); close(done) }()
 
 	require.Eventually(t, func() bool {
-		_, ok := p.Registry().Backend("srv_whs")
+		_, ok := p.Registry().Backend(whsTarget)
 		return ok
 	}, 2*time.Second, 10*time.Millisecond,
 		"a gateway that has just started should learn what it is fronting now, "+

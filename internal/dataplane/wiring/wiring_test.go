@@ -30,6 +30,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/wiring"
 	mcpadapter "github.com/mcpdoll/mcpdoll/internal/mcp"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -162,9 +163,23 @@ func (h *harness) publish(manifests ...*snapshotpb.PluginManifest) {
 
 	b := snapshot.NewBuilder(h.version).
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
+	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
+	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
+	// Every subject these tests present needs a published principal: a
+	// credential resolving to nobody in the snapshot is refused (ADR 0019).
+	var principals []*snapshotpb.Principal
+	for _, subject := range []string{"dev-user", "alice@example.com", "admin@example.com"} {
+		principals = append(principals, &snapshotpb.Principal{
+			Id: subject, TenantId: "tn_test", Subject: subject,
+			Grants: []*snapshotpb.Grant{
+				{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
+			},
+		})
+	}
+	b.SetRBAC(authz.DefaultCatalog(), principals)
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{
-		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm", Endpoint: h.backend.URL(),
+		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm", Bindings: []*snapshotpb.Binding{{TenantId: "tn_test", Primary: h.backend.URL()}},
 	})
 
 	discovered, err := mcpadapter.Discover(context.Background(), mcpadapter.DiscoverOptions{
@@ -179,20 +194,14 @@ func (h *harness) publish(manifests ...*snapshotpb.PluginManifest) {
 			effect = snapshotpb.EffectClass_EFFECT_CLASS_WRITE
 		}
 		b.AddTool(snapshot.ToolInput{
-			ServerID: "srv_crm", NamespaceID: "ns_crm", Prefix: "crm",
+			ServerID: "srv_crm", NamespaceID: "ns_crm",
+			TenantID: "tn_test", ToolsetID: "ts_test", Prefix: "crm",
 			Name: def.Name, Title: def.Title, Description: def.Description,
 			InputSchema: rawJSON(def.InputSchema),
 			EffectClass: effect,
 		})
 	}
 
-	b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_all", Name: "all", Priority: 10,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_crm"}},
-	})
-	b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_a", Slug: "agents", Name: "Agents", BundleIds: []string{"bnd_all"},
-	})
 	for _, m := range manifests {
 		b.AddPlugin(m)
 	}
@@ -218,7 +227,7 @@ func (h *harness) connect(t *testing.T, subject string, groups ...string) *sdk.C
 	client := sdk.NewClient(&sdk.Implementation{Name: "wiring-test", Version: "1"},
 		&sdk.ClientOptions{MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true}})
 	session, err := client.Connect(context.Background(), &sdk.StreamableClientTransport{
-		Endpoint:             h.url + "/mcp/agents",
+		Endpoint:             h.url + "/mcp",
 		HTTPClient:           &http.Client{Timeout: 60 * time.Second, Transport: headerRT{header}},
 		DisableStandaloneSSE: true,
 	}, nil)
@@ -471,18 +480,16 @@ func TestHostRegistryReportsLoadFailures(t *testing.T) {
 func buildView(t *testing.T, manifests ...*snapshotpb.PluginManifest) *snapshot.View {
 	t.Helper()
 	b := snapshot.NewBuilder(1).WithCatalogDefaults(time.Minute, time.Second)
+	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
+	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_a", Name: "a", Prefix: "a"})
-	b.AddServer(&snapshotpb.Server{Id: "srv_a", NamespaceId: "ns_a", Endpoint: "http://localhost:1"})
+	b.AddServer(&snapshotpb.Server{Id: "srv_a", NamespaceId: "ns_a", Bindings: []*snapshotpb.Binding{{TenantId: "tn_test", Primary: "http://localhost:1"}}})
 	b.AddTool(snapshot.ToolInput{
-		ServerID: "srv_a", NamespaceID: "ns_a", Prefix: "a", Name: "t",
+		ServerID: "srv_a", NamespaceID: "ns_a",
+		TenantID: "tn_test", ToolsetID: "ts_test", Prefix: "a", Name: "t",
 		InputSchema: []byte(`{"type":"object"}`),
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
 	})
-	b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd", Name: "b", Priority: 1,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_a"}},
-	})
-	b.AddAudience(&snapshotpb.Audience{Id: "aud", Slug: "s", BundleIds: []string{"bnd"}})
 	for _, m := range manifests {
 		b.AddPlugin(m)
 	}

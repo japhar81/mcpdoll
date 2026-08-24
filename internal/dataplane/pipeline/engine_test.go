@@ -15,6 +15,7 @@ import (
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/pipeline"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -76,23 +77,25 @@ func newHarness(t *testing.T, opts pipeline.Options, manifests ...*snapshotpb.Pl
 
 	b := snapshot.NewBuilder(1).
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
+	b.AddTenant(&snapshotpb.Tenant{Id: "tn_test", Slug: "test", Name: "Test", Status: "active"})
+	b.AddToolset(&snapshotpb.Toolset{Id: "ts_test", Name: "test", Priority: 10})
+	b.SetRBAC(authz.DefaultCatalog(), []*snapshotpb.Principal{{
+		Id: "usr_test", TenantId: "tn_test", Subject: "test@example.com",
+		Grants: []*snapshotpb.Grant{
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope("test")},
+		},
+	}})
 	b.AddNamespace(&snapshotpb.Namespace{Id: "ns_crm", Name: "crm", Prefix: "crm"})
 	b.AddServer(&snapshotpb.Server{
 		Id: "srv_crm", Name: "crm-prod", NamespaceId: "ns_crm",
-		Endpoint: "http://localhost:1",
+		Bindings: []*snapshotpb.Binding{{TenantId: "tn_test", Primary: "http://localhost:1"}},
 	})
 	b.AddTool(snapshot.ToolInput{
-		ServerID: "srv_crm", NamespaceID: "ns_crm", Prefix: "crm",
+		ServerID: "srv_crm", NamespaceID: "ns_crm",
+		TenantID: "tn_test", ToolsetID: "ts_test", Prefix: "crm",
 		Name: "lookup", Description: "Look something up.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 		EffectClass: snapshotpb.EffectClass_EFFECT_CLASS_READ,
-	})
-	b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_all", Name: "all", Priority: 10,
-		Entries: []*snapshotpb.BundleEntry{{NamespaceId: "ns_crm"}},
-	})
-	b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_a", Slug: "agents", BundleIds: []string{"bnd_all"},
 	})
 	for _, m := range manifests {
 		b.AddPlugin(m)
@@ -103,7 +106,10 @@ func newHarness(t *testing.T, opts pipeline.Options, manifests ...*snapshotpb.Pl
 	view, err := snapshot.Build(snap)
 	require.NoError(t, err)
 
-	h := &harness{hosts: hostMap{}, audience: view.Audience("agents")}
+	pv, err := view.Principal(context.Background(), "usr_test")
+	require.NoError(t, err)
+
+	h := &harness{hosts: hostMap{}, audience: pv}
 	opts.Hosts = h.hosts
 	opts.TraceSink = func(tr *pipeline.Trace) { h.traces = append(h.traces, tr) }
 

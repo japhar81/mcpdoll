@@ -27,7 +27,7 @@ import (
 // genuinely asks for confirmation.
 func TestMRTRBackendRoundTrip(t *testing.T) {
 	h := newHarness(t, harnessOptions{WithStateSigner: true})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	args := map[string]any{"build": "v2026.8.1"}
@@ -84,7 +84,7 @@ func TestMRTRBackendRoundTrip(t *testing.T) {
 // TestMRTRDeclineDoesNotAct: a human who says no must not have the action taken.
 func TestMRTRDeclineDoesNotAct(t *testing.T) {
 	h := newHarness(t, harnessOptions{WithStateSigner: true})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 	args := map[string]any{"build": "v9"}
 
@@ -111,7 +111,7 @@ func TestMRTRDeclineDoesNotAct(t *testing.T) {
 // client forge its own approval, so the gateway must refuse rather than degrade.
 func TestMRTRWithoutSignerIsRefused(t *testing.T) {
 	h := newHarness(t, harnessOptions{WithStateSigner: false})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	_, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name: "dep.promote_release", Arguments: map[string]any{"build": "v1"},
@@ -128,7 +128,7 @@ func TestMRTRPluginDeferral(t *testing.T) {
 		WithStateSigner: true,
 		Pipeline:        &confirmingPipeline{},
 	})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	// A destructive tool: the plugin defers.
@@ -331,7 +331,7 @@ func TestMRTRPluginDeferralStateIsSigned(t *testing.T) {
 		WithStateSigner: true,
 		Pipeline:        &confirmingPipeline{},
 	})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name: "dep.promote_release", Arguments: map[string]any{"build": "v7"},
@@ -352,7 +352,7 @@ func TestMRTRStateCannotBeReplayedAgainstDifferentArguments(t *testing.T) {
 		WithStateSigner: true,
 		Pipeline:        &confirmingPipeline{},
 	})
-	session := h.Connect(t, "platform-agents", nil)
+	session := h.Connect(t, nil)
 	ctx := context.Background()
 
 	// Get a genuine approval token for build v1.
@@ -399,7 +399,7 @@ func TestMRTRBackendStateIsBoundToTheCall(t *testing.T) {
 
 	alice := http.Header{}
 	alice.Set(edge.HeaderSubject, "alice@example.com")
-	aliceSession := h.Connect(t, "platform-agents", alice)
+	aliceSession := h.Connect(t, alice)
 
 	first, err := aliceSession.CallTool(ctx, &sdk.CallToolParams{
 		Name: "dep.promote_release", Arguments: map[string]any{"build": "v1"},
@@ -424,7 +424,7 @@ func TestMRTRBackendStateIsBoundToTheCall(t *testing.T) {
 	t.Run("replayed by a different principal", func(t *testing.T) {
 		bob := http.Header{}
 		bob.Set(edge.HeaderSubject, "bob@example.com")
-		bobSession := h.Connect(t, "platform-agents", bob)
+		bobSession := h.Connect(t, bob)
 
 		res, err := bobSession.CallTool(ctx, &sdk.CallToolParams{
 			Name:      "dep.promote_release",

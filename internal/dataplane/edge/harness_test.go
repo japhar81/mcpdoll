@@ -23,6 +23,7 @@ import (
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/health"
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 	mcpadapter "github.com/mcpdoll/mcpdoll/internal/mcp"
+	"github.com/mcpdoll/mcpdoll/internal/platform/authz"
 	snapshotpb "github.com/mcpdoll/mcpdoll/internal/proto/snapshotpb"
 )
 
@@ -69,8 +70,9 @@ type harnessOptions struct {
 	PoolTransport func(http.RoundTripper) http.RoundTripper
 	// TokenSource configures per-backend credential exchange.
 	TokenSource backends.TokenSource
-	// RestrictAudienceTo limits the audience to these IdP groups.
-	RestrictAudienceTo []string
+	// NoGrants publishes the principal with no grants, for tests about an
+	// empty catalog.
+	NoGrants bool
 	// NoDefaultSubject makes the dev identity resolver refuse an unidentified
 	// request instead of defaulting to a subject.
 	NoDefaultSubject bool
@@ -189,6 +191,10 @@ func (h *harness) Publish(opts harnessOptions) {
 		WithID("snap_test").
 		WithCatalogDefaults(5*time.Minute, 30*time.Second)
 
+	b.AddTenant(&snapshotpb.Tenant{
+		Id: "tn_acme", Slug: "acme", Name: "Acme", Status: "active",
+	})
+
 	type backendSpec struct {
 		nsID, prefix, nsName string
 		srvID, srvName       string
@@ -245,7 +251,6 @@ func (h *harness) Publish(opts harnessOptions) {
 		},
 	}
 
-	var entries []*snapshotpb.BundleEntry
 	for _, spec := range specs {
 		if !spec.include {
 			continue
@@ -256,7 +261,9 @@ func (h *harness) Publish(opts harnessOptions) {
 		})
 		server := &snapshotpb.Server{
 			Id: spec.srvID, Name: spec.srvName, NamespaceId: spec.nsID,
-			Endpoint:    spec.endpoint,
+			Bindings: []*snapshotpb.Binding{
+				{TenantId: "tn_acme", Primary: spec.endpoint},
+			},
 			ServingMode: snapshotpb.ServingMode_SERVING_MODE_STRICT,
 		}
 		if opts.AdvisoryWarehouse && spec.srvID == "srv_whs" {
@@ -290,6 +297,8 @@ func (h *harness) Publish(opts harnessOptions) {
 			b.AddTool(snapshot.ToolInput{
 				ServerID:     spec.srvID,
 				NamespaceID:  spec.nsID,
+				TenantID:     "tn_acme",
+				ToolsetID:    "ts_all",
 				Prefix:       spec.prefix,
 				Name:         def.Name,
 				Title:        def.Title,
@@ -300,17 +309,32 @@ func (h *harness) Publish(opts harnessOptions) {
 				EffectClass:  effect,
 			})
 		}
-		entries = append(entries, &snapshotpb.BundleEntry{NamespaceId: spec.nsID})
 	}
 
-	b.AddBundle(&snapshotpb.Bundle{
-		Id: "bnd_all", Name: "everything", Priority: 10, Entries: entries,
+	b.AddToolset(&snapshotpb.Toolset{
+		Id: "ts_all", Name: "everything", Priority: 10,
 	})
-	b.AddAudience(&snapshotpb.Audience{
-		Id: "aud_agents", Slug: "platform-agents", Name: "Platform Agents",
-		BundleIds:        []string{"bnd_all"},
-		AllowedIdpGroups: opts.RestrictAudienceTo,
-	})
+
+	// One principal holding the whole toolset, which reproduces what the old
+	// "everything" audience gave every connecting client. Tests that care about
+	// narrower grants set their own RBAC.
+	grants := []*snapshotpb.Grant{
+		{Role: authz.RoleToolUser, Scope: authz.ToolsetScope("acme", "everything")},
+	}
+	if opts.NoGrants {
+		grants = nil
+	}
+	// Every subject the suite presents needs a published principal: a
+	// credential that resolves to nobody in the snapshot is refused, which is
+	// the behaviour ADR 0019 wants and which tests must therefore satisfy
+	// rather than work around.
+	principals := make([]*snapshotpb.Principal, 0, len(testSubjects))
+	for _, subject := range testSubjects {
+		principals = append(principals, &snapshotpb.Principal{
+			Id: subject, TenantId: "tn_acme", Subject: subject, Grants: grants,
+		})
+	}
+	b.SetRBAC(authz.DefaultCatalog(), principals)
 
 	snap, err := b.Build()
 	require.NoError(h.t, err)
@@ -321,7 +345,7 @@ func (h *harness) Publish(opts harnessOptions) {
 }
 
 // Connect opens a real MCP client session against the gateway.
-func (h *harness) Connect(t *testing.T, audience string, headers http.Header) *sdk.ClientSession {
+func (h *harness) Connect(t *testing.T, headers http.Header) *sdk.ClientSession {
 	t.Helper()
 	client := sdk.NewClient(&sdk.Implementation{
 		Name: "conformance-client", Version: "1.0.0",
@@ -337,7 +361,7 @@ func (h *harness) Connect(t *testing.T, audience string, headers http.Header) *s
 	}
 
 	session, err := client.Connect(context.Background(), &sdk.StreamableClientTransport{
-		Endpoint:             h.Server.URL + "/mcp/" + audience,
+		Endpoint:             h.URL(),
 		HTTPClient:           httpClient,
 		DisableStandaloneSSE: true,
 	}, nil)
@@ -347,8 +371,10 @@ func (h *harness) Connect(t *testing.T, audience string, headers http.Header) *s
 }
 
 // URL is the gateway's endpoint for an audience.
-func (h *harness) URL(audience string) string {
-	return h.Server.URL + "/mcp/" + audience
+// URL is the single MCP endpoint. There is no audience segment: the principal
+// comes from the credential (ADR 0019).
+func (h *harness) URL() string {
+	return h.Server.URL + "/mcp"
 }
 
 // rawOrNil recovers the raw JSON schema the adapter produced.
@@ -392,4 +418,21 @@ func withHeaders(client *http.Client, header http.Header) *http.Client {
 	clone := *client
 	clone.Transport = &headerTransport{base: base, header: header.Clone()}
 	return &clone
+}
+
+// testPrincipalID is the identity every harness connection resolves to.
+//
+// One principal for the whole harness because these tests are about the
+// protocol and the pipeline, not about authorization — the grant tests live in
+// internal/platform/authz and internal/dataplane/snapshot.
+const testPrincipalID = "dev-user"
+
+// testSubjects are every identity the suite presents. The dev resolver uses the
+// subject as the principal id, so each needs a published principal.
+var testSubjects = []string{
+	testPrincipalID,
+	"alice@example.com",
+	"bob@example.com",
+	"admin@example.com",
+	"intern@example.com",
 }
