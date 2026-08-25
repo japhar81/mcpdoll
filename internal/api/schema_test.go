@@ -93,6 +93,7 @@ var schemas = map[string]any{
 	"BuildSnapshotRequest":      apiserver.BuildSnapshotRequest{},
 	"GenerateSigningKeyRequest": apiserver.GenerateSigningKeyRequest{},
 	"UpdateScheduleRequest":     apiserver.UpdateScheduleRequest{},
+	"PutRoleRequest":            apiserver.PutRoleRequest{},
 	"CallToolRequest":           apiserver.CallToolRequest{},
 	"CreateTenantRequest":       apiserver.CreateTenantRequest{},
 	"CreateUserRequest":         apiserver.CreateUserRequest{},

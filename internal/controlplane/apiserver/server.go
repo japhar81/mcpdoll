@@ -230,6 +230,15 @@ func (s *Server) routes() {
 			r.Post("/schedules/{jobType}:run", s.handleRunScheduleNow)
 		})
 
+		// Defining a role is a global act even though granting one is scoped:
+		// a role has no scope of its own, so there is no tenant to check it in.
+		// What stops a global role:manage holder from conferring more than they
+		// have is the check at grant time (ADR 0028).
+		r.With(s.require(authz.PermRoleManage, global)).Group(func(r chi.Router) {
+			r.Put("/roles/{role}", s.handlePutRole)
+			r.Delete("/roles/{role}", s.handleDeleteRole)
+		})
+
 		r.With(s.require(authz.PermGatewayInspect, global)).Group(func(r chi.Router) {
 			r.Get("/gateway/status", s.handleGatewayStatus)
 			r.Get("/gateway/backends", s.handleListBackends)

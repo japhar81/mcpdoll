@@ -134,6 +134,17 @@ func run() int {
 			return exitStartupFail
 		}
 
+		// The built-in roles, on every boot rather than only on a fresh
+		// install (ADR 0028). A deployment that upgraded into editable roles
+		// has permission rows but no role rows, and a release that adds a
+		// built-in needs it to appear. Idempotent, and it never overwrites a
+		// permission set or a description somebody edited.
+		if err := db.SeedRoles(context.Background()); err != nil {
+			log.Error("seeding the role catalog failed",
+				slog.String("error", err.Error()))
+			return exitStartupFail
+		}
+
 		// A deployment with no administrator is unusable and cannot fix
 		// itself: every operation needs a permission, and issuing the first
 		// grant needs role:manage.

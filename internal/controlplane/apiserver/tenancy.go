@@ -640,6 +640,24 @@ func (s *Server) handlePutGrants(w http.ResponseWriter, r *http.Request) {
 					"and you do not hold it there")
 			return
 		}
+		// And you cannot confer a permission you do not hold there (ADR 0028).
+		//
+		// role:manage says you may administer grants at that scope. It says
+		// nothing about *what* you may confer, and without this second check
+		// the difference between roles is decoration: define a role carrying
+		// anything, grant it to yourself where you administer, hold it.
+		//
+		// The hole predates editable roles. `tenant_admin` deliberately lacks
+		// tenant:manage, and could grant itself `platform_admin` at its own
+		// tenant to get it. Editable roles only made it general.
+		if missing := catalog.WithheldBy(caller, g.Role, g.Scope); len(missing) > 0 {
+			writeError(w, s.log, http.StatusForbidden, CodeForbidden,
+				"you cannot grant "+g.Role+" at "+g.Scope+
+					": it confers "+permissionList(missing)+
+					", which you do not hold there. A grant cannot hand out more "+
+					"than the person issuing it has")
+			return
+		}
 		want = append(want, authz.Grant{Role: g.Role, Scope: g.Scope})
 	}
 
@@ -670,12 +688,32 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := api.RoleCatalog{Roles: []api.Role{}, Permissions: []string{}}
-	for _, role := range catalog.Roles() {
-		perms := []string{}
-		for _, p := range catalog.Permissions(role) {
-			perms = append(perms, string(p))
+
+	// From the rows when there is a database, because that is where a
+	// description and the built-in marker live. The catalog above is still the
+	// authority on permissions — it is what actually authorizes — so a fresh
+	// install with no rows yet still answers from the defaults.
+	if s.cfg.Store != nil {
+		roles, err := s.cfg.Store.ListRoles(r.Context())
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
 		}
-		out.Roles = append(out.Roles, api.Role{Name: role, Permissions: perms})
+		for _, role := range roles {
+			out.Roles = append(out.Roles, roleOf(role))
+		}
+	}
+	if len(out.Roles) == 0 {
+		for _, role := range catalog.Roles() {
+			perms := []string{}
+			for _, p := range catalog.Permissions(role) {
+				perms = append(perms, string(p))
+			}
+			out.Roles = append(out.Roles, api.Role{
+				Name: role, Permissions: perms,
+				Description: authz.DescribeRole(role), Builtin: true,
+			})
+		}
 	}
 	// Every permission that exists, not only the ones some role happens to use.
 	// A UI offered only the latter could never grant a new one.

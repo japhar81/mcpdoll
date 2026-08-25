@@ -233,3 +233,29 @@ func TestASpanningViewHasNoSingleTenant(t *testing.T) {
 	require.Nil(t, pv.Tenant, "nothing may read a single tenant off a spanning view")
 	require.Equal(t, "crm-live, crm-test", pv.TenantLabel())
 }
+
+// tool:list and tool:call are separate permissions, and the separation has to
+// survive into what the view reports — the edge refuses a call on this.
+//
+// This went unenforced for a long time: the map existed, the composition was
+// right, and nothing on the dispatch path read it. Every built-in role with
+// tool:list also had tool:call except `viewer`, so nothing surfaced it.
+func TestListingAToolIsNotPermissionToCallIt(t *testing.T) {
+	t.Parallel()
+	f := twoTenantFixture(t)
+	f.setRBAC(
+		authz.Catalog{"looker": {authz.PermToolList: {}}},
+		[]*snapshotpb.Principal{
+			{
+				Id: "looker", Subject: "looker", TenantId: "tn_live",
+				Grants: []*snapshotpb.Grant{{Role: "looker", Scope: "t/crm-live"}},
+			},
+		},
+	)
+	f.build(t)
+
+	pv, err := f.store.PrincipalView(context.Background(), "looker")
+	require.NoError(t, err)
+	require.Len(t, pv.Tools, 1, "the tool is listed")
+	require.False(t, pv.Callable("crm.lookup_customer"), "and must not be callable")
+}

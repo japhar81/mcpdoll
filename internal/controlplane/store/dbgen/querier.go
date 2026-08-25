@@ -29,6 +29,12 @@ type Querier interface {
 	// note that two instances double-fire and would need leader election. Claiming
 	// in the UPDATE costs nothing and removes that whole class of problem.
 	ClaimDueSchedule(ctx context.Context, arg ClaimDueScheduleParams) (Schedule, error)
+	ClearRolePermissions(ctx context.Context, role string) error
+	// Whether anybody holds this role. Deleting one that is granted would revoke
+	// access from people the operator was not looking at.
+	CountGrantsOfRole(ctx context.Context, role string) (int64, error)
+	// The same question for keys, which narrow themselves with their own grants.
+	CountKeyGrantsOfRole(ctx context.Context, role string) (int64, error)
 	// CountUsersByTenant answers the tenant list in one query rather than one per
 	// tenant. A tenant list is the first screen an operator opens, and N+1 there is
 	// N+1 forever.
@@ -55,6 +61,7 @@ type Querier interface {
 	DeleteGrantsInTenant(ctx context.Context, scope string) error
 	DeleteIdentityProvider(ctx context.Context, id uuid.UUID) error
 	DeleteRole(ctx context.Context, role string) error
+	DeleteRoleRow(ctx context.Context, name string) error
 	// The slug is deliberately absent from UpdateTenant: it appears in every scope
 	// string, so renaming a tenant would orphan every grant naming it.
 	DeleteTenant(ctx context.Context, id uuid.UUID) error
@@ -73,6 +80,7 @@ type Querier interface {
 	GetAuthSettings(ctx context.Context) (AuthSetting, error)
 	GetIdentityProviderBySlug(ctx context.Context, slug string) (IdentityProvider, error)
 	GetRevocationState(ctx context.Context) (RevocationState, error)
+	GetRole(ctx context.Context, name string) (Role, error)
 	GetScheduleByJobType(ctx context.Context, jobType string) (Schedule, error)
 	// The authentication path. Looks up by the public prefix; the caller verifies
 	// the secret against `hash`. Revoked and expired rows are returned rather than
@@ -117,6 +125,7 @@ type Querier interface {
 	ListIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
 	ListIdentityProviders(ctx context.Context) ([]IdentityProvider, error)
 	ListRolePermissions(ctx context.Context) ([]RolePermission, error)
+	ListRoles(ctx context.Context) ([]Role, error)
 	ListSchedules(ctx context.Context) ([]Schedule, error)
 	ListSessionsByUser(ctx context.Context, userID uuid.UUID) ([]Session, error)
 	ListTenants(ctx context.Context) ([]Tenant, error)
@@ -135,6 +144,7 @@ type Querier interface {
 	// is not the same as stopping it.
 	RevokeSessionsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	SetRevocationPrunedThrough(ctx context.Context, prunedThrough int64) (RevocationState, error)
+	SetRoleDescription(ctx context.Context, arg SetRoleDescriptionParams) (Role, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) error
 	// Called when a snapshot is published: every revocation committed before the
 	// build read the database is already reflected in it.
@@ -147,6 +157,10 @@ type Querier interface {
 	UpdateScheduleCadence(ctx context.Context, arg UpdateScheduleCadenceParams) (Schedule, error)
 	UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Tenant, error)
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
+	// Registration and creation in one. `builtin` is only ever set true here, by
+	// the seed: nothing promotes an operator's role into a built-in, and a restart
+	// must not demote a built-in either.
+	UpsertRole(ctx context.Context, arg UpsertRoleParams) (Role, error)
 	// Registration, run at startup for every job the binary knows how to do.
 	//
 	// The cadence is NOT overwritten on conflict. A schedule an operator has

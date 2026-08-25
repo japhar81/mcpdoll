@@ -315,6 +315,19 @@ export const ROUTES: RouteDef[] = [
     nav: "Roles",
     section: "Tenancy",
   },
+  // Editing and deleting happen inline on the list — a role is a name and a
+  // set of ticks, so a page per role would hold less than the row it came
+  // from. These exist so parity can see the operations have a home.
+  {
+    path: "/roles/:role/edit",
+    operation: "putRole",
+    component: RolesScreen,
+  },
+  {
+    path: "/roles/:role/delete",
+    operation: "deleteRole",
+    component: RolesScreen,
+  },
   {
     path: "/gateway/catalog",
     operation: "getCatalog",

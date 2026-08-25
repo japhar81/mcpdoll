@@ -915,6 +915,64 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RoleCatalog" }
 
+  /api/v1/roles/{role}:
+    put:
+      operationId: putRole
+      summary: Create or redefine a role
+      description: |
+        Declarative: the permissions passed are what the role holds afterwards,
+        so removing one means sending the set without it. Deltas are how a
+        permission gets left on a role somebody thought they had narrowed.
+
+        The permission *vocabulary* is closed — adding one is a code and schema
+        change, and that friction is what keeps the set reviewable. Composing
+        roles out of it is ordinary administration.
+
+        You cannot put a permission in a role that you do not hold anywhere.
+        The check that actually holds the line is at grant time, where
+        conferring a permission you lack *at that scope* is refused (ADR 0028).
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll roles set
+        ui: /roles/:role/edit
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutRoleRequest" }
+      responses:
+        "200":
+          description: The role as it now stands
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+    delete:
+      operationId: deleteRole
+      summary: Delete a role nobody holds
+      description: |
+        Refused while anybody holds it, rather than cascading: a grant naming a
+        deleted role authorizes nothing, and the person who loses access is not
+        the person running the command — they find out when their agent stops.
+
+        Built-in roles cannot be deleted at all; narrow their permissions
+        instead. The seed would recreate them on the next boot anyway.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll roles delete
+        ui: /roles/:role/delete
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
   /api/v1/gateway/catalog:
     get:
       operationId: getCatalog
@@ -1995,8 +2053,31 @@ components:
       required: [name, permissions]
       properties:
         name: { type: string }
+        description:
+          type: string
+          description: What the role is for, in a sentence.
         permissions:
           type: array
+          items: { type: string }
+        builtin:
+          type: boolean
+          description: |
+            Cannot be deleted — a grant left pointing at a deleted role
+            authorizes nothing, and the seed would recreate it. Its permissions
+            are still editable (ADR 0028).
+
+    PutRoleRequest:
+      type: object
+      required: [permissions]
+      properties:
+        description:
+          type: string
+          description: What the role is for, in a sentence.
+        permissions:
+          type: array
+          description: |
+            The complete set the role holds afterwards. Every entry must be in
+            the closed vocabulary `listRoles` returns.
           items: { type: string }
 
     RoleCatalog:

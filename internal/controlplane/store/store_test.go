@@ -486,6 +486,16 @@ func TestCountUsersByTenantCountsFromGrants(t *testing.T) {
 	ctx := context.Background()
 
 	one, two := newTenant(t, s), newTenant(t, s)
+
+	// The baseline first, and the assertions below are on the delta.
+	//
+	// A count of exactly two would be asserting isolation this suite does not
+	// have: a grant at the global scope reaches *every* tenant, so any test
+	// anywhere that creates a platform admin lands in this tenant's count. The
+	// count is right; expecting to be alone in the database was not.
+	before, err := s.CountUsersByTenant(ctx)
+	require.NoError(t, err)
+
 	// Counted from grants, because a user belongs to no tenant. Creating one
 	// puts them in no tenant at all; granting is what puts them somewhere.
 	for range 2 {
@@ -501,8 +511,8 @@ func TestCountUsersByTenantCountsFromGrants(t *testing.T) {
 
 	counts, err := s.CountUsersByTenant(ctx)
 	require.NoError(t, err)
-	require.Equal(t, 2, counts[one.ID])
-	require.Equal(t, 1, counts[two.ID])
+	require.Equal(t, 2, counts[one.ID]-before[one.ID])
+	require.Equal(t, 1, counts[two.ID]-before[two.ID])
 }
 
 func TestUpdateUserRefusesAnUnknownStatus(t *testing.T) {

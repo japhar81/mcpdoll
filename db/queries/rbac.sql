@@ -58,3 +58,44 @@ RETURNING *;
 -- tenant recreated with the same slug would silently re-authorize everyone who
 -- was granted into the old one.
 DELETE FROM grants WHERE scope = $1 OR scope LIKE $1 || '/%';
+
+-- name: ListRoles :many
+SELECT * FROM roles ORDER BY name;
+
+-- name: GetRole :one
+SELECT * FROM roles WHERE name = $1;
+
+-- name: UpsertRole :one
+-- Registration and creation in one. `builtin` is only ever set true here, by
+-- the seed: nothing promotes an operator's role into a built-in, and a restart
+-- must not demote a built-in either.
+INSERT INTO roles (name, description, builtin)
+VALUES ($1, $2, $3)
+ON CONFLICT (name) DO UPDATE
+  -- Only fills a description in; never replaces one. The seed runs on every
+  -- boot, so overwriting here would silently revert an operator's edit every
+  -- time the process restarted — the same trap the schedule cadences avoid.
+  SET description = CASE
+        WHEN roles.description = '' THEN EXCLUDED.description
+        ELSE roles.description
+      END,
+      updated_at = now()
+RETURNING *;
+
+-- name: SetRoleDescription :one
+UPDATE roles SET description = $2, updated_at = now() WHERE name = $1 RETURNING *;
+
+-- name: ClearRolePermissions :exec
+DELETE FROM role_permissions WHERE role = $1;
+
+-- name: DeleteRoleRow :exec
+DELETE FROM roles WHERE name = $1 AND NOT builtin;
+
+-- name: CountGrantsOfRole :one
+-- Whether anybody holds this role. Deleting one that is granted would revoke
+-- access from people the operator was not looking at.
+SELECT count(*) FROM grants WHERE role = $1;
+
+-- name: CountKeyGrantsOfRole :one
+-- The same question for keys, which narrow themselves with their own grants.
+SELECT count(*) FROM api_key_grants WHERE role = $1;

@@ -95,12 +95,8 @@ func TestATenantAdminCannotGrantThemselvesPlatformAdmin(t *testing.T) {
 	token := asUser(t, db, slug, "admin@"+slug+".example",
 		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)})
 
-	tenant, err := db.GetTenantBySlug(ctx, slug)
-	require.NoError(t, err)
-	users, err := db.ListUsersInTenant(ctx, tenant.Slug)
-	require.NoError(t, err)
-	require.Len(t, users, 1)
-	self := users[0].ID.String()
+	me := userByEmail(t, db, "admin@"+slug+".example")
+	self := me.ID.String()
 
 	// The route check passes: they hold role:manage at their own tenant, and
 	// the target user is in it. The escalation check is a *different* question
@@ -113,7 +109,7 @@ func TestATenantAdminCannotGrantThemselvesPlatformAdmin(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "you cannot grant")
 
-	held, err := db.GrantsForUser(ctx, users[0].ID)
+	held, err := db.GrantsForUser(ctx, me.ID)
 	require.NoError(t, err)
 	require.Len(t, held, 1, "nothing was written")
 }
@@ -241,4 +237,140 @@ func TestEveryFailedSignInAnswersIdentically(t *testing.T) {
 		// email does.
 		require.Contains(t, rec.Body.String(), "email or password is wrong")
 	}
+}
+
+// ---------------------------------------------------- user-defined roles ----
+
+// The escalation that editable roles would otherwise make trivial (ADR 0028).
+//
+// A tenant admin holds role:manage in their own tenant, so the route check and
+// the scope check both pass. If nothing looked at *what the role confers*, they
+// could hand themselves any permission in the vocabulary.
+func TestATenantAdminCannotGrantThemselvesARoleTheyCannotHold(t *testing.T) {
+	h, db := liveServer(t)
+	ctx := context.Background()
+
+	slug := uniqueTenantSlug(t)
+	token := asUser(t, db, slug, "admin@"+slug+".example",
+		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)})
+
+	// Defined by somebody who is allowed to: it carries a permission a tenant
+	// admin deliberately does not have.
+	role := "escalator-" + uniqueTenantSlug(t)
+	_, err := db.PutRole(ctx, role, "carries what a tenant admin lacks",
+		[]authz.Permission{authz.PermKeyGenerate})
+	require.NoError(t, err)
+
+	me := userByEmail(t, db, "admin@"+slug+".example")
+	self := me.ID.String()
+
+	// In their *own* tenant, where they hold role:manage. The only thing that
+	// can refuse this is the conferred-permission check.
+	rec := do(t, h, http.MethodPut, "/api/v1/users/"+self+"/grants",
+		apiserver.PutGrantsRequest{Grants: []api.Grant{
+			{Role: role, Scope: authz.TenantScope(slug)},
+		}}, asToken(token))
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "signingkey:generate")
+
+	held, err := db.GrantsForUser(ctx, me.ID)
+	require.NoError(t, err)
+	require.Len(t, held, 1, "nothing was written")
+}
+
+// The same hole through a built-in role, which is why this is not only about
+// user-defined ones: tenant_admin deliberately lacks tenant:manage, and
+// platform_admin has it.
+func TestATenantAdminCannotGrantThemselvesPlatformAdminInTheirOwnTenant(t *testing.T) {
+	h, db := liveServer(t)
+	ctx := context.Background()
+
+	slug := uniqueTenantSlug(t)
+	token := asUser(t, db, slug, "admin@"+slug+".example",
+		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)})
+
+	me := userByEmail(t, db, "admin@"+slug+".example")
+	self := me.ID.String()
+
+	rec := do(t, h, http.MethodPut, "/api/v1/users/"+self+"/grants",
+		apiserver.PutGrantsRequest{Grants: []api.Grant{
+			{Role: authz.RolePlatformAdmin, Scope: authz.TenantScope(slug)},
+		}}, asToken(token))
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	held, err := db.GrantsForUser(ctx, me.ID)
+	require.NoError(t, err)
+	require.Len(t, held, 1)
+}
+
+// A grant that confers nothing new is still allowed, or the check would make
+// delegation impossible rather than safe.
+func TestAnAdminMayGrantARoleTheyFullyHold(t *testing.T) {
+	h, db := liveServer(t)
+
+	slug := uniqueTenantSlug(t)
+	token := asUser(t, db, slug, "admin@"+slug+".example",
+		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)})
+
+	me := userByEmail(t, db, "admin@"+slug+".example")
+	self := me.ID.String()
+
+	// tool_user is tool:list + tool:call, both of which tenant_admin holds.
+	rec := do(t, h, http.MethodPut, "/api/v1/users/"+self+"/grants",
+		apiserver.PutGrantsRequest{Grants: []api.Grant{
+			{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)},
+			{Role: authz.RoleToolUser, Scope: authz.TenantScope(slug)},
+		}}, asToken(token))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// Defining a role you could not grant is refused where it is typed, rather
+// than being stored and refused later at every attempt to use it.
+func TestARoleCannotBeDefinedWithAPermissionTheAuthorLacks(t *testing.T) {
+	h, db := liveServer(t)
+
+	slug := uniqueTenantSlug(t)
+	token := asUser(t, db, slug, "admin@"+slug+".example",
+		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(slug)})
+
+	rec := do(t, h, http.MethodPut, "/api/v1/roles/sneaky",
+		apiserver.PutRoleRequest{Permissions: []string{string(authz.PermKeyGenerate)}},
+		asToken(token))
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+}
+
+// The vocabulary is closed. A permission nothing enforces would be a role that
+// looks like it grants something and does not, and a typo would be
+// indistinguishable from a deliberate restriction.
+func TestARoleCannotCarryAPermissionThatDoesNotExist(t *testing.T) {
+	h, db := liveServer(t)
+
+	slug := uniqueTenantSlug(t)
+	token := asUser(t, db, slug, "root@"+slug+".example",
+		authz.Grant{Role: authz.RolePlatformAdmin, Scope: authz.GlobalScope})
+
+	rec := do(t, h, http.MethodPut, "/api/v1/roles/typo",
+		apiserver.PutRoleRequest{Permissions: []string{"tool:calll"}}, asToken(token))
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "no such permission")
+}
+
+// userByEmail finds a user by the address the test gave them.
+//
+// Not `ListUsersInTenant(...)[0]`, which these tests used to do. That lists
+// everyone *granted into* a tenant, and a global grant reaches every tenant —
+// so any test anywhere that creates a platform admin lands in every other
+// test's listing. The old form passed only while no test happened to create
+// one, which is not isolation, it is luck.
+func userByEmail(t *testing.T, db *store.Store, email string) store.User {
+	t.Helper()
+	users, err := db.ListAllUsers(context.Background())
+	require.NoError(t, err)
+	for _, u := range users {
+		if u.Email == email {
+			return u
+		}
+	}
+	t.Fatalf("no user %q", email)
+	return store.User{}
 }

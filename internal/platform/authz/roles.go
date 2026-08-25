@@ -257,3 +257,94 @@ func joinLines(items []string) string {
 	}
 	return out
 }
+
+// Holder is what an escalation check needs from a caller: whether they hold a
+// permission at a scope.
+//
+// An interface so this package can express the rule without importing the API
+// server's Caller, and so a test can pass a bare function.
+type Holder interface {
+	Can(permission Permission, scope string) bool
+}
+
+// HolderFunc adapts a function to [Holder].
+type HolderFunc func(Permission, string) bool
+
+// Can implements [Holder].
+func (f HolderFunc) Can(p Permission, scope string) bool { return f(p, scope) }
+
+// WithheldBy reports the permissions `role` confers that `holder` does not have
+// at `scope`. Empty means the grant is safe to issue.
+//
+// This is the rule that makes user-defined roles survivable, and it is not the
+// same as checking `role:manage`. Holding role:manage says you may administer
+// grants there; it says nothing about *what* you may confer. Without this a
+// tenant admin defines a role carrying any permission they like, grants it to
+// themselves in their own tenant, and holds it — the permission set becomes
+// decoration, which is exactly what ADR 0022 refused for the fixed catalog.
+//
+// It is a real hole in the fixed catalog too, not only with editable roles:
+// `tenant_admin` deliberately lacks `tenant:manage`, and could grant itself
+// `platform_admin` at its own tenant to get it.
+//
+// The check is per scope because permissions are. Conferring `tool:call` at
+// `t/acme` is safe for somebody who holds it there and an escalation for
+// somebody who only holds it in `t/globex`.
+func (c Catalog) WithheldBy(holder Holder, role, scope string) []Permission {
+	var missing []Permission
+	for _, p := range c.Permissions(role) {
+		if !holder.Can(p, scope) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// UnknownPermissions returns the entries of `want` that are not in the closed
+// vocabulary.
+//
+// The vocabulary is closed on purpose: a permission nothing enforces is a role
+// that looks like it grants something and does not, and a typo would be
+// indistinguishable from a real restriction.
+func UnknownPermissions(want []Permission) []Permission {
+	known := map[Permission]struct{}{}
+	for _, p := range AllPermissions() {
+		known[p] = struct{}{}
+	}
+	var out []Permission
+	for _, p := range want {
+		if _, ok := known[p]; !ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// DescribeRole is the one-line explanation of a built-in role.
+//
+// Held here beside the definitions rather than in the seed, so a role and the
+// sentence describing it cannot drift apart. Empty for anything an operator
+// made: their description is theirs to write.
+func DescribeRole(role string) string {
+	switch role {
+	case RolePlatformAdmin:
+		return "Everything. Held at the global scope by whoever runs the platform."
+	case RoleTenantAdmin:
+		return "Runs one tenant: its users, keys, registry, and publishing. " +
+			"Deliberately without signingkey:generate — a tenant admin should not " +
+			"be able to mint a key every data plane in the deployment trusts."
+	case RoleToolsetAdmin:
+		return "Curates toolsets without administering people."
+	case RolePublisher:
+		return "Puts a built snapshot into production without being able to edit " +
+			"what went into it — the approver half of publisher ≠ approver."
+	case RoleToolUser:
+		return "May see and call the tools in its scope. The role most grants use."
+	case RoleViewer:
+		return "Reads without acting, including seeing what a toolset contains."
+	case RoleAuditor:
+		return "Reads the audit trail and nothing else."
+	default:
+		return ""
+	}
+}

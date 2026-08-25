@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -753,12 +754,31 @@ func newUsersKeysRevokeCmd(env *Env) *cobra.Command {
 // -------------------------------------------------------------------- roles --
 
 func newRolesCmd(env *Env) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "roles",
-		Short: "The role catalog and every permission that exists",
-		Long: "Permissions are a closed set. Adding one is a schema change and a UI change —\n" +
-			"friction that exists because a permission set which grows casually stops being\n" +
-			"reviewable.",
+		Short: "Compose roles out of the closed permission set",
+		Long: "Permissions are a closed set: adding one is a schema and code change,\n" +
+			"friction that exists because a permission set which grows casually stops\n" +
+			"being reviewable.\n\n" +
+			"Composing roles out of that set is ordinary administration, and these\n" +
+			"commands do it. Two rules hold the line: you cannot put a permission in a\n" +
+			"role that you do not hold, and you cannot grant a role that confers a\n" +
+			"permission you do not hold *at that scope*. The second is the one that\n" +
+			"matters — without it, defining a role would be a way to hand yourself\n" +
+			"anything.",
+	}
+	cmd.AddCommand(
+		newRolesListCmd(env),
+		newRolesSetCmd(env),
+		newRolesDeleteCmd(env),
+	)
+	return cmd
+}
+
+func newRolesListCmd(env *Env) *cobra.Command {
+	return &cobra.Command{
+		Use:         "list",
+		Short:       "The role catalog and every permission that exists",
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{annotationOperation: "listRoles"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -772,6 +792,103 @@ func newRolesCmd(env *Env) *cobra.Command {
 			return env.Emit(roleCatalogReport(out))
 		},
 	}
+}
+
+func newRolesSetCmd(env *Env) *cobra.Command {
+	var permissions []string
+	var description string
+
+	cmd := &cobra.Command{
+		Use:   "set <role>",
+		Short: "Create a role, or redefine what it permits",
+		Long: "Declarative, not additive: the permissions passed are what the role holds\n" +
+			"afterwards, so removing one means sending the set without it. Expressing a\n" +
+			"role as a sequence of deltas is exactly how a permission gets left behind on\n" +
+			"one somebody thought they had narrowed.\n\n" +
+			"Passing no --permission leaves a role that grants nothing, which is a\n" +
+			"legitimate way to neutralize one without deleting it and breaking the\n" +
+			"grants that name it.\n\n" +
+			"`mcpdoll roles list` prints the permissions that exist. A built-in role can\n" +
+			"be redefined but not deleted.",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{annotationOperation: "putRole"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := apiContext(cmd.Context())
+			defer cancel()
+
+			body := map[string]any{"permissions": permissions}
+			if permissions == nil {
+				body["permissions"] = []string{}
+			}
+			if description != "" {
+				body["description"] = description
+			}
+			var out api.Role
+			if err := apiCall(ctx, env, "PUT",
+				"/api/v1/roles/"+url.PathEscape(args[0]), body, &out); err != nil {
+				return err
+			}
+			return env.Emit(roleReport(out))
+		},
+	}
+	cmd.Flags().StringArrayVar(&permissions, "permission", nil,
+		"a permission the role confers; repeatable, and the complete set")
+	cmd.Flags().StringVar(&description, "description", "", "what the role is for")
+	return cmd
+}
+
+func newRolesDeleteCmd(env *Env) *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete <role>",
+		Short: "Delete a role nobody holds",
+		Long: "Refused while anybody holds it. A grant naming a deleted role authorizes\n" +
+			"nothing, and the person who loses access is not the person running this —\n" +
+			"they find out when their agent stops. Revoke the grants first.\n\n" +
+			"A built-in cannot be deleted at all: the seed would recreate it on the next\n" +
+			"boot. Narrow its permissions instead.",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{annotationOperation: "deleteRole"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				return fmt.Errorf("refusing to delete %q without --yes", args[0])
+			}
+			ctx, cancel := apiContext(cmd.Context())
+			defer cancel()
+
+			if err := apiCall(ctx, env, "DELETE",
+				"/api/v1/roles/"+url.PathEscape(args[0]), nil, nil); err != nil {
+				return err
+			}
+			env.Printf("deleted role %s\n", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the deletion")
+	return cmd
+}
+
+type roleReport api.Role
+
+func (r roleReport) Table() Table {
+	rows := [][]string{
+		{"role", r.Name},
+		{"builtin", map[bool]string{true: "yes — cannot be deleted", false: "no"}[r.Builtin]},
+	}
+	if r.Description != "" {
+		rows = append(rows, []string{"description", r.Description})
+	}
+	for i, p := range r.Permissions {
+		label := ""
+		if i == 0 {
+			label = "permissions"
+		}
+		rows = append(rows, []string{label, p})
+	}
+	if len(r.Permissions) == 0 {
+		rows = append(rows, []string{"permissions", "(none — this role grants nothing)"})
+	}
+	return Table{Columns: []string{"FIELD", "VALUE"}, Rows: rows}
 }
 
 type roleCatalogReport api.RoleCatalog

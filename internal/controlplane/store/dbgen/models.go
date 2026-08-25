@@ -76,6 +76,14 @@ type RevocationState struct {
 	PrincipalVersion int64
 }
 
+type Role struct {
+	Name        string
+	Description string
+	Builtin     bool
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type RolePermission struct {
 	Role       string
 	Permission string

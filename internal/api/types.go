@@ -438,7 +438,12 @@ type MintedAPIKey struct {
 // Role is one role and everything it permits.
 type Role struct {
 	Name        string   `json:"name" yaml:"name"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
 	Permissions []string `json:"permissions" yaml:"permissions"`
+	// Builtin roles cannot be deleted — a grant left pointing at a deleted role
+	// authorizes nothing, and the seed would recreate it anyway. Their
+	// permissions are still editable (ADR 0028).
+	Builtin bool `json:"builtin,omitempty" yaml:"builtin,omitempty"`
 }
 
 // RoleCatalog is the whole role model, plus every permission that exists.

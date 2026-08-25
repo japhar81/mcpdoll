@@ -711,7 +711,7 @@ func (s *Store) SeedPlatformAdmin(ctx context.Context, tenantSlug, email string)
 		return "", nil
 	}
 
-	if err := s.SeedCatalog(ctx); err != nil {
+	if err := s.SeedRoles(ctx); err != nil {
 		return "", err
 	}
 

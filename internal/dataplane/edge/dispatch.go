@@ -26,9 +26,26 @@ func (e *Edge) toolHandler(
 	view *snapshot.View,
 	av *snapshot.PrincipalView,
 	tool *snapshot.Tool,
+	name string,
 ) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
+
+		// Listing and calling are separate permissions (ADR 0015), and this is
+		// where the second one is enforced. A principal holding tool:list
+		// without tool:call sees the tool and may not fire it.
+		//
+		// The composed view has computed this since the beginning and nothing
+		// read it: `Callable` had exactly one caller and it was a unit test. It
+		// went unnoticed because every built-in role with tool:list also had
+		// tool:call — except `viewer`, which did not, and could call anything
+		// it could see. User-defined roles made the gap trivial to hit, which
+		// is how it surfaced.
+		if !av.Callable(name) {
+			return nil, fmt.Errorf(
+				"edge: %s may be listed but not called by this credential: "+
+					"it holds tool:list without tool:call here", name)
+		}
 
 		// Continue the client's trace from `_meta` rather than starting a new
 		// one, so a call is one trace from the agent framework through the

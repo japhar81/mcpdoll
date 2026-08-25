@@ -740,6 +740,24 @@ export interface MintedAPIKey {
 
 export interface Role {
   name: string;
+  /** What the role is for, in a sentence. */
+  description?: string;
+  permissions: string[];
+  /**
+   * Cannot be deleted — a grant left pointing at a deleted role
+   * authorizes nothing, and the seed would recreate it. Its permissions
+   * are still editable (ADR 0028).
+   */
+  builtin?: boolean;
+}
+
+export interface PutRoleRequest {
+  /** What the role is for, in a sentence. */
+  description?: string;
+  /**
+   * The complete set the role holds afterwards. Every entry must be in
+   * the closed vocabulary `listRoles` returns.
+   */
   permissions: string[];
 }
 

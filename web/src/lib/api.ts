@@ -19,6 +19,8 @@ import type {
   SessionInfo,
   Tenant,
   TenantList,
+  Role,
+  PutRoleRequest,
   Schedule,
   ScheduleList,
   UpdateScheduleRequest,
@@ -248,6 +250,14 @@ export const listBackends = () =>
   request<BackendHealthReport>("GET", "/api/v1/gateway/backends");
 
 export const listTenants = () => request<TenantList>("GET", "/api/v1/tenants");
+
+// Roles are composed from the closed permission set (ADR 0028). Declarative:
+// the permissions sent are what the role holds afterwards.
+export const putRole = (role: string, body: PutRoleRequest) =>
+  request<Role>("PUT", `/api/v1/roles/${encodeURIComponent(role)}`, body);
+
+export const deleteRole = (role: string) =>
+  request<void>("DELETE", `/api/v1/roles/${encodeURIComponent(role)}`);
 
 // Timed work (ADR 0026). The job type is the identity, and it is a plain
 // token — encoded anyway, because a path segment interpolated raw is how a

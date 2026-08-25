@@ -50,6 +50,40 @@ func (q *Queries) BumpPrincipalVersion(ctx context.Context) (RevocationState, er
 	return i, err
 }
 
+const clearRolePermissions = `-- name: ClearRolePermissions :exec
+DELETE FROM role_permissions WHERE role = $1
+`
+
+func (q *Queries) ClearRolePermissions(ctx context.Context, role string) error {
+	_, err := q.db.Exec(ctx, clearRolePermissions, role)
+	return err
+}
+
+const countGrantsOfRole = `-- name: CountGrantsOfRole :one
+SELECT count(*) FROM grants WHERE role = $1
+`
+
+// Whether anybody holds this role. Deleting one that is granted would revoke
+// access from people the operator was not looking at.
+func (q *Queries) CountGrantsOfRole(ctx context.Context, role string) (int64, error) {
+	row := q.db.QueryRow(ctx, countGrantsOfRole, role)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countKeyGrantsOfRole = `-- name: CountKeyGrantsOfRole :one
+SELECT count(*) FROM api_key_grants WHERE role = $1
+`
+
+// The same question for keys, which narrow themselves with their own grants.
+func (q *Queries) CountKeyGrantsOfRole(ctx context.Context, role string) (int64, error) {
+	row := q.db.QueryRow(ctx, countKeyGrantsOfRole, role)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createGrant = `-- name: CreateGrant :one
 INSERT INTO grants (user_id, role, scope, granted_by)
 VALUES ($1, $2, $3, $4)
@@ -104,6 +138,32 @@ DELETE FROM role_permissions WHERE role = $1
 func (q *Queries) DeleteRole(ctx context.Context, role string) error {
 	_, err := q.db.Exec(ctx, deleteRole, role)
 	return err
+}
+
+const deleteRoleRow = `-- name: DeleteRoleRow :exec
+DELETE FROM roles WHERE name = $1 AND NOT builtin
+`
+
+func (q *Queries) DeleteRoleRow(ctx context.Context, name string) error {
+	_, err := q.db.Exec(ctx, deleteRoleRow, name)
+	return err
+}
+
+const getRole = `-- name: GetRole :one
+SELECT name, description, builtin, created_at, updated_at FROM roles WHERE name = $1
+`
+
+func (q *Queries) GetRole(ctx context.Context, name string) (Role, error) {
+	row := q.db.QueryRow(ctx, getRole, name)
+	var i Role
+	err := row.Scan(
+		&i.Name,
+		&i.Description,
+		&i.Builtin,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const listAllAPIKeyGrants = `-- name: ListAllAPIKeyGrants :many
@@ -258,6 +318,36 @@ func (q *Queries) ListRolePermissions(ctx context.Context) ([]RolePermission, er
 	return items, nil
 }
 
+const listRoles = `-- name: ListRoles :many
+SELECT name, description, builtin, created_at, updated_at FROM roles ORDER BY name
+`
+
+func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := q.db.Query(ctx, listRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Role{}
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.Name,
+			&i.Description,
+			&i.Builtin,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const removeRolePermission = `-- name: RemoveRolePermission :exec
 DELETE FROM role_permissions WHERE role = $1 AND permission = $2
 `
@@ -294,4 +384,63 @@ DELETE FROM grants WHERE id = $1
 func (q *Queries) RevokeGrantByID(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, revokeGrantByID, id)
 	return err
+}
+
+const setRoleDescription = `-- name: SetRoleDescription :one
+UPDATE roles SET description = $2, updated_at = now() WHERE name = $1 RETURNING name, description, builtin, created_at, updated_at
+`
+
+type SetRoleDescriptionParams struct {
+	Name        string
+	Description string
+}
+
+func (q *Queries) SetRoleDescription(ctx context.Context, arg SetRoleDescriptionParams) (Role, error) {
+	row := q.db.QueryRow(ctx, setRoleDescription, arg.Name, arg.Description)
+	var i Role
+	err := row.Scan(
+		&i.Name,
+		&i.Description,
+		&i.Builtin,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertRole = `-- name: UpsertRole :one
+INSERT INTO roles (name, description, builtin)
+VALUES ($1, $2, $3)
+ON CONFLICT (name) DO UPDATE
+  -- Only fills a description in; never replaces one. The seed runs on every
+  -- boot, so overwriting here would silently revert an operator's edit every
+  -- time the process restarted — the same trap the schedule cadences avoid.
+  SET description = CASE
+        WHEN roles.description = '' THEN EXCLUDED.description
+        ELSE roles.description
+      END,
+      updated_at = now()
+RETURNING name, description, builtin, created_at, updated_at
+`
+
+type UpsertRoleParams struct {
+	Name        string
+	Description string
+	Builtin     bool
+}
+
+// Registration and creation in one. `builtin` is only ever set true here, by
+// the seed: nothing promotes an operator's role into a built-in, and a restart
+// must not demote a built-in either.
+func (q *Queries) UpsertRole(ctx context.Context, arg UpsertRoleParams) (Role, error) {
+	row := q.db.QueryRow(ctx, upsertRole, arg.Name, arg.Description, arg.Builtin)
+	var i Role
+	err := row.Scan(
+		&i.Name,
+		&i.Description,
+		&i.Builtin,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

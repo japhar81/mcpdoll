@@ -45,6 +45,8 @@ export const ROUTE_BINDINGS: RouteBinding[] = [
   { path: "/users/:userId/keys/new", operation: "mintAPIKey" },
   { path: "/users/:userId/keys/:keyId/revoke", operation: "revokeAPIKey" },
   { path: "/roles", operation: "listRoles" },
+  { path: "/roles/:role/edit", operation: "putRole" },
+  { path: "/roles/:role/delete", operation: "deleteRole" },
   { path: "/gateway/catalog", operation: "getCatalog" },
   { path: "/gateway/playground", operation: "callTool" },
   { path: "/system/health", operation: "getHealth" },
