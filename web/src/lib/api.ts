@@ -316,6 +316,9 @@ export const updateUser = (
   input: { display_name?: string; status: string },
 ) => request<User>("PATCH", `/api/v1/users/${encodeURIComponent(userId)}`, input);
 
+export const deleteUser = (userId: string) =>
+  request<void>("DELETE", `/api/v1/users/${encodeURIComponent(userId)}`);
+
 export const listGrants = (userId: string) =>
   request<GrantList>("GET", `/api/v1/users/${encodeURIComponent(userId)}/grants`);
 

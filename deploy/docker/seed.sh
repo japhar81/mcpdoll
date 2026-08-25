@@ -121,6 +121,14 @@ done
 # administers everything — but a principal's *catalog* comes from their own
 # tenant, and `platform` has no backend bindings. An administrator whose
 # gateway view is permanently empty is a bad first five minutes.
+# An earlier seed created this in `platform`. Left there it is a decoy: the
+# same email in a second tenant, disabled, so signing in with the tenant the
+# README used to name fails with the same message a wrong password gives.
+if have_user platform dev-admin@mcpdoll.local; then
+  log "removing the stale console admin from the platform tenant"
+  mcpdoll users delete dev-admin@mcpdoll.local --tenant platform --yes >/dev/null 2>&1 || true
+fi
+
 if have_user acme dev-admin@mcpdoll.local; then
   log "console admin already exists"
 else

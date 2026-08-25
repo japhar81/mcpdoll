@@ -591,6 +591,31 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/NoDatabase" }
 
+    delete:
+      operationId: deleteUser
+      summary: Delete a user and everything they hold
+      description: |
+        Distinct from disabling, and both exist. Disabling is the offboarding
+        path: the row stays, so "who did this" survives an audit. Deleting is
+        for a row that should never have existed — a typo, an account created in
+        the wrong tenant — where keeping it is not history, it is a decoy the
+        next person has to work out is inert.
+
+        Revokes their credentials first, then cascades to their grants and keys.
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users delete
+        ui: /users/:userId/delete
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
     patch:
       operationId: updateUser
       summary: Change a user's display name or status

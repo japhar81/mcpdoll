@@ -298,6 +298,11 @@ done
 # Somebody who can actually use the console. `SeedPlatformAdmin` creates one
 # with a generated password printed once, which is right for production and
 # useless here — so this seeds a second with a password the README can name.
+# An earlier seed created this in `platform`; left there it is a decoy.
+if have_user platform dev-admin@mcpdoll.local; then
+  ./bin/mcpdoll users delete dev-admin@mcpdoll.local --tenant platform --yes --quiet >/dev/null 2>&1 || true
+fi
+
 if ! have_user acme dev-admin@mcpdoll.local; then
   ./bin/mcpdoll users create dev-admin@mcpdoll.local --tenant acme \
     --name "Console Admin" --password demo-password-not-a-secret --quiet >/dev/null

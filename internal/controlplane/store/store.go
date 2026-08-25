@@ -594,6 +594,21 @@ func (s *Store) DeleteTenant(ctx context.Context, id uuid.UUID) error {
 	return wrap(s.q.DeleteTenant(ctx, id), "deleting tenant %s", id)
 }
 
+// DeleteUser removes a user and, by cascade, their grants and their keys.
+//
+// Distinct from disabling, and both are needed. Disabling is the offboarding
+// path: the row stays, so "who did this" survives an audit. Deleting is for a
+// row that should never have existed — a typo, an account created in the wrong
+// tenant — where keeping it is not history, it is a decoy that the next person
+// has to work out is inert.
+//
+// The caller is responsible for revoking first. The cascade removes the keys,
+// so after this there is nothing left to enumerate and their digests are still
+// in whatever artifact the gateway is holding.
+func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	return wrap(s.q.DeleteUser(ctx, id), "deleting user %s", id)
+}
+
 // SetUserStatus enables or disables a user.
 //
 // Disabling stops their API keys too — [ResolveAPIKey] checks the owner's

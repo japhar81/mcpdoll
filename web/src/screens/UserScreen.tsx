@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
-import { getUser, updateUser } from "../lib/api.ts";
+import { deleteUser, getUser, updateUser } from "../lib/api.ts";
 import { ErrorBlock, Screen, Stats } from "../components/Screen.tsx";
 
 /**
@@ -17,6 +17,7 @@ export function UserScreen() {
   const { userId = "" } = useParams();
   const { pathname } = useLocation();
   const editing = pathname.endsWith("/edit");
+  const deleting = pathname.endsWith("/delete");
 
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -37,6 +38,14 @@ export function UserScreen() {
       setStatus(q.data.status);
     }
   }, [q.data]);
+
+  const remove = useMutation({
+    mutationFn: () => deleteUser(userId),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["users"] });
+      navigate(user ? `/tenants/${user.tenant_id}/users` : "/tenants");
+    },
+  });
 
   const save = useMutation({
     mutationFn: () =>
@@ -69,11 +78,15 @@ export function UserScreen() {
             <Link className="link" to={`/users/${userId}/keys`}>
               keys
             </Link>
-            {!editing && (
+            {!editing && !deleting && (
               <>
                 {" · "}
                 <Link className="link" to={`/users/${userId}/edit`}>
                   edit
+                </Link>
+                {" · "}
+                <Link className="link" to={`/users/${userId}/delete`}>
+                  delete
                 </Link>
               </>
             )}
@@ -105,6 +118,38 @@ export function UserScreen() {
           <strong>This account is disabled.</strong> Every API key it owns stops
           resolving, because a key&apos;s effective grants are recomputed from
           its owner at every resolution.
+        </div>
+      )}
+
+      {deleting && user && (
+        <div className="card">
+          <div className="card-head">
+            <strong>Delete {user.email}?</strong>
+            <span className="badge badge-bad">irreversible</span>
+          </div>
+          <p className="muted">
+            Deletes every grant and API key they hold. Their credentials stop
+            resolving within seconds.
+          </p>
+          <p className="muted">
+            To offboard somebody, disable them instead — the row stays, so an
+            audit can still answer who did what. Delete is for an account that
+            should never have existed.
+          </p>
+          {remove.error != null && <ErrorBlock error={remove.error} />}
+          <div className="row">
+            <Link className="link" to={`/users/${userId}`}>
+              cancel
+            </Link>
+            <span className="spacer" />
+            <button
+              className="danger"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? "Deleting…" : "Delete permanently"}
+            </button>
+          </div>
         </div>
       )}
 

@@ -33,6 +33,7 @@ export const ROUTE_BINDINGS: RouteBinding[] = [
   { path: "/tenants/:tenantId/users/new", operation: "createUser" },
   { path: "/users/:userId", operation: "getUser" },
   { path: "/users/:userId/edit", operation: "updateUser" },
+  { path: "/users/:userId/delete", operation: "deleteUser" },
   { path: "/users/:userId/grants", operation: "listGrants" },
   { path: "/users/:userId/grants/edit", operation: "putGrants" },
   { path: "/users/:userId/keys", operation: "listAPIKeys" },

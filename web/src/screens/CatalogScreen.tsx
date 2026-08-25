@@ -1,10 +1,14 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
-import { getCatalog } from "../lib/api.ts";
+import { getCatalog, mintAPIKey } from "../lib/api.ts";
 import { ErrorBlock, Screen, Stats, Table } from "../components/Screen.tsx";
+import { useAuth } from "../lib/auth.tsx";
 import { useInspection } from "../lib/inspection.tsx";
+
+/** An agent credential is `mcpd.<prefix>.<secret>`. */
+const AGENT_KEY = /^mcpd\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 /**
  * The tool list one credential actually receives.
@@ -17,8 +21,33 @@ import { useInspection } from "../lib/inspection.tsx";
  */
 export function CatalogScreen() {
   const { credential, setCredential } = useInspection();
+  const auth = useAuth();
   const [applied, setApplied] = useState<string | null>(null);
   const [full, setFull] = useState(false);
+  const [minted, setMinted] = useState(false);
+
+  // Checked here rather than at the gateway. The deployment token and a session
+  // are *control-plane* credentials — the gateway has never heard of them — so
+  // presenting one gets a 403 that reads as "your key was rejected" when the
+  // real answer is "that is not the kind of credential this endpoint takes".
+  const wrongKind = credential.trim() !== "" && !AGENT_KEY.test(credential.trim());
+
+  // Mint one for yourself: an agent credential carrying exactly your own
+  // grants, so the catalog below is what you would be served.
+  const mint = useMutation({
+    mutationFn: () => {
+      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      return mintAPIKey(auth.session!.user_id!, {
+        name: `console inspection ${new Date().toISOString().slice(0, 19)}Z`,
+        expires_at: expires,
+      });
+    },
+    onSuccess: (result) => {
+      setCredential(result.secret);
+      setApplied(null);
+      setMinted(true);
+    },
+  });
 
   const q = useQuery({
     queryKey: ["catalog", applied, full],
@@ -47,6 +76,44 @@ export function CatalogScreen() {
             onChange={(e) => setCredential(e.target.value)}
           />
         </label>
+        {wrongKind && (
+          <div className="note warn">
+            <strong>That is not an agent key.</strong> This field takes a
+            credential an <em>agent</em> presents to the gateway — it starts{" "}
+            <code>mcpd.</code> The deployment token and your console session are
+            control-plane credentials; the gateway has never heard of them and
+            will refuse them.
+            {auth.session?.user_id && (
+              <>
+                {" "}
+                Mint one for yourself below.
+              </>
+            )}
+          </div>
+        )}
+
+        {auth.session?.user_id && (
+          <div className="row">
+            <button
+              className="secondary"
+              disabled={mint.isPending}
+              onClick={() => mint.mutate()}
+            >
+              {mint.isPending ? "Minting…" : "Inspect as me"}
+            </button>
+            <span className="muted">
+              Mints a key carrying your own grants, valid for an hour.
+            </span>
+          </div>
+        )}
+        {mint.error != null && <ErrorBlock error={mint.error} />}
+        {minted && (
+          <p className="muted">
+            Minted and filled in above. It expires in an hour; revoke it from
+            your user page if you want it gone sooner.
+          </p>
+        )}
+
         <div className="row">
           <label className="inline">
             <input
@@ -59,7 +126,7 @@ export function CatalogScreen() {
           <span className="spacer" />
           <button
             className="primary"
-            disabled={!credential.trim()}
+            disabled={!credential.trim() || wrongKind}
             onClick={() => setApplied(credential.trim())}
           >
             {q.isFetching ? "Connecting…" : "Connect and list"}

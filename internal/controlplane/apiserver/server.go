@@ -236,6 +236,7 @@ func (s *Server) routes() {
 		r.With(s.requireScoped("userId", authz.PermUserManage, s.userScopeOf)).Group(func(r chi.Router) {
 			r.Get("/users/{userId}", s.handleGetUser)
 			r.Patch("/users/{userId}", s.handleUpdateUser)
+			r.Delete("/users/{userId}", s.handleDeleteUser)
 		})
 
 		// Deciding what a user may do is not the same as creating one, and

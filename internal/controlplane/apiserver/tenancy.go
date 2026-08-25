@@ -409,6 +409,43 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.log, http.StatusOK, userOf(user, slug))
 }
 
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.uuidParam(w, r, "userId")
+	if !ok {
+		return
+	}
+	st := s.requireStore(w)
+	if st == nil {
+		return
+	}
+
+	// Revoke before deleting. The cascade takes the keys with it, so after this
+	// there is nothing left to enumerate — and their digests are still in
+	// whatever principal set the gateway is holding.
+	if _, err := st.RevokeUser(r.Context(), id, "user deleted"); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	problem := s.publishRevocations(r.Context())
+
+	if err := st.DeleteUser(r.Context(), id); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if p := s.publishPrincipals(r.Context()); p != "" && problem == "" {
+		problem = p
+	}
+	if problem != "" {
+		writeJSON(w, s.log, http.StatusAccepted, Error{
+			Code:     CodeUnavailable,
+			Message:  "the user was deleted, but their credentials are not refused yet",
+			Problems: []string{problem},
+		})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // userWithTenant reads a user and the slug their scopes are written with.
 func (s *Server) userWithTenant(r *http.Request, id uuid.UUID) (store.User, string, error) {
 	user, err := s.cfg.Store.GetUser(r.Context(), id)

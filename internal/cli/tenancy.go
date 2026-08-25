@@ -181,6 +181,7 @@ func newUsersCmd(env *Env) *cobra.Command {
 		newUsersCreateCmd(env),
 		newUsersShowCmd(env),
 		newUsersUpdateCmd(env),
+		newUsersDeleteCmd(env),
 		newUsersGrantsCmd(env),
 		newUsersKeysCmd(env),
 	)
@@ -361,6 +362,46 @@ func newUsersUpdateCmd(env *Env) *cobra.Command {
 	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringVar(&displayName, "name", "", "display name")
 	cmd.Flags().StringVar(&status, "status", "", "active or disabled")
+	_ = cmd.MarkFlagRequired("tenant")
+	return cmd
+}
+
+func newUsersDeleteCmd(env *Env) *cobra.Command {
+	var tenantSlug string
+	var confirm bool
+	cmd := &cobra.Command{
+		Use:   "delete <email>",
+		Short: "Delete a user and everything they hold",
+		Long: "Distinct from `users update --status disabled`, and both are useful.\n\n" +
+			"Disable is the offboarding path: the row stays, so an audit can still answer\n" +
+			"who did what. Delete is for a row that should never have existed — a typo, an\n" +
+			"account created in the wrong tenant — where keeping it is not history, it is a\n" +
+			"decoy the next person has to work out is inert.",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{annotationOperation: "deleteUser"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := apiContext(cmd.Context())
+			defer cancel()
+
+			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			if err != nil {
+				return err
+			}
+			if !confirm {
+				return usageError(fmt.Errorf(
+					"this deletes %s along with every grant and API key they hold; "+
+						"pass --yes to confirm, or use `users update --status disabled` "+
+						"to keep the record", user.Email))
+			}
+			if err := apiCall(ctx, env, "DELETE", "/api/v1/users/"+user.ID, nil, nil); err != nil {
+				return err
+			}
+			env.Printf("%s deleted; their credentials stop resolving within seconds\n", user.Email)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
+	cmd.Flags().BoolVar(&confirm, "yes", false, "confirm the deletion")
 	_ = cmd.MarkFlagRequired("tenant")
 	return cmd
 }

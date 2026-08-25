@@ -232,6 +232,11 @@ export const ROUTES: RouteDef[] = [
     component: UserScreen,
   },
   {
+    path: "/users/:userId/delete",
+    operation: "deleteUser",
+    component: UserScreen,
+  },
+  {
     path: "/users/:userId/grants",
     operation: "listGrants",
     component: GrantsScreen,
