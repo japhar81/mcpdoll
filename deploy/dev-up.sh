@@ -250,9 +250,12 @@ have_tenant() {
     | grep -q "\"slug\":\"$1\",\"name\":[^}]*\"status\":\"active\""
 }
 
+# Against the whole list, not one tenant's. A user belongs to no tenant, so
+# `users list --tenant X` answers "who is granted into X" — a different
+# question, and one that says "no" about an existing account holding nothing.
 have_user() {
-  ./bin/mcpdoll users list --tenant "$1" --output json 2>/dev/null \
-    | grep -q "\"email\": \"$2\""
+  ./bin/mcpdoll users all --output json 2>/dev/null \
+    | grep -q "\"email\": \"$1\""
 }
 
 for tenant in acme globex; do
@@ -267,6 +270,9 @@ done
 # So: create users that are missing, and mint a key whenever the file is absent,
 # whether or not the user was new. A user may hold several keys, and the
 # alternative is a banner pointing at a file that does not exist.
+#
+# The leading tenant is which tenant that person's *key* acts in — not a
+# property of the user, whose grants carry the tenant in their scope.
 DEMO_USERS=(
   "acme support@acme.example|Support Agent|tool_user@t/acme/ts/support"
   "acme platform@acme.example|Platform Operator|tool_user@t/acme/ts/support,tool_user@t/acme/ts/platform"
@@ -282,15 +288,15 @@ for entry in "${DEMO_USERS[@]}"; do
   tenant="${who%% *}"
   email="${who##* }"
 
-  if ! have_user "${tenant}" "${email}"; then
-    ./bin/mcpdoll users create "${email}" --tenant "${tenant}" --name "${label}" \
+  if ! have_user "${email}"; then
+    ./bin/mcpdoll users create "${email}" --name "${label}" \
       --password demo-password-not-a-secret --quiet >/dev/null
     # Grants come second and separately, because a new user holding nothing is
     # the correct starting state.
     grant_args=()
     IFS=',' read -ra parts <<< "${grants}"
     for g in "${parts[@]}"; do grant_args+=(--grant "${g}"); done
-    ./bin/mcpdoll users grants set "${email}" --tenant "${tenant}" \
+    ./bin/mcpdoll users grants set "${email}" \
       "${grant_args[@]}" --quiet >/dev/null
   fi
 done
@@ -298,17 +304,16 @@ done
 # Somebody who can actually use the console. `SeedPlatformAdmin` creates one
 # with a generated password printed once, which is right for production and
 # useless here — so this seeds a second with a password the README can name.
-# An earlier seed created this in `platform`; left there it is a decoy.
-if have_user platform dev-admin@mcpdoll.local; then
-  ./bin/mcpdoll users delete dev-admin@mcpdoll.local --tenant platform --yes --quiet >/dev/null 2>&1 || true
-fi
-
-if ! have_user acme dev-admin@mcpdoll.local; then
-  ./bin/mcpdoll users create dev-admin@mcpdoll.local --tenant acme \
+#
+# No tenant, and there used to be two: an earlier shape gave the user a tenant,
+# so this account existed once in `platform` and once in `acme` and one of them
+# had to be deleted as a decoy. Users are global now — one row, one password.
+if ! have_user dev-admin@mcpdoll.local; then
+  ./bin/mcpdoll users create dev-admin@mcpdoll.local \
     --name "Console Admin" --password demo-password-not-a-secret --quiet >/dev/null
-  ./bin/mcpdoll users grants set dev-admin@mcpdoll.local --tenant acme \
+  ./bin/mcpdoll users grants set dev-admin@mcpdoll.local \
     --grant "platform_admin@*" --quiet >/dev/null
-  info "console admin: dev-admin@mcpdoll.local in tenant acme"
+  info "console admin: dev-admin@mcpdoll.local"
 fi
 
 if [[ ! -s "${KEYS}" ]]; then
@@ -423,8 +428,8 @@ no subject to claim, because the tenant and the toolset both come from the key:
   # Who can reach what, and change it. A grant takes effect at the next
   # snapshot, so the rebuild is part of the operation rather than a follow-up.
   ./bin/mcpdoll tenants list
-  ./bin/mcpdoll users grants support@acme.example --tenant acme
-  ./bin/mcpdoll users grants set support@acme.example --tenant acme \\
+  ./bin/mcpdoll users grants support@acme.example
+  ./bin/mcpdoll users grants set support@acme.example \\
       --grant tool_user@t/acme/ts/support/lookup_customer
   ./bin/mcpdoll snapshot build -r ${LOCAL_DIR}/registry.yaml \\
       --key ${LOCAL_DIR}/${KEY_ID}.key --key-id ${KEY_ID} \\

@@ -152,9 +152,12 @@ describe("the tenancy operations", () => {
     );
     const { mintAPIKey } = await import("./api.ts");
 
-    await mintAPIKey("u1", { name: "bot" });
+    await mintAPIKey("u1", { tenant: "acme", name: "bot" });
 
-    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ name: "bot" });
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+      tenant: "acme",
+      name: "bot",
+    });
   });
 
   it("encode a user id into the path", async () => {

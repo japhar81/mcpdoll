@@ -10,6 +10,7 @@ import {
   revokeAPIKey,
 } from "../lib/api.ts";
 import { ErrorBlock, Screen, Table } from "../components/Screen.tsx";
+import { TenantPicker, useMintableTenants } from "../lib/tenants.tsx";
 import { Republish } from "../components/Republish.tsx";
 import type { Grant, MintedAPIKey } from "../lib/types.ts";
 
@@ -46,6 +47,8 @@ export function APIKeysScreen() {
   });
 
   const [name, setName] = useState("");
+  const [tenant, setTenant] = useState("");
+  const { slugs } = useMintableTenants();
   const [expires, setExpires] = useState("");
   const [narrow, setNarrow] = useState<Grant[]>([]);
   const [minted, setMinted] = useState<MintedAPIKey | null>(null);
@@ -53,6 +56,7 @@ export function APIKeysScreen() {
   const mint = useMutation({
     mutationFn: () =>
       mintAPIKey(userId, {
+        tenant,
         name: name.trim(),
         grants: narrow.length ? narrow : undefined,
         expires_at: expires ? new Date(expires).toISOString() : undefined,
@@ -122,6 +126,7 @@ export function APIKeysScreen() {
           <div className="card-head">
             <strong>Mint a key</strong>
           </div>
+          <TenantPicker value={tenant} onChange={setTenant} slugs={slugs} />
           <label className="field">
             Name
             <input
@@ -183,7 +188,7 @@ export function APIKeysScreen() {
             <span className="spacer" />
             <button
               className="primary"
-              disabled={!name.trim() || mint.isPending}
+              disabled={!name.trim() || !tenant || mint.isPending}
               onClick={() => mint.mutate()}
             >
               {mint.isPending ? "Minting…" : "Mint"}

@@ -51,21 +51,17 @@ func (s Session) Active(now time.Time) bool {
 
 // SignIn verifies a password and mints a session, returning its plaintext once.
 //
-// The tenant is part of the identity, not a lookup hint: the same email may
-// exist in two tenants and they are different people (ADR 0014).
+// Email and password. No tenant: an email identifies one person across the
+// whole install, and which tenants they reach is what their grants say.
+//
+// Signing in *to a tenant* was a consequence of users being owned by one, and
+// it was a bad trade — it meant a moved account and a wrong password failed
+// identically, with no way to tell them apart from the screen.
 func (s *Store) SignIn(
 	ctx context.Context,
-	tenantSlug, email, password, userAgent, ip string,
+	email, password, userAgent, ip string,
 ) (Session, string, User, error) {
-	tenant, err := s.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		// Still pay for a verification, so a wrong tenant and a wrong password
-		// are indistinguishable in timing. Without it this enumerates tenants.
-		VerifySecret(password, "")
-		return Session{}, "", User{}, ErrNotFound
-	}
-
-	user, err := s.VerifyPassword(ctx, tenant.ID, email, password)
+	user, err := s.VerifyPassword(ctx, email, password)
 	if err != nil {
 		return Session{}, "", User{}, err
 	}
@@ -124,10 +120,6 @@ func (s *Store) ResolveSession(ctx context.Context, presented string) (Resolved,
 		// signed in until it expired.
 		return Resolved{}, Session{}, ErrNotFound
 	}
-	tenant, err := s.GetTenant(ctx, user.TenantID)
-	if err != nil {
-		return Resolved{}, Session{}, err
-	}
 	grants, err := s.GrantsForUser(ctx, user.ID)
 	if err != nil {
 		return Resolved{}, Session{}, err
@@ -137,7 +129,7 @@ func (s *Store) ResolveSession(ctx context.Context, presented string) (Resolved,
 	// last-seen timestamp, not an authorization input.
 	_ = s.q.TouchSession(ctx, session.ID)
 
-	return Resolved{User: user, Tenant: tenant, Grants: grants}, session, nil
+	return Resolved{User: user, Grants: grants}, session, nil
 }
 
 // SignOut revokes one session, and records it so the data plane hears about it

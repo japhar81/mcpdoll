@@ -23,17 +23,27 @@ type Querier interface {
 	// CountUsersByTenant answers the tenant list in one query rather than one per
 	// tenant. A tenant list is the first screen an operator opens, and N+1 there is
 	// N+1 forever.
+	// Counted from grants, since a user no longer belongs to a tenant. A grant at
+	// global scope reaches every tenant and is counted for each.
 	CountUsersByTenant(ctx context.Context) ([]CountUsersByTenantRow, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateGrant(ctx context.Context, arg CreateGrantParams) (Grant, error)
 	CreateIdentityProvider(ctx context.Context, arg CreateIdentityProviderParams) (IdentityProvider, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
+	// No tenant: a user is a person, and which tenants they reach is what their
+	// grants say (ADR 0014, amended). A user with no grants is inert, which is why
+	// creating one is safe at any scope.
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
 	// Rows whose credential could not authenticate anyway. Kept for a grace period
 	// so a session that expired an hour ago still explains itself in an audit.
 	DeleteExpiredSessions(ctx context.Context) error
+	// Grants name a scope as text, not a tenant by foreign key, so nothing cascades
+	// when a tenant is deleted. Left behind they are dormant *and* dangerous: a
+	// tenant recreated with the same slug would silently re-authorize everyone who
+	// was granted into the old one.
+	DeleteGrantsInTenant(ctx context.Context, scope string) error
 	DeleteIdentityProvider(ctx context.Context, id uuid.UUID) error
 	DeleteRole(ctx context.Context, role string) error
 	// The slug is deliberately absent from UpdateTenant: it appears in every scope
@@ -57,7 +67,9 @@ type Querier interface {
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	GetTenantBySlug(ctx context.Context, slug string) (Tenant, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
-	GetUserByEmail(ctx context.Context, arg GetUserByEmailParams) (User, error)
+	// Globally unique, so signing in needs an email and a password and nothing
+	// else.
+	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error)
 	LinkIdentity(ctx context.Context, arg LinkIdentityParams) (UserIdentity, error)
 	ListAPIKeyGrants(ctx context.Context, apiKeyID uuid.UUID) ([]ApiKeyGrant, error)
@@ -83,14 +95,19 @@ type Querier interface {
 	// The login screen's list. A tenant-scoped provider (tenant_id set) is offered
 	// only to that tenant; a null tenant_id serves every tenant.
 	ListEnabledIdentityProviders(ctx context.Context, tenantID *uuid.UUID) ([]IdentityProvider, error)
-	ListGrantsByTenant(ctx context.Context, tenantID uuid.UUID) ([]Grant, error)
+	// Grants *within* a tenant's scope, which is now the only sense in which a
+	// grant belongs to a tenant.
+	ListGrantsByTenant(ctx context.Context, scope string) ([]Grant, error)
 	ListGrantsByUser(ctx context.Context, userID uuid.UUID) ([]Grant, error)
 	ListIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
 	ListIdentityProviders(ctx context.Context) ([]IdentityProvider, error)
 	ListRolePermissions(ctx context.Context) ([]RolePermission, error)
 	ListSessionsByUser(ctx context.Context, userID uuid.UUID) ([]Session, error)
 	ListTenants(ctx context.Context) ([]Tenant, error)
-	ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]User, error)
+	// Users *granted into* a tenant rather than owned by one. A more useful
+	// listing than ownership was: it answers "who can reach this tenant", which is
+	// the question an administrator is actually asking.
+	ListUsersInTenant(ctx context.Context, scope string) ([]User, error)
 	RemoveRolePermission(ctx context.Context, arg RemoveRolePermissionParams) error
 	RevokeAPIKey(ctx context.Context, id uuid.UUID) error
 	RevokeGrant(ctx context.Context, arg RevokeGrantParams) error

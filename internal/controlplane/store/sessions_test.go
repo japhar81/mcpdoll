@@ -24,58 +24,56 @@ func TestSignInProducesAWorkingSession(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	tenant := newTenant(t, s)
-
-	_, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "Alice", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	_, err := s.CreateUser(ctx, email, "Alice", "hunter2")
 	require.NoError(t, err)
 
-	session, token, user, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	session, token, user, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
-	require.Equal(t, "alice@example.com", user.Email)
+	require.Equal(t, email, user.Email)
 	require.NotEmpty(t, token)
 	require.True(t, session.Active(session.CreatedAt))
 
 	resolved, _, err := s.ResolveSession(ctx, token)
 	require.NoError(t, err)
 	require.Equal(t, user.ID, resolved.User.ID)
-	require.Equal(t, tenant.Slug, resolved.Tenant.Slug)
+	// No tenant on a session: a session is a person, and a person is not in a
+	// tenant. A key names one, because an MCP session must resolve to exactly
+	// one or tool names collide.
+	require.Empty(t, resolved.Tenant.Slug)
 }
 
-func TestTheSameEmailInTwoTenantsIsTwoPeople(t *testing.T) {
+func TestAnEmailIsOnePersonAcrossTheInstall(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	one, two := newTenant(t, s), newTenant(t, s)
 
-	_, err := s.CreateUser(ctx, one.ID, "alice@example.com", "", "password-one")
-	require.NoError(t, err)
-	_, err = s.CreateUser(ctx, two.ID, "alice@example.com", "", "password-two")
+	email := uniqueSlug(t) + "@example.com"
+	_, err := s.CreateUser(ctx, email, "", "password-one")
 	require.NoError(t, err)
 
-	// The tenant is part of the identity, not a lookup hint. One tenant's
-	// password must not sign anybody in to another's.
-	_, _, _, err = s.SignIn(ctx, one.Slug, "alice@example.com", "password-two", "", "")
-	require.ErrorIs(t, err, store.ErrNotFound)
-
-	_, _, user, err := s.SignIn(ctx, one.Slug, "alice@example.com", "password-one", "", "")
-	require.NoError(t, err)
-	require.Equal(t, one.ID, user.TenantID)
+	// It used to be legal for the same email to exist in two tenants, and they
+	// were two different people. That made signing in require a tenant, and
+	// made a moved account indistinguishable from a wrong password at the login
+	// screen. An email is one person now.
+	_, err = s.CreateUser(ctx, email, "", "password-two")
+	require.ErrorIs(t, err, store.ErrConflict)
 }
 
-func TestAWrongTenantAndAWrongPasswordAreIndistinguishable(t *testing.T) {
+func TestAnUnknownEmailAndAWrongPasswordAreIndistinguishable(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	tenant := newTenant(t, s)
 
-	_, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "@example.com"
+	_, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
 
-	// Returning early on an unknown tenant would make it measurably faster than
-	// a wrong password, which enumerates tenants.
-	_, _, _, err = s.SignIn(ctx, "no-such-tenant", "alice@example.com", "hunter2", "", "")
+	// Returning early on an unknown email would make it measurably faster than
+	// a wrong password, which enumerates accounts.
+	_, _, _, err = s.SignIn(ctx, "nobody-"+email, "hunter2", "", "")
 	require.ErrorIs(t, err, store.ErrNotFound)
-	_, _, _, err = s.SignIn(ctx, tenant.Slug, "alice@example.com", "wrong", "", "")
+	_, _, _, err = s.SignIn(ctx, email, "wrong", "", "")
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -84,13 +82,13 @@ func TestASessionReadsGrantsFresh(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
 	grant := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug}
 	require.NoError(t, s.SetGrants(ctx, user.ID, []authz.Grant{grant}, nil))
 
-	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	resolved, _, err := s.ResolveSession(ctx, token)
@@ -109,11 +107,10 @@ func TestDisablingAUserStopsTheirSession(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	_, err = s.UpdateUser(ctx, user.ID, "", "disabled")
@@ -129,11 +126,10 @@ func TestSigningOutStopsTheSession(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	tenant := newTenant(t, s)
-
-	_, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	_, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	_, session, err := s.ResolveSession(ctx, token)
@@ -151,14 +147,14 @@ func TestRevokingAUserCoversEveryCredentialTheyHold(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	keyOne, _, err := s.MintAPIKey(ctx, user.ID, "one", nil, nil)
+	keyOne, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "one", nil, nil)
 	require.NoError(t, err)
-	keyTwo, _, err := s.MintAPIKey(ctx, user.ID, "two", nil, nil)
+	keyTwo, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "two", nil, nil)
 	require.NoError(t, err)
-	_, _, _, err = s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, _, _, err = s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	state, err := s.RevokeUser(ctx, user.ID, "offboarded")
@@ -185,10 +181,10 @@ func TestRevokingTwiceIsIdempotentAndStillAdvancesTheVersion(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "")
 	require.NoError(t, err)
-	key, _, err := s.MintAPIKey(ctx, user.ID, "one", nil, nil)
+	key, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "one", nil, nil)
 	require.NoError(t, err)
 
 	first, err := s.Revoke(ctx, key.ID, "api_key", &user.ID, "leaked")
@@ -212,15 +208,20 @@ func TestRevokingTwiceIsIdempotentAndStillAdvancesTheVersion(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
+// Not parallel, and deliberately: pruning is the one operation here that is
+// table-wide by design — it supersedes every revocation older than a
+// watermark, whoever wrote it. The suite isolates tests by unique slug, which
+// isolates rows and cannot isolate that. Go holds every parallel test until
+// the sequential ones finish, so dropping t.Parallel() gives this one the
+// table to itself.
 func TestPruningDropsWhatASnapshotAlreadyReflects(t *testing.T) {
-	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "")
 	require.NoError(t, err)
-	old, _, err := s.MintAPIKey(ctx, user.ID, "old", nil, nil)
+	old, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "old", nil, nil)
 	require.NoError(t, err)
 	_, err = s.Revoke(ctx, old.ID, "api_key", &user.ID, "before the build")
 	require.NoError(t, err)
@@ -229,7 +230,7 @@ func TestPruningDropsWhatASnapshotAlreadyReflects(t *testing.T) {
 	// that read is already absent from the snapshot.
 	readAt := timeNow(t, s, ctx)
 
-	recent, _, err := s.MintAPIKey(ctx, user.ID, "recent", nil, nil)
+	recent, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "recent", nil, nil)
 	require.NoError(t, err)
 	_, err = s.Revoke(ctx, recent.ID, "api_key", &user.ID, "after the build")
 	require.NoError(t, err)
@@ -280,12 +281,12 @@ func TestRevokingAKeyLeavesTheConsoleAlone(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	key, secret, err := s.MintAPIKey(ctx, user.ID, "agent", nil, nil)
+	key, secret, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
-	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	// The two axes are independent, and each revocation should hit exactly one.
@@ -303,12 +304,12 @@ func TestDisablingAUserKillsBothAxes(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tenant := newTenant(t, s)
-
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "hunter2")
+	email := uniqueSlug(t) + "-alice@example.com"
+	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	_, secret, err := s.MintAPIKey(ctx, user.ID, "agent", nil, nil)
+	_, secret, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
-	_, token, _, err := s.SignIn(ctx, tenant.Slug, "alice@example.com", "hunter2", "", "")
+	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 
 	_, err = s.UpdateUser(ctx, user.ID, "", "disabled")

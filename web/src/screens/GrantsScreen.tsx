@@ -48,11 +48,10 @@ export function GrantsScreen() {
     if (q.data) setDraft(q.data.grants);
   }, [q.data]);
 
-  // Suggested rather than imposed. A grant may name a toolset or a single tool,
-  // and the console does not know the toolset names a snapshot admits, so the
-  // scope stays a free-text field with the tenant's prefix offered.
+  // Suggested rather than imposed. A user belongs to no tenant, so there is no
+  // tenant to prefill from — the scope is what says which tenants they reach.
   useEffect(() => {
-    if (user.data && scope === "") setScope(`t/${user.data.tenant}`);
+    if (user.data && scope === "") setScope("t/");
   }, [user.data, scope]);
 
   const save = useMutation({

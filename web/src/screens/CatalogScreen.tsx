@@ -6,6 +6,7 @@ import { getCatalog, mintAPIKey } from "../lib/api.ts";
 import { ErrorBlock, Screen, Stats, Table } from "../components/Screen.tsx";
 import { useAuth } from "../lib/auth.tsx";
 import { useInspection } from "../lib/inspection.tsx";
+import { TenantPicker, useMintableTenants } from "../lib/tenants.tsx";
 
 /** An agent credential is `mcpd.<prefix>.<secret>`. */
 const AGENT_KEY = /^mcpd\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -25,6 +26,8 @@ export function CatalogScreen() {
   const [applied, setApplied] = useState<string | null>(null);
   const [full, setFull] = useState(false);
   const [minted, setMinted] = useState(false);
+  const [tenant, setTenant] = useState("");
+  const { slugs } = useMintableTenants();
 
   // Checked here rather than at the gateway. The deployment token and a session
   // are *control-plane* credentials — the gateway has never heard of them — so
@@ -38,6 +41,7 @@ export function CatalogScreen() {
     mutationFn: () => {
       const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       return mintAPIKey(auth.session!.user_id!, {
+        tenant,
         name: `console inspection ${new Date().toISOString().slice(0, 19)}Z`,
         expires_at: expires,
       });
@@ -94,9 +98,10 @@ export function CatalogScreen() {
 
         {auth.session?.user_id && (
           <div className="row">
+            <TenantPicker value={tenant} onChange={setTenant} slugs={slugs} />
             <button
               className="secondary"
-              disabled={mint.isPending}
+              disabled={mint.isPending || !tenant}
               onClick={() => mint.mutate()}
             >
               {mint.isPending ? "Minting…" : "Inspect as me"}

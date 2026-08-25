@@ -342,11 +342,10 @@ type Tenant struct {
 
 // User is one identity inside a tenant.
 type User struct {
-	ID       string `json:"id" yaml:"id"`
-	TenantID string `json:"tenant_id" yaml:"tenant_id"`
-	// Tenant is the slug, carried alongside the id because every scope string
-	// this user appears in is written with the slug, not the uuid.
-	Tenant      string `json:"tenant" yaml:"tenant"`
+	ID string `json:"id" yaml:"id"`
+	// No tenant. A user is a person; which tenants they reach is what their
+	// grants say, and which tenant an agent session resolves to is what the key
+	// says.
 	Email       string `json:"email" yaml:"email"`
 	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
 	Status      string `json:"status" yaml:"status"`
@@ -356,9 +355,12 @@ type User struct {
 	CreatedAt   string `json:"created_at" yaml:"created_at"`
 }
 
-// UserList is every user in one tenant.
+// UserList is a set of users.
+//
+// Tenant is set when the list was scoped to one — those are the users *granted
+// into* it — and empty for the global listing.
 type UserList struct {
-	Tenant string `json:"tenant" yaml:"tenant"`
+	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
 	Users  []User `json:"users" yaml:"users"`
 }
 
@@ -382,6 +384,9 @@ type GrantList struct {
 type APIKey struct {
 	ID     string `json:"id" yaml:"id"`
 	UserID string `json:"user_id" yaml:"user_id"`
+	// Tenant this key acts in. An MCP session resolves to exactly one, and this
+	// is where that comes from.
+	Tenant string `json:"tenant" yaml:"tenant"`
 	Name   string `json:"name" yaml:"name"`
 	// Prefix is the lookup half of the key. Public by construction: it is what
 	// identifies the row before anything is verified.

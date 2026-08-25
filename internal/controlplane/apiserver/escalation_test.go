@@ -70,16 +70,15 @@ func asUser(t *testing.T, db *store.Store, tenantSlug, email string, grants ...a
 	t.Helper()
 	ctx := context.Background()
 
-	tenant, err := db.GetTenantBySlug(ctx, tenantSlug)
-	if err != nil {
-		tenant, err = db.CreateTenant(ctx, tenantSlug, tenantSlug)
+	if _, err := db.GetTenantBySlug(ctx, tenantSlug); err != nil {
+		_, err = db.CreateTenant(ctx, tenantSlug, tenantSlug)
 		require.NoError(t, err)
 	}
-	user, err := db.CreateUser(ctx, tenant.ID, email, "", "hunter2")
+	user, err := db.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
 	require.NoError(t, db.SetGrants(ctx, user.ID, grants, nil))
 
-	_, token, _, err := db.SignIn(ctx, tenantSlug, email, "hunter2", "", "")
+	_, token, _, err := db.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
 	return token
 }
@@ -98,7 +97,7 @@ func TestATenantAdminCannotGrantThemselvesPlatformAdmin(t *testing.T) {
 
 	tenant, err := db.GetTenantBySlug(ctx, slug)
 	require.NoError(t, err)
-	users, err := db.ListUsersByTenant(ctx, tenant.ID)
+	users, err := db.ListUsersInTenant(ctx, tenant.Slug)
 	require.NoError(t, err)
 	require.Len(t, users, 1)
 	self := users[0].ID.String()
@@ -127,9 +126,9 @@ func TestATenantAdminCannotGrantIntoAnotherTenant(t *testing.T) {
 	token := asUser(t, db, mine, "admin@"+mine+".example",
 		authz.Grant{Role: authz.RoleTenantAdmin, Scope: authz.TenantScope(mine)})
 
-	victimTenant, err := db.CreateTenant(ctx, theirs, theirs)
+	_, err := db.CreateTenant(ctx, theirs, theirs)
 	require.NoError(t, err)
-	victim, err := db.CreateUser(ctx, victimTenant.ID, "victim@"+theirs+".example", "", "")
+	victim, err := db.CreateUser(ctx, "victim@"+theirs+".example", "", "")
 	require.NoError(t, err)
 
 	// Refused at the route, before the handler: the scope of the operation is
@@ -197,15 +196,15 @@ func TestSigningInThroughTheAPIWorksEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
 	slug := uniqueTenantSlug(t)
-	tenant, err := db.CreateTenant(ctx, slug, slug)
+	_, err := db.CreateTenant(ctx, slug, slug)
 	require.NoError(t, err)
-	user, err := db.CreateUser(ctx, tenant.ID, "alice@"+slug+".example", "Alice", "hunter2")
+	user, err := db.CreateUser(ctx, "alice@"+slug+".example", "Alice", "hunter2")
 	require.NoError(t, err)
 	require.NoError(t, db.SetGrants(ctx, user.ID,
 		[]authz.Grant{{Role: authz.RoleViewer, Scope: authz.TenantScope(slug)}}, nil))
 
 	rec := do(t, h, http.MethodPost, "/api/v1/auth/login", apiserver.LoginRequest{
-		Tenant: slug, Email: "alice@" + slug + ".example", Password: "hunter2",
+		Email: "alice@" + slug + ".example", Password: "hunter2",
 	}, func(r *http.Request) { r.Header.Del("Authorization") })
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 
@@ -220,27 +219,26 @@ func TestSigningInThroughTheAPIWorksEndToEnd(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestAWrongPasswordIsIndistinguishableFromAWrongTenant(t *testing.T) {
+func TestEveryFailedSignInAnswersIdentically(t *testing.T) {
 	h, db := liveServer(t)
 	ctx := context.Background()
 
 	slug := uniqueTenantSlug(t)
-	tenant, err := db.CreateTenant(ctx, slug, slug)
+	_, err := db.CreateTenant(ctx, slug, slug)
 	require.NoError(t, err)
-	_, err = db.CreateUser(ctx, tenant.ID, "alice@"+slug+".example", "", "hunter2")
+	_, err = db.CreateUser(ctx, "alice@"+slug+".example", "", "hunter2")
 	require.NoError(t, err)
 
 	noAuth := func(r *http.Request) { r.Header.Del("Authorization") }
 	for _, req := range []apiserver.LoginRequest{
-		{Tenant: slug, Email: "alice@" + slug + ".example", Password: "wrong"},
-		{Tenant: "no-such-tenant", Email: "alice@" + slug + ".example", Password: "hunter2"},
-		{Tenant: slug, Email: "nobody@" + slug + ".example", Password: "hunter2"},
+		{Email: "alice@" + slug + ".example", Password: "wrong"},
+		{Email: "nobody@" + slug + ".example", Password: "hunter2"},
 	} {
 		rec := do(t, h, http.MethodPost, "/api/v1/auth/login", req, noAuth)
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
 		// One answer for every failure. A caller learns whether they signed in
 		// and nothing else — not whether the tenant exists, not whether the
 		// email does.
-		require.Contains(t, rec.Body.String(), "tenant, email, or password is wrong")
+		require.Contains(t, rec.Body.String(), "email or password is wrong")
 	}
 }

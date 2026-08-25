@@ -83,11 +83,16 @@ Every credential below is a **development** value, seeded by
 anything finding `demo-password-not-a-secret` in a real database has a finding
 rather than a mystery.
 
-| Tenant | Email | Password | What it can do |
-|---|---|---|---|
-| `acme` | `dev-admin@mcpdoll.local` | `demo-password-not-a-secret` | Everything. **Start here.** |
-| `acme` | `platform@acme.example` | `demo-password-not-a-secret` | Tenant admin for `acme` |
-| `acme` | `support@acme.example` | `demo-password-not-a-secret` | Tool access only — signs in, sees nothing |
+| Email | Password | What it can do |
+|---|---|---|
+| `dev-admin@mcpdoll.local` | `demo-password-not-a-secret` | Everything. **Start here.** |
+| `platform@acme.example` | `demo-password-not-a-secret` | Tenant admin for `acme` |
+| `support@acme.example` | `demo-password-not-a-secret` | Tool access only — signs in, sees nothing |
+
+Email and password, no tenant. A user is a person and belongs to no tenant;
+which tenants they reach is what their grants say. The tenant is a property of
+the *credential* an agent presents — an API key names the one tenant its MCP
+session resolves to — not of the person signing in.
 
 The second and third are worth a look precisely because they are *restricted*.
 Signed in as `platform@acme.example`, `/tenants` lists only `acme` — the control

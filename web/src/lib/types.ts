@@ -410,12 +410,11 @@ export interface TenantList extends GatewayStatus {
   registered: TenantSummary[];
 }
 
+/**
+ * Email and password. No tenant: an email identifies one person across the
+ * install, and which tenants they reach is what their grants say.
+ */
 export interface LoginRequest {
-  /**
-   * Part of the identity, not a lookup hint: the same email in two
-   * tenants is two different people.
-   */
-  tenant: string;
   email: string;
   password: string;
 }
@@ -523,14 +522,13 @@ export interface CreateTenantRequest {
   name: string;
 }
 
+/**
+ * A person. Not a person in a tenant — which tenants they reach is what
+ * their grants say, and which tenant an agent session resolves to is what
+ * the key says.
+ */
 export interface User {
   id: string;
-  tenant_id: string;
-  /**
-   * The slug, carried alongside the id because every scope string this
-   * user appears in is written with the slug, not the uuid.
-   */
-  tenant: string;
   email: string;
   display_name?: string;
   status: "active" | "disabled";
@@ -543,7 +541,11 @@ export interface User {
 }
 
 export interface UserList {
-  tenant: string;
+  /**
+   * Set when the listing was scoped to one tenant — those are the users
+   * *granted into* it. Absent for the global listing.
+   */
+  tenant?: string;
   users: User[];
 }
 
@@ -590,6 +592,12 @@ export interface PutGrantsRequest {
 export interface APIKey {
   id: string;
   user_id: string;
+  /**
+   * The tenant this key acts in. On the key rather than on its owner:
+   * an MCP session must resolve to exactly one tenant or tool names
+   * collide, while a person may legitimately reach several.
+   */
+  tenant: string;
   name: string;
   /**
    * The lookup half of the key, public by construction: it identifies
@@ -618,6 +626,11 @@ export interface APIKeyList {
 }
 
 export interface MintAPIKeyRequest {
+  /**
+   * The tenant this key acts in. Must be one its owner holds a grant
+   * reaching, or the key resolves to an empty catalog.
+   */
+  tenant: string;
   name: string;
   grants?: Grant[];
   /** Absent means the key does not expire. */

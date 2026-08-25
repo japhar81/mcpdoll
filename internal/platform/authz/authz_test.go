@@ -255,3 +255,25 @@ func TestDenyAllDenies(t *testing.T) {
 	require.False(t, decide(authz.PermToolList, authz.GlobalScope))
 	require.False(t, decide(authz.PermToolCall, authz.TenantScope("acme")))
 }
+
+func TestReachingATenantIsNotCoveringIt(t *testing.T) {
+	t.Parallel()
+
+	// The distinction this exists for. A grant *inside* a tenant reaches it;
+	// it is not as wide as it. Asking for coverage here refused a key to
+	// exactly the narrowly-scoped agents keys are for.
+	narrow := []authz.Grant{{Role: "tool_user", Scope: "t/acme/ts/support"}}
+	require.True(t, authz.AnyReaches(narrow, "acme"))
+	require.False(t, authz.AnyReaches(narrow, "globex"))
+
+	require.True(t, authz.AnyReaches([]authz.Grant{{Scope: "t/acme"}}, "acme"))
+	require.True(t, authz.AnyReaches([]authz.Grant{{Scope: "*"}}, "acme"))
+	require.True(t, authz.AnyReaches(
+		[]authz.Grant{{Scope: "t/acme/ts/support/lookup_customer"}}, "acme"))
+
+	// A scope that does not parse must not reach anything. Treating it as a
+	// zero value would read as the global grant.
+	require.False(t, authz.AnyReaches([]authz.Grant{{Scope: "acme"}}, "acme"))
+	require.False(t, authz.AnyReaches([]authz.Grant{{Scope: ""}}, "acme"))
+	require.False(t, authz.AnyReaches(nil, "acme"))
+}

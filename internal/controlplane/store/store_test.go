@@ -98,22 +98,20 @@ func TestDuplicateTenantSlugIsAConflict(t *testing.T) {
 
 // -------------------------------------------------------------------- users --
 
-func TestTheSameEmailMayExistInTwoTenants(t *testing.T) {
+func TestAnEmailIdentifiesOnePerson(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
 
-	a := newTenant(t, s)
-	b := newTenant(t, s)
-
-	// Uniqueness is per tenant. The same person holding accounts in two
-	// tenants of one deployment is normal, and they are different principals.
-	_, err := s.CreateUser(ctx, a.ID, "alice@example.com", "Alice", "")
-	require.NoError(t, err)
-	_, err = s.CreateUser(ctx, b.ID, "alice@example.com", "Alice", "")
+	// It used to be per tenant, and one person could hold two accounts in one
+	// deployment. That forced signing in *to a tenant*, and made a moved
+	// account fail exactly like a wrong password. A user is a person now, and
+	// which tenants they reach is what their grants say.
+	email := uniqueSlug(t) + "@example.com"
+	_, err := s.CreateUser(ctx, email, "Alice", "")
 	require.NoError(t, err)
 
-	_, err = s.CreateUser(ctx, a.ID, "alice@example.com", "Alice again", "")
+	_, err = s.CreateUser(ctx, email, "Alice again", "")
 	require.ErrorIs(t, err, store.ErrConflict)
 }
 
@@ -122,19 +120,19 @@ func TestPasswordHashesNeverLeaveTheStore(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "bob@example.com", "Bob", "correct horse battery")
+	bob := uniqueSlug(t) + "-bob@example.com"
+	user, err := s.CreateUser(ctx, bob, "Bob", "correct horse battery")
 	require.NoError(t, err)
 
 	// The domain type carries a boolean, not the hash. There is no field on
 	// which a hash could be accidentally serialized into an API response.
 	require.True(t, user.HasPassword)
 
-	verified, err := s.VerifyPassword(ctx, tenant.ID, "bob@example.com", "correct horse battery")
+	verified, err := s.VerifyPassword(ctx, bob, "correct horse battery")
 	require.NoError(t, err)
 	require.Equal(t, user.ID, verified.ID)
 
-	_, err = s.VerifyPassword(ctx, tenant.ID, "bob@example.com", "wrong")
+	_, err = s.VerifyPassword(ctx, bob, "wrong")
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -143,13 +141,12 @@ func TestAnUnknownUserAndAWrongPasswordAreIndistinguishable(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	tenant := newTenant(t, s)
-	_, err := s.CreateUser(ctx, tenant.ID, "real@example.com", "Real", "hunter2")
+	real := uniqueSlug(t) + "-real@example.com"
+	_, err := s.CreateUser(ctx, real, "Real", "hunter2")
 	require.NoError(t, err)
 
-	wrongPassword := s.VerifyPassword
-	_, errWrong := wrongPassword(ctx, tenant.ID, "real@example.com", "nope")
-	_, errUnknown := s.VerifyPassword(ctx, tenant.ID, "ghost@example.com", "nope")
+	_, errWrong := s.VerifyPassword(ctx, real, "nope")
+	_, errUnknown := s.VerifyPassword(ctx, "ghost-"+real, "nope")
 
 	// Same sentinel for both, so a caller cannot accidentally build a
 	// user-enumeration oracle by branching on the error.
@@ -178,7 +175,7 @@ func TestGrantsRoundTripAndRejectMalformedScopes(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "carol@example.com", "Carol", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-carol@example.com", "Carol", "")
 	require.NoError(t, err)
 
 	good := authz.Grant{Role: authz.RoleToolUser, Scope: authz.ToolsetScope(tenant.Slug, "crm")}
@@ -200,7 +197,7 @@ func TestGrantingTwiceIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "dave@example.com", "Dave", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-dave@example.com", "Dave", "")
 	require.NoError(t, err)
 
 	grant := authz.Grant{Role: authz.RoleViewer, Scope: authz.TenantScope(tenant.Slug)}
@@ -212,25 +209,35 @@ func TestGrantingTwiceIsIdempotent(t *testing.T) {
 	require.Len(t, grants, 1, "granting the same thing twice should not duplicate it")
 }
 
-func TestDeletingATenantCascades(t *testing.T) {
+func TestDeletingATenantTakesItsGrantsAndKeys(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "erin@example.com", "Erin", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-erin@example.com", "Erin", "")
 	require.NoError(t, err)
 	require.NoError(t, s.Grant(ctx, user.ID,
 		authz.Grant{Role: authz.RoleViewer, Scope: authz.TenantScope(tenant.Slug)}, nil))
-	_, _, err = s.MintAPIKey(ctx, user.ID, "k", nil, nil)
+	_, _, err = s.MintAPIKey(ctx, user.ID, tenant.ID, "k", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeleteTenant(ctx, tenant.ID))
 
-	// Ownership rather than a filter: deleting a tenant removes its users,
-	// their grants, and their keys, without anybody writing the cleanup.
+	// The user survives — they belong to no tenant. What must not survive is
+	// their grant into it: a tenant recreated with the same slug would
+	// otherwise re-authorize them silently.
 	_, err = s.GetUser(ctx, user.ID)
-	require.ErrorIs(t, err, store.ErrNotFound)
+	require.NoError(t, err)
+
+	held, err := s.GrantsForUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Empty(t, held, "a grant survived its tenant")
+
+	// And the key, which named the tenant, went with it.
+	keys, err := s.ListAPIKeysByUser(ctx, user.ID)
+	require.NoError(t, err)
+	require.Empty(t, keys)
 }
 
 // ----------------------------------------------------------------- api keys --
@@ -241,10 +248,10 @@ func TestAPIKeyPlaintextIsShownOnceAndNeverStored(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "frank@example.com", "Frank", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-frank@example.com", "Frank", "")
 	require.NoError(t, err)
 
-	key, plaintext, err := s.MintAPIKey(ctx, user.ID, "agent", nil, nil)
+	key, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, plaintext)
 
@@ -273,7 +280,7 @@ func TestResolvingAKeyIntersectsWithItsOwner(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "grace@example.com", "Grace", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-grace@example.com", "Grace", "")
 	require.NoError(t, err)
 
 	// The owner holds one toolset.
@@ -282,7 +289,7 @@ func TestResolvingAKeyIntersectsWithItsOwner(t *testing.T) {
 	}, nil))
 
 	// The key declares one tool inside it, and one toolset outside it.
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, "bot", []authz.Grant{
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", []authz.Grant{
 		{Role: authz.RoleToolUser, Scope: authz.ToolScope(tenant.Slug, "crm", "lookup")},
 		{Role: authz.RoleToolUser, Scope: authz.ToolsetScope(tenant.Slug, "billing")},
 	}, nil)
@@ -305,7 +312,7 @@ func TestRevokingTheUsersGrantKillsTheKeyWithoutTouchingIt(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "heidi@example.com", "Heidi", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-heidi@example.com", "Heidi", "")
 	require.NoError(t, err)
 
 	ownerGrant := authz.Grant{
@@ -313,7 +320,7 @@ func TestRevokingTheUsersGrantKillsTheKeyWithoutTouchingIt(t *testing.T) {
 	}
 	require.NoError(t, s.Grant(ctx, user.ID, ownerGrant, nil))
 
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, "bot", []authz.Grant{
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", []authz.Grant{
 		{Role: authz.RoleToolUser, Scope: authz.ToolScope(tenant.Slug, "crm", "lookup")},
 	}, nil)
 	require.NoError(t, err)
@@ -337,10 +344,10 @@ func TestRevokedAndExpiredKeysDoNotResolve(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "ivan@example.com", "Ivan", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-ivan@example.com", "Ivan", "")
 	require.NoError(t, err)
 
-	revoked, plaintextRevoked, err := s.MintAPIKey(ctx, user.ID, "revoked", nil, nil)
+	revoked, plaintextRevoked, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "revoked", nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, s.RevokeAPIKey(ctx, revoked.ID))
 
@@ -348,7 +355,7 @@ func TestRevokedAndExpiredKeysDoNotResolve(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrInvalid)
 
 	past := time.Now().Add(-time.Hour)
-	_, plaintextExpired, err := s.MintAPIKey(ctx, user.ID, "expired", nil, &past)
+	_, plaintextExpired, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "expired", nil, &past)
 	require.NoError(t, err)
 
 	_, err = s.ResolveAPIKey(ctx, plaintextExpired)
@@ -361,10 +368,10 @@ func TestAKeyForADisabledUserDoesNotResolve(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newTenant(t, s)
-	user, err := s.CreateUser(ctx, tenant.ID, "judy@example.com", "Judy", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-judy@example.com", "Judy", "")
 	require.NoError(t, err)
 
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, "bot", nil, nil)
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.SetUserStatus(ctx, user.ID, "disabled"))
@@ -404,7 +411,7 @@ func TestSetGrantsRevokesWhatIsNotInTheSet(t *testing.T) {
 	ctx := context.Background()
 	tenant := newTenant(t, s)
 
-	user, err := s.CreateUser(ctx, tenant.ID, "alice@example.com", "", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-alice@example.com", "", "")
 	require.NoError(t, err)
 
 	support := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug + "/ts/support"}
@@ -435,7 +442,7 @@ func TestSetGrantsRefusesTheWholeSetOnOneMalformedScope(t *testing.T) {
 	ctx := context.Background()
 	tenant := newTenant(t, s)
 
-	user, err := s.CreateUser(ctx, tenant.ID, "bob@example.com", "", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-bob@example.com", "", "")
 	require.NoError(t, err)
 
 	good := authz.Grant{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug}
@@ -461,7 +468,7 @@ func TestSetGrantsLeavesUnchangedGrantsAlone(t *testing.T) {
 	ctx := context.Background()
 	tenant := newTenant(t, s)
 
-	user, err := s.CreateUser(ctx, tenant.ID, "carol@example.com", "", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-carol@example.com", "", "")
 	require.NoError(t, err)
 
 	want := []authz.Grant{{Role: authz.RoleToolUser, Scope: "t/" + tenant.Slug}}
@@ -473,18 +480,24 @@ func TestSetGrantsLeavesUnchangedGrantsAlone(t *testing.T) {
 	require.Equal(t, want, held, "re-submitting an unchanged set is a no-op")
 }
 
-func TestCountUsersByTenantCountsPerTenant(t *testing.T) {
+func TestCountUsersByTenantCountsFromGrants(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
 
 	one, two := newTenant(t, s), newTenant(t, s)
-	for _, email := range []string{"a@example.com", "b@example.com"} {
-		_, err := s.CreateUser(ctx, one.ID, email, "", "")
+	// Counted from grants, because a user belongs to no tenant. Creating one
+	// puts them in no tenant at all; granting is what puts them somewhere.
+	for range 2 {
+		u, err := s.CreateUser(ctx, uniqueSlug(t)+"@example.com", "", "")
 		require.NoError(t, err)
+		require.NoError(t, s.SetGrants(ctx, u.ID,
+			[]authz.Grant{{Role: authz.RoleToolUser, Scope: authz.TenantScope(one.Slug)}}, nil))
 	}
-	_, err := s.CreateUser(ctx, two.ID, "c@example.com", "", "")
+	u, err := s.CreateUser(ctx, uniqueSlug(t)+"@example.com", "", "")
 	require.NoError(t, err)
+	require.NoError(t, s.SetGrants(ctx, u.ID,
+		[]authz.Grant{{Role: authz.RoleToolUser, Scope: authz.TenantScope(two.Slug)}}, nil))
 
 	counts, err := s.CountUsersByTenant(ctx)
 	require.NoError(t, err)
@@ -496,9 +509,8 @@ func TestUpdateUserRefusesAnUnknownStatus(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ctx := context.Background()
-	tenant := newTenant(t, s)
 
-	user, err := s.CreateUser(ctx, tenant.ID, "dave@example.com", "Dave", "")
+	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-dave@example.com", "Dave", "")
 	require.NoError(t, err)
 
 	// A typo that silently stored "disable" would leave an account the operator

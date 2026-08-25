@@ -53,6 +53,29 @@ func (c *Caller) Can(permission authz.Permission, scope string) bool {
 	return c.decide(permission, scope)
 }
 
+// CanAnywhere reports whether the caller holds a permission at any scope they
+// have a grant at.
+//
+// The looser question, and the right one for a route whose *precise* check
+// happens in the handler. Issuing a grant is authorized at the scope of the
+// grant, and minting a key at the scope of the key — so gating those routes on
+// a single fixed scope would refuse a tenant admin before the check that
+// actually decides could run.
+func (c *Caller) CanAnywhere(permission authz.Permission) bool {
+	if c == nil || c.decide == nil {
+		return false
+	}
+	if c.decide(permission, authz.GlobalScope) {
+		return true
+	}
+	for _, g := range c.grants {
+		if c.decide(permission, g.Scope) {
+			return true
+		}
+	}
+	return false
+}
+
 // Grants is what the caller holds, for the session endpoint to report.
 func (c *Caller) Grants() []authz.Grant {
 	if c == nil {
@@ -204,6 +227,32 @@ func (s *Server) unauthorized(w http.ResponseWriter, message string) {
 // table then answers "who can do this" without reading any handler, and a new
 // route gets an explicit permission rather than whatever a pattern happened to
 // match.
+// requireAnywhere admits a caller who holds the permission at any scope.
+//
+// For routes whose real check is in the handler and is per-object: grants and
+// keys are authorized at the scope of the thing being issued, which the route
+// cannot know.
+func (s *Server) requireAnywhere(permission authz.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			caller := CallerFrom(r.Context())
+			if !caller.CanAnywhere(permission) {
+				subject := "unauthenticated"
+				if caller != nil {
+					subject = caller.Subject
+				}
+				s.log.Warn("refused",
+					"subject", subject, "permission", string(permission), "scope", "any",
+					"method", r.Method, "path", r.URL.Path)
+				writeError(w, s.log, http.StatusForbidden, CodeForbidden,
+					"this credential does not hold "+string(permission)+" anywhere")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func (s *Server) require(permission authz.Permission, scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -286,10 +335,10 @@ func (s *Server) allow(
 // --------------------------------------------------------------- operations --
 
 // LoginRequest is login's body.
+//
+// Email and password. No tenant: an email identifies one person across the
+// install, and which tenants they reach is what their grants say.
 type LoginRequest struct {
-	// Tenant is part of the identity, not a lookup hint: the same email may
-	// exist in two tenants and they are different people (ADR 0014).
-	Tenant   string `json:"tenant"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
@@ -305,15 +354,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, secret, user, err := st.SignIn(
-		r.Context(), req.Tenant, req.Email, req.Password,
-		r.UserAgent(), clientIP(r))
+		r.Context(), req.Email, req.Password, r.UserAgent(), clientIP(r))
 	if err != nil {
-		// One answer for every failure. A caller learns whether they signed in
-		// and nothing else — not whether the tenant exists, not whether the
-		// email does, not whether the account is disabled.
-		s.log.Warn("failed sign-in",
-			"tenant", req.Tenant, "email", req.Email, "error", err.Error())
-		s.unauthorized(w, "the tenant, email, or password is wrong")
+		// One answer either way. A caller learns whether they signed in and
+		// nothing else — not whether the email exists, not whether the account
+		// is disabled.
+		s.log.Warn("failed sign-in", "email", req.Email, "error", err.Error())
+		s.unauthorized(w, "the email or password is wrong")
 		return
 	}
 
@@ -327,7 +374,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// output, so nothing can show it again (ADR 0021).
 		Token:     secret,
 		ExpiresAt: session.ExpiresAt.UTC().Format(time.RFC3339),
-		User:      userOf(user, req.Tenant),
+		User:      userOf(user),
 		Grants:    grantsOf(grants),
 	})
 }
@@ -433,19 +480,21 @@ func (s *Server) tenantScopeOf(r *http.Request, id uuid.UUID) (string, bool) {
 	return authz.TenantScope(tenant.Slug), true
 }
 
+// userScopeOf is global.
+//
+// A user belongs to no tenant now, so there is no tenant to scope managing one
+// to. That is not a loosening: what a user can *reach* is decided entirely by
+// their grants, and issuing a grant is checked at the scope of the grant
+// (see [Server.handlePutGrants]). Editing a display name or disabling an
+// account is a platform-level act on a platform-level object.
 func (s *Server) userScopeOf(r *http.Request, id uuid.UUID) (string, bool) {
 	if s.cfg.Store == nil {
 		return "", false
 	}
-	user, err := s.cfg.Store.GetUser(r.Context(), id)
-	if err != nil {
+	if _, err := s.cfg.Store.GetUser(r.Context(), id); err != nil {
 		return "", false
 	}
-	tenant, err := s.cfg.Store.GetTenant(r.Context(), user.TenantID)
-	if err != nil {
-		return "", false
-	}
-	return authz.TenantScope(tenant.Slug), true
+	return authz.GlobalScope, true
 }
 
 func (s *Server) keyScopeOf(r *http.Request, id uuid.UUID) (string, bool) {
@@ -456,11 +505,9 @@ func (s *Server) keyScopeOf(r *http.Request, id uuid.UUID) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	user, err := s.cfg.Store.GetUser(r.Context(), key.UserID)
-	if err != nil {
-		return "", false
-	}
-	tenant, err := s.cfg.Store.GetTenant(r.Context(), user.TenantID)
+	// The key's own tenant. A key is the one object here that genuinely belongs
+	// to one, so revoking it is a tenant-scoped act.
+	tenant, err := s.cfg.Store.GetTenant(r.Context(), key.TenantID)
 	if err != nil {
 		return "", false
 	}

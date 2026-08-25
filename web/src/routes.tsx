@@ -32,6 +32,7 @@ import { GatewayScreen } from "./screens/GatewayScreen.tsx";
 import { BackendsScreen } from "./screens/BackendsScreen.tsx";
 import { TenantsScreen } from "./screens/TenantsScreen.tsx";
 import { UsersScreen } from "./screens/UsersScreen.tsx";
+import { AllUsersScreen } from "./screens/AllUsersScreen.tsx";
 import { UserScreen } from "./screens/UserScreen.tsx";
 import { GrantsScreen } from "./screens/GrantsScreen.tsx";
 import { APIKeysScreen } from "./screens/APIKeysScreen.tsx";
@@ -219,13 +220,20 @@ export const ROUTES: RouteDef[] = [
     component: TenantsScreen,
   },
   {
-    path: "/tenants/:tenantId/users",
-    operation: "listUsers",
-    component: UsersScreen,
+    path: "/users",
+    operation: "listAllUsers",
+    component: AllUsersScreen,
+    nav: "Users",
+    section: "Tenancy",
   },
   {
-    path: "/tenants/:tenantId/users/new",
+    path: "/users/new",
     operation: "createUser",
+    component: AllUsersScreen,
+  },
+  {
+    path: "/tenants/:tenantId/users",
+    operation: "listUsers",
     component: UsersScreen,
   },
   {

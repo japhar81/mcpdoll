@@ -301,12 +301,11 @@ export interface CreateUserInput {
   password?: string;
 }
 
-export const createUser = (tenantId: string, input: CreateUserInput) =>
-  request<User>(
-    "POST",
-    `/api/v1/tenants/${encodeURIComponent(tenantId)}/users`,
-    input,
-  );
+export const listAllUsers = () => request<UserList>("GET", "/api/v1/users");
+
+/** No tenant: a user is a person, and grants say which tenants they reach. */
+export const createUser = (input: CreateUserInput) =>
+  request<User>("POST", "/api/v1/users", input);
 
 export const getUser = (userId: string) =>
   request<User>("GET", `/api/v1/users/${encodeURIComponent(userId)}`);
@@ -334,6 +333,8 @@ export const listAPIKeys = (userId: string) =>
   request<APIKeyList>("GET", `/api/v1/users/${encodeURIComponent(userId)}/keys`);
 
 export interface MintAPIKeyInput {
+  /** The tenant this key acts in — an MCP session resolves to exactly one. */
+  tenant: string;
   name: string;
   grants?: Grant[];
   /** RFC 3339. Absent means the key does not expire. */
@@ -362,15 +363,11 @@ export const listRoles = () => request<RoleCatalog>("GET", "/api/v1/roles");
  * global unauthorized handler — the caller is *asking* about a 401, not
  * suffering one.
  */
-export async function login(
-  tenant: string,
-  email: string,
-  password: string,
-): Promise<Session> {
+export async function login(email: string, password: string): Promise<Session> {
   const response = await fetch("/api/v1/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tenant, email, password }),
+    body: JSON.stringify({ email, password }),
   });
   const text = await response.text();
   let parsed: unknown;

@@ -1,6 +1,6 @@
 -- name: CreateAPIKey :one
-INSERT INTO api_keys (user_id, name, prefix, hash, expires_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO api_keys (user_id, tenant_id, name, prefix, hash, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetAPIKeyByPrefix :one
@@ -14,10 +14,7 @@ SELECT * FROM api_keys WHERE prefix = $1;
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
 
 -- name: ListAPIKeysByTenant :many
-SELECT k.* FROM api_keys k
-JOIN users u ON u.id = k.user_id
-WHERE u.tenant_id = $1
-ORDER BY k.created_at DESC;
+SELECT * FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC;
 
 -- name: TouchAPIKey :exec
 UPDATE api_keys SET last_used_at = now() WHERE id = $1;

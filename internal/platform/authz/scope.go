@@ -144,3 +144,30 @@ func TenantOf(scope string) string {
 	}
 	return parsed.Tenant
 }
+
+// AnyReaches reports whether any grant touches a tenant at all.
+//
+// The "can this principal reach here" question, distinct from "may they do X
+// here". Used where a tenant has to be *reachable* before something is bound
+// to it — minting a key in a tenant its owner cannot reach produces a
+// credential that resolves to an empty catalog, which reads as a bug rather
+// than as the refusal it is.
+//
+// Reaching is not covering, and conflating the two is the bug this replaced.
+// Coverage asks whether a grant is at least as wide as `t/acme`, which every
+// narrowly-scoped grant fails: `tool_user@t/acme/ts/support` does not cover the
+// tenant, it lives inside it. Testing coverage refused a key to exactly the
+// least-privileged users keys exist for, and allowed one only to principals
+// holding the whole tenant.
+func AnyReaches(grants []Grant, tenant string) bool {
+	for _, g := range grants {
+		parsed, ok := ParseScope(g.Scope)
+		if !ok {
+			continue
+		}
+		if parsed.Global || parsed.Tenant == tenant {
+			return true
+		}
+	}
+	return false
+}

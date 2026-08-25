@@ -108,7 +108,7 @@ func (s *Store) PrincipalSetState(ctx context.Context) (*snapshotpb.PrincipalSet
 	}
 	for _, row := range keys {
 		owner, known := usersByID[row.UserID]
-		if !known || owner.Status != "active" || !knownTenant[owner.TenantID] {
+		if !known || owner.Status != "active" || !knownTenant[row.TenantID] {
 			// A key whose owner is gone or disabled authenticates nothing.
 			// Omitted rather than published-and-denied: the snapshot should not
 			// carry a credential the system has already decided against.
@@ -126,8 +126,10 @@ func (s *Store) PrincipalSetState(ctx context.Context) (*snapshotpb.PrincipalSet
 		}
 
 		principals = append(principals, &snapshotpb.Principal{
-			Id:              row.ID.String(),
-			TenantId:        owner.TenantID.String(),
+			Id: row.ID.String(),
+			// The key's tenant. An MCP session resolves to exactly one, and
+			// this is where that comes from.
+			TenantId:        row.TenantID.String(),
 			Subject:         owner.Email,
 			Grants:          grantsToProto(effective),
 			KeyPrefix:       row.Prefix,

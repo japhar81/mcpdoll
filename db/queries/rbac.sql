@@ -23,10 +23,11 @@ RETURNING *;
 SELECT * FROM grants WHERE user_id = $1 ORDER BY scope, role;
 
 -- name: ListGrantsByTenant :many
-SELECT g.* FROM grants g
-JOIN users u ON u.id = g.user_id
-WHERE u.tenant_id = $1
-ORDER BY g.user_id, g.scope, g.role;
+-- Grants *within* a tenant's scope, which is now the only sense in which a
+-- grant belongs to a tenant.
+SELECT * FROM grants
+WHERE scope = $1 OR scope LIKE $1 || '/%'
+ORDER BY user_id, scope, role;
 
 -- name: RevokeGrant :exec
 DELETE FROM grants WHERE user_id = $1 AND role = $2 AND scope = $3;
@@ -50,3 +51,10 @@ UPDATE revocation_state
 SET principal_version = principal_version + 1, updated_at = now()
 WHERE id = true
 RETURNING *;
+
+-- name: DeleteGrantsInTenant :exec
+-- Grants name a scope as text, not a tenant by foreign key, so nothing cascades
+-- when a tenant is deleted. Left behind they are dormant *and* dangerous: a
+-- tenant recreated with the same slug would silently re-authorize everyone who
+-- was granted into the old one.
+DELETE FROM grants WHERE scope = $1 OR scope LIKE $1 || '/%';

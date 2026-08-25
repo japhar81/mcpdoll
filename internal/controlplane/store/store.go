@@ -88,10 +88,13 @@ type Tenant struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// User is a person or service identity inside a tenant.
+// User is a person. Not a person *in a tenant*.
+//
+// Which tenants they reach is what their grants say, and which tenant an agent
+// session resolves to is what the key says — the two questions the tenant_id on
+// this row used to answer badly (ADR 0014, amended).
 type User struct {
 	ID          uuid.UUID `json:"id"`
-	TenantID    uuid.UUID `json:"tenant_id"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"display_name,omitempty"`
 	Status      string    `json:"status"`
@@ -104,8 +107,13 @@ type User struct {
 
 // APIKey is an agent credential. Never carries the secret.
 type APIKey struct {
-	ID       uuid.UUID     `json:"id"`
-	UserID   uuid.UUID     `json:"user_id"`
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+	// TenantID is what an MCP session using this key resolves to. On the key
+	// rather than on its owner, because tool names collide across tenants and a
+	// session must resolve to exactly one — the same reason ragdoll scopes its
+	// keys to an environment.
+	TenantID uuid.UUID     `json:"tenant_id"`
 	Name     string        `json:"name"`
 	Prefix   string        `json:"prefix"`
 	Declared []authz.Grant `json:"declared_grants"`
@@ -180,8 +188,12 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 // -------------------------------------------------------------------- users --
 
-// CreateUser adds a user to a tenant, optionally with a local password.
-func (s *Store) CreateUser(ctx context.Context, tenantID uuid.UUID, email, displayName, password string) (User, error) {
+// CreateUser adds a user, optionally with a local password.
+//
+// No tenant. A user with no grants reaches nothing, which is what makes
+// creating one safe wherever the caller can manage users at all — the
+// dangerous operation is the grant, and that is checked per scope.
+func (s *Store) CreateUser(ctx context.Context, email, displayName, password string) (User, error) {
 	if email == "" {
 		return User{}, fmt.Errorf("%w: a user needs an email", ErrInvalid)
 	}
@@ -196,7 +208,7 @@ func (s *Store) CreateUser(ctx context.Context, tenantID uuid.UUID, email, displ
 	}
 
 	row, err := s.q.CreateUser(ctx, dbgen.CreateUserParams{
-		TenantID: tenantID, Email: email,
+		Email:       email,
 		DisplayName: nilIfEmpty(displayName), PasswordHash: hash,
 	})
 	if err != nil {
@@ -214,9 +226,26 @@ func (s *Store) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return userFrom(row), nil
 }
 
-// ListUsersByTenant returns a tenant's users.
-func (s *Store) ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]User, error) {
-	rows, err := s.q.ListUsersByTenant(ctx, tenantID)
+// ListAllUsers returns every user.
+func (s *Store) ListAllUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.q.ListAllUsers(ctx)
+	if err != nil {
+		return nil, wrap(err, "listing users")
+	}
+	out := make([]User, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, userFrom(row))
+	}
+	return out, nil
+}
+
+// ListUsersInTenant returns the users granted into a tenant.
+//
+// Granted into, not owned by. It answers "who can reach this tenant", which is
+// the question an administrator is actually asking and which ownership only
+// ever approximated.
+func (s *Store) ListUsersInTenant(ctx context.Context, tenantSlug string) ([]User, error) {
+	rows, err := s.q.ListUsersInTenant(ctx, authz.TenantScope(tenantSlug))
 	if err != nil {
 		return nil, wrap(err, "listing users")
 	}
@@ -313,8 +342,8 @@ func (s *Store) SetGrants(ctx context.Context, userID uuid.UUID, want []authz.Gr
 // A user with no password hash is still run through a verification, so that
 // "this account has no local password" costs the same as "wrong password".
 // Returning early would make the difference measurable.
-func (s *Store) VerifyPassword(ctx context.Context, tenantID uuid.UUID, email, password string) (User, error) {
-	row, err := s.q.GetUserByEmail(ctx, dbgen.GetUserByEmailParams{TenantID: tenantID, Email: email})
+func (s *Store) VerifyPassword(ctx context.Context, email, password string) (User, error) {
+	row, err := s.q.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			VerifySecret(password, "")
@@ -426,7 +455,7 @@ func (s *Store) GrantsForUser(ctx context.Context, userID uuid.UUID) ([]authz.Gr
 // while leaving every later one to the real check.
 func (s *Store) MintAPIKey(
 	ctx context.Context,
-	userID uuid.UUID,
+	userID, tenantID uuid.UUID,
 	name string,
 	declared []authz.Grant,
 	expiresAt *time.Time,
@@ -446,7 +475,7 @@ func (s *Store) MintAPIKey(
 	}
 
 	row, err := s.q.CreateAPIKey(ctx, dbgen.CreateAPIKeyParams{
-		UserID: userID, Name: name, Prefix: prefix, Hash: hash,
+		UserID: userID, TenantID: tenantID, Name: name, Prefix: prefix, Hash: hash,
 		ExpiresAt: timestamptzPtr(expiresAt),
 	})
 	if err != nil {
@@ -468,7 +497,10 @@ func (s *Store) MintAPIKey(
 
 // Resolved is who a credential turns out to be, with the grants it may use.
 type Resolved struct {
-	User   User
+	User User
+	// Tenant is the *key's* tenant, and is empty for a session. A session is a
+	// person, and a person is not in a tenant; a key names one because an MCP
+	// session has to resolve to exactly one or tool names collide.
 	Tenant Tenant
 	Key    *APIKey
 	// Grants are already intersected for a key (ADR 0014), so a caller never
@@ -517,7 +549,9 @@ func (s *Store) ResolveAPIKey(ctx context.Context, presented string) (Resolved, 
 		return Resolved{}, fmt.Errorf("%w: the account is disabled", ErrInvalid)
 	}
 
-	tenantRow, err := s.q.GetTenant(ctx, user.TenantID)
+	// The key's tenant, not the owner's — the owner has none. This is what an
+	// MCP session resolves to, and it is why a key names a tenant at all.
+	tenantRow, err := s.q.GetTenant(ctx, key.TenantID)
 	if err != nil {
 		return Resolved{}, wrap(err, "reading the tenant")
 	}
@@ -584,13 +618,23 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id uuid.UUID) error {
 	return wrap(s.q.RevokeAPIKey(ctx, id), "revoking key %s", id)
 }
 
-// DeleteTenant removes a tenant and, by cascade, its users, their grants, and
-// their keys.
+// DeleteTenant removes a tenant, its API keys, and every grant scoped to it.
 //
-// The cascade is the schema's, not this function's. Ownership rather than a
-// filter is what makes "delete this tenant" complete without anybody writing
-// the cleanup and remembering every table.
+// Users survive: they belong to no tenant (ADR 0014, amended). The keys go by
+// cascade because a key names its tenant.
+//
+// The grants need deleting explicitly, and that is the cost this shape has that
+// ownership did not. A grant names a scope as *text*, so nothing cascades — and
+// left behind they are not merely dormant: a tenant recreated with the same
+// slug would silently re-authorize everyone who was granted into the old one.
 func (s *Store) DeleteTenant(ctx context.Context, id uuid.UUID) error {
+	tenant, err := s.GetTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.q.DeleteGrantsInTenant(ctx, authz.TenantScope(tenant.Slug)); err != nil {
+		return wrap(err, "deleting grants in tenant %s", tenant.Slug)
+	}
 	return wrap(s.q.DeleteTenant(ctx, id), "deleting tenant %s", id)
 }
 
@@ -652,8 +696,10 @@ func (s *Store) SeedPlatformAdmin(ctx context.Context, tenantSlug, email string)
 		return "", err
 	}
 
-	tenant, err := s.CreateTenant(ctx, tenantSlug, "Platform")
-	if err != nil {
+	// A tenant to hold the deployment's own configuration. The administrator is
+	// not *in* it — nobody is in a tenant any more — but a fresh install with no
+	// tenant at all cannot bind a backend to anything.
+	if _, err := s.CreateTenant(ctx, tenantSlug, "Platform"); err != nil {
 		return "", err
 	}
 
@@ -662,7 +708,7 @@ func (s *Store) SeedPlatformAdmin(ctx context.Context, tenantSlug, email string)
 		return "", err
 	}
 
-	admin, err := s.CreateUser(ctx, tenant.ID, email, "Platform Administrator", password)
+	admin, err := s.CreateUser(ctx, email, "Platform Administrator", password)
 	if err != nil {
 		return "", err
 	}

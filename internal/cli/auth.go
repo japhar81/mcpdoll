@@ -35,13 +35,11 @@ func newAuthCmd(env *Env) *cobra.Command {
 }
 
 func newAuthLoginCmd(env *Env) *cobra.Command {
-	var tenant, email, password string
+	var email, password string
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Sign in and print a session token",
-		Long: "The tenant is part of the identity, not a lookup hint: the same email in two\n" +
-			"tenants is two different people.\n\n" +
-			"The token is printed once and never stored by this command. Export it as\n" +
+		Long: "The token is printed once and never stored by this command. Export it as\n" +
 			"MCPDOLL_TOKEN, or put its name in your profile's token_ref — a config file\n" +
 			"is world-readable often enough that writing a credential into one is a bad\n" +
 			"default.\n\n" +
@@ -62,22 +60,19 @@ func newAuthLoginCmd(env *Env) *cobra.Command {
 			}
 
 			var out api.Session
-			body := map[string]string{"tenant": tenant, "email": email, "password": password}
+			body := map[string]string{"email": email, "password": password}
 			if err := apiCall(ctx, env, "POST", "/api/v1/auth/login", body, &out); err != nil {
 				return err
 			}
 
-			env.Printf("signed in as %s in %s; the token below is shown once\n",
-				out.User.Email, out.User.Tenant)
+			env.Printf("signed in as %s; the token below is shown once\n", out.User.Email)
 			env.Printf("export MCPDOLL_TOKEN=<token>\n")
 			return env.Emit(sessionReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringVar(&email, "email", "", "your email (required)")
 	cmd.Flags().StringVar(&password, "password", "",
 		"password; omit to be prompted without echo")
-	_ = cmd.MarkFlagRequired("tenant")
 	_ = cmd.MarkFlagRequired("email")
 	return cmd
 }
@@ -107,8 +102,8 @@ type sessionReport api.Session
 
 func (r sessionReport) Table() Table {
 	return Table{
-		Columns: []string{"USER", "TENANT", "EXPIRES", "TOKEN"},
-		Rows:    [][]string{{r.User.Email, r.User.Tenant, r.ExpiresAt, r.Token}},
+		Columns: []string{"USER", "EXPIRES", "TOKEN"},
+		Rows:    [][]string{{r.User.Email, r.ExpiresAt, r.Token}},
 		Notes: []string{
 			fmt.Sprintf("%d grant(s); run `mcpdoll auth whoami` to see them", len(r.Grants)),
 			"nothing keeps this token — a lost one means signing in again",

@@ -2,7 +2,10 @@
 
 ## Status
 
-**Accepted.** Supersedes the single-org assumption baked into `registry.org`.
+**Accepted, with one decision reversed.** Supersedes the single-org assumption
+baked into `registry.org`. The reversal — users no longer belong to a tenant —
+is recorded in [Amendment: users are global](#amendment-users-are-global) at the
+bottom of this ADR and implemented by migration `0004_users_are_global.sql`.
 
 Companion ADRs: [0015](./0015-rbac-scopes-and-engines.md) (RBAC),
 [0016](./0016-toolsets-replace-audiences.md) (toolsets),
@@ -107,7 +110,9 @@ created on first login and holds nothing until an admin grants something.
 - **Tenant as a scope on a flat user table**, with no tenant ownership.
   Rejected: it makes "delete this tenant" a query rather than a cascade, and
   every listing becomes a filter somebody can forget to apply. Ownership makes
-  the boundary structural.
+  the boundary structural. **This rejection was wrong — see the amendment
+  below.** The cost it names is real and small; what it did not weigh is what
+  tenant-owned users do to the login screen.
 - **Keys as independent service-account principals.** Genuinely cleaner for
   unattended agents, and rejected only because it adds a second principal type
   to the RBAC model and to every screen that answers "who did this". A key
@@ -138,3 +143,54 @@ created on first login and holds nothing until an admin grants something.
 - The console gains tenant, user, key, and role management, and every one of
   them has to reach the CLI and the API too (ADR 0004). That is a large amount
   of surface for what is conceptually a small model.
+
+## Amendment: users are global
+
+A user belonged to a tenant. They no longer do: `users.tenant_id` is gone,
+`users.email` is globally unique, and `api_keys.tenant_id` names the tenant a
+session resolves to. Migration `0004_users_are_global.sql`.
+
+### What the original decision cost
+
+The alternative above was rejected on the strength of one true observation —
+ownership makes deletion a cascade — without weighing what ownership does
+everywhere else:
+
+- **Signing in required naming a tenant.** Not because authentication needed
+  it, but because the email was only unique *within* one. Every person had to
+  know a routing detail to identify themselves.
+- **The same email in two tenants was two different people**, and they were
+  indistinguishable at the login screen. A person whose account had been moved
+  got exactly the response a wrong password gets, which is the worst possible
+  behaviour for the one screen where a user cannot see any state.
+- **A principal's catalog came from whichever tenant owned their row.** So an
+  administrator's own gateway view depended on an arbitrary property of their
+  user record, and seeding one in a tenant with no backend bindings produced an
+  account that could administer everything and see nothing.
+- **The seed had to maintain a decoy.** `dev-admin@mcpdoll.local` existed in
+  `platform` and in `acme`, and one of them had to be deleted on every run,
+  because leaving it meant the README could name a tenant that failed to log in.
+
+None of these are deletion semantics. All of them are the daily path.
+
+### What actually needed the tenant
+
+One MCP session must resolve to exactly one tenant — tool names would otherwise
+collide across tenants inside a single catalog, and ADR 0019 puts every tenant
+behind one endpoint. That is a property of the **credential**, not of the
+person: the key names the tenant it acts in. This is the shape ragdoll already
+uses (`api_keys.environment_id`), and diverging from it was the error.
+
+### What the reversal costs, and what pays for it
+
+Deleting a tenant is now a query. Specifically it is three: cascade its keys,
+delete every grant scoped beneath it, and leave the users alone. The middle one
+is the part that matters and the part the original ADR was right to worry
+about — a grant names its scope as *text*, so nothing cascades, and a grant left
+behind is not merely dormant. A tenant recreated with the same slug would
+silently re-authorize everyone granted into the old one. `Store.DeleteTenant`
+does it explicitly and a test asserts the grant is gone.
+
+So the cost is real, it is one function, and it is tested. The original decision
+traded that for a login screen that could not tell a moved account from a wrong
+password.

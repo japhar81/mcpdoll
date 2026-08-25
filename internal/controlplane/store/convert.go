@@ -90,7 +90,7 @@ func tenantFrom(row dbgen.Tenant) Tenant {
 
 func userFrom(row dbgen.User) User {
 	return User{
-		ID: row.ID, TenantID: row.TenantID, Email: row.Email,
+		ID: row.ID, Email: row.Email,
 		DisplayName: derefOrEmpty(row.DisplayName),
 		Status:      row.Status,
 		// The hash itself never leaves this package.
@@ -101,7 +101,7 @@ func userFrom(row dbgen.User) User {
 
 func apiKeyFrom(row dbgen.ApiKey) APIKey {
 	return APIKey{
-		ID: row.ID, UserID: row.UserID, Name: row.Name, Prefix: row.Prefix,
+		ID: row.ID, UserID: row.UserID, TenantID: row.TenantID, Name: row.Name, Prefix: row.Prefix,
 		CreatedAt:  row.CreatedAt.Time,
 		LastUsedAt: timePtr(row.LastUsedAt),
 		ExpiresAt:  timePtr(row.ExpiresAt),

@@ -31,9 +31,13 @@ have_tenant() {
     | grep -q "\"slug\":\"$1\",\"name\":[^}]*\"status\":\"active\""
 }
 
+# Against the whole list, not one tenant's. A user belongs to no tenant, so
+# `users list --tenant X` answers "who is granted into X" — a different
+# question, and one that says "no" about an existing account that happens to
+# hold nothing yet. Creating that user again fails on the unique email.
 have_user() {
-  mcpdoll users list --tenant "$1" --output json 2>/dev/null \
-    | grep -q "\"email\": \"$2\""
+  mcpdoll users all --output json 2>/dev/null \
+    | grep -q "\"email\": \"$1\""
 }
 
 # The keys land in a file rather than only on stdout, because the console's
@@ -74,6 +78,9 @@ done
 # whether or not the user was new. A user may hold several keys, and the
 # alternative is a banner pointing at a file that does not exist.
 #
+# The tenant column is which tenant this person's *key* acts in. It is not a
+# property of the user — the grants below carry the tenant in their scope.
+#
 #   tenant|email|display name|comma-separated role@scope grants
 DEMO_USERS="\
 acme|support@acme.example|Support Agent|tool_user@t/acme/ts/support
@@ -83,13 +90,13 @@ globex|support@globex.example|Support Agent|tool_user@t/globex/ts/support"
 
 echo "${DEMO_USERS}" | while IFS='|' read -r tenant email label grants; do
   [ -n "${tenant}" ] || continue
-  if have_user "${tenant}" "${email}"; then
-    log "user ${email} already exists in ${tenant}"
+  if have_user "${email}"; then
+    log "user ${email} already exists"
     continue
   fi
 
-  log "creating ${email} in ${tenant}"
-  mcpdoll users create "${email}" --tenant "${tenant}" --name "${label}" \
+  log "creating ${email}"
+  mcpdoll users create "${email}" --name "${label}" \
     --password "demo-password-not-a-secret" >/dev/null
 
   # Grants come second and separately, because a new user holding nothing is
@@ -100,7 +107,7 @@ echo "${DEMO_USERS}" | while IFS='|' read -r tenant email label grants; do
   for g in $(echo "${grants}" | tr ',' ' '); do
     set -- "$@" --grant "${g}"
   done
-  mcpdoll users grants set "${email}" --tenant "${tenant}" "$@" >/dev/null
+  mcpdoll users grants set "${email}" "$@" >/dev/null
   log "granted ${email}: ${grants}"
 done
 
@@ -117,25 +124,19 @@ done
 # Only ever run by the dev stack. The password is deliberately self-describing:
 # anything reading `demo-password-not-a-secret` in a production database is a
 # finding, not a mystery.
-# In `acme`, not `platform`. Grants are global either way — this account
-# administers everything — but a principal's *catalog* comes from their own
-# tenant, and `platform` has no backend bindings. An administrator whose
-# gateway view is permanently empty is a bad first five minutes.
-# An earlier seed created this in `platform`. Left there it is a decoy: the
-# same email in a second tenant, disabled, so signing in with the tenant the
-# README used to name fails with the same message a wrong password gives.
-if have_user platform dev-admin@mcpdoll.local; then
-  log "removing the stale console admin from the platform tenant"
-  mcpdoll users delete dev-admin@mcpdoll.local --tenant platform --yes >/dev/null 2>&1 || true
-fi
-
-if have_user acme dev-admin@mcpdoll.local; then
+#
+# There is no tenant here and there used to be two. An earlier shape gave the
+# user a tenant, so this account existed once in `platform` and once in `acme`,
+# and the seed had to delete one of them — the same email in two tenants being
+# two different people who fail identically at a login screen. Users are global
+# now, so there is one row, one password, and nothing to disambiguate.
+if have_user dev-admin@mcpdoll.local; then
   log "console admin already exists"
 else
   log "creating the console admin"
-  mcpdoll users create dev-admin@mcpdoll.local --tenant acme \
+  mcpdoll users create dev-admin@mcpdoll.local \
     --name "Console Admin" --password "demo-password-not-a-secret" >/dev/null
-  mcpdoll users grants set dev-admin@mcpdoll.local --tenant acme \
+  mcpdoll users grants set dev-admin@mcpdoll.local \
     --grant "platform_admin@*" >/dev/null
 fi
 

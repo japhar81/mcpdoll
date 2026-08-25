@@ -233,10 +233,15 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	if st == nil {
 		return
 	}
+	tenant, err := st.GetTenant(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
 	// Revoke before deleting. The cascade removes the rows, so afterwards
-	// there is nothing left to enumerate — and the keys those rows described
-	// are still in the serving snapshot, working.
-	users, err := st.ListUsersByTenant(r.Context(), id)
+	// there is nothing left to enumerate — and the credentials those rows
+	// described are still in whatever artifact the gateway is holding.
+	users, err := st.ListUsersInTenant(r.Context(), tenant.Slug)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -284,14 +289,17 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	users, err := st.ListUsersByTenant(r.Context(), id)
+	// Granted into, not owned by. A user belongs to no tenant, so the only
+	// sense in which one is "a tenant's user" is that a grant of theirs reaches
+	// it — which is also the more useful question.
+	users, err := st.ListUsersInTenant(r.Context(), tenant.Slug)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
 	out := api.UserList{Tenant: tenant.Slug, Users: []api.User{}}
 	for _, u := range users {
-		out.Users = append(out.Users, userOf(u, tenant.Slug))
+		out.Users = append(out.Users, userOf(u))
 	}
 	writeJSON(w, s.log, http.StatusOK, out)
 }
@@ -307,10 +315,6 @@ type CreateUserRequest struct {
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := s.uuidParam(w, r, "tenantId")
-	if !ok {
-		return
-	}
 	st := s.requireStore(w)
 	if st == nil {
 		return
@@ -319,21 +323,37 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, s.log, &req) {
 		return
 	}
-	tenant, err := st.GetTenant(r.Context(), tenantID)
+
+	user, err := st.CreateUser(r.Context(), req.Email, req.DisplayName, req.Password)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	user, err := st.CreateUser(r.Context(), tenantID, req.Email, req.DisplayName, req.Password)
-	if err != nil {
-		s.writeStoreError(w, err)
-		return
-	}
-	// A new user holds nothing. That is the correct starting state and not an
-	// omission: an account that could see tools the moment it existed would
-	// make onboarding the thing that grants access.
+
+	// A new user holds nothing and therefore reaches nothing. That is the
+	// correct starting state and it is why creating one is safe for anybody who
+	// can manage users at all: the operation that grants access is the grant,
+	// and that is checked at the scope of each grant issued.
 	warnPrincipals(w, s.publishPrincipals(r.Context()))
-	writeJSON(w, s.log, http.StatusCreated, userOf(user, tenant.Slug))
+	writeJSON(w, s.log, http.StatusCreated, userOf(user))
+}
+
+// handleListAllUsers lists every user the caller can see.
+func (s *Server) handleListAllUsers(w http.ResponseWriter, r *http.Request) {
+	st := s.requireStore(w)
+	if st == nil {
+		return
+	}
+	users, err := st.ListAllUsers(r.Context())
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	out := api.UserList{Users: []api.User{}}
+	for _, u := range users {
+		out.Users = append(out.Users, userOf(u))
+	}
+	writeJSON(w, s.log, http.StatusOK, out)
 }
 
 func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -344,12 +364,12 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	if s.requireStore(w) == nil {
 		return
 	}
-	user, slug, err := s.userWithTenant(r, id)
+	user, err := s.cfg.Store.GetUser(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, s.log, http.StatusOK, userOf(user, slug))
+	writeJSON(w, s.log, http.StatusOK, userOf(user))
 }
 
 // UpdateUserRequest is updateUser's body.
@@ -398,7 +418,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		problem = p
 	}
 
-	user, slug, err := s.userWithTenant(r, id)
+	user, err := st.GetUser(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -406,7 +426,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if problem != "" {
 		w.Header().Set("X-MCPDoll-Warning", problem)
 	}
-	writeJSON(w, s.log, http.StatusOK, userOf(user, slug))
+	writeJSON(w, s.log, http.StatusOK, userOf(user))
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -445,21 +465,6 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// userWithTenant reads a user and the slug their scopes are written with.
-func (s *Server) userWithTenant(r *http.Request, id uuid.UUID) (store.User, string, error) {
-	user, err := s.cfg.Store.GetUser(r.Context(), id)
-	if err != nil {
-		return store.User{}, "", err
-	}
-	tenant, err := s.cfg.Store.GetTenant(r.Context(), user.TenantID)
-	if err != nil {
-		return store.User{}, "", err
-	}
-	return user, tenant.Slug, nil
-}
-
-// --------------------------------------------------------- scope validation --
 
 // knownScopes is what the serving snapshot can actually be granted at.
 //
@@ -705,7 +710,12 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 // MintAPIKeyRequest is mintAPIKey's body.
 type MintAPIKeyRequest struct {
-	Name string `json:"name"`
+	// Tenant this key acts in. On the key rather than on its owner, because an
+	// MCP session must resolve to exactly one tenant — tool names would collide
+	// across tenants in a single catalog — while a person may legitimately
+	// reach several.
+	Tenant string `json:"tenant"`
+	Name   string `json:"name"`
 	// Grants are what the key asks for. They are intersected with the owner's
 	// at every resolution, so a key can narrow its owner's access but never
 	// widen it — declaring more than the owner holds is not an error, it simply
@@ -746,7 +756,45 @@ func (s *Server) handleMintAPIKey(w http.ResponseWriter, r *http.Request) {
 		declared = append(declared, authz.Grant{Role: g.Role, Scope: g.Scope})
 	}
 
-	key, secret, err := st.MintAPIKey(r.Context(), id, req.Name, declared, expires)
+	if req.Tenant == "" {
+		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
+			"tenant is required: a key acts in exactly one, and the gateway picks a "+
+				"backend binding with it")
+		return
+	}
+	tenant, err := st.GetTenantBySlug(r.Context(), req.Tenant)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	// The owner must be able to reach the tenant the key acts in, or the key
+	// resolves to a catalog its owner has no grants for — an empty result that
+	// looks like a bug rather than a refusal.
+	//
+	// Reaching, not covering: a grant on `t/acme/ts/support` reaches acme
+	// without being as wide as it.
+	reach, err := st.GrantsForUser(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if !authz.AnyReaches(reach, tenant.Slug) {
+		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
+			"this user holds no grant reaching tenant "+tenant.Slug+
+				", so a key there would resolve to an empty catalog. Grant them "+
+				"something in it first")
+		return
+	}
+
+	// And the caller must be able to manage keys *in that tenant*. The route
+	// only established they can somewhere.
+	if !CallerFrom(r.Context()).Can(authz.PermKeyManage, authz.TenantScope(tenant.Slug)) {
+		writeError(w, s.log, http.StatusForbidden, CodeForbidden,
+			"this credential does not hold key:manage at "+authz.TenantScope(tenant.Slug))
+		return
+	}
+
+	key, secret, err := st.MintAPIKey(r.Context(), id, tenant.ID, req.Name, declared, expires)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -810,11 +858,9 @@ func tenantOf(t store.Tenant) api.Tenant {
 	}
 }
 
-func userOf(u store.User, tenantSlug string) api.User {
+func userOf(u store.User) api.User {
 	return api.User{
 		ID:          u.ID.String(),
-		TenantID:    u.TenantID.String(),
-		Tenant:      tenantSlug,
 		Email:       u.Email,
 		DisplayName: u.DisplayName,
 		Status:      u.Status,

@@ -19,6 +19,7 @@ type ApiKey struct {
 	LastUsedAt pgtype.Timestamptz
 	ExpiresAt  pgtype.Timestamptz
 	RevokedAt  pgtype.Timestamptz
+	TenantID   uuid.UUID
 }
 
 type ApiKeyGrant struct {
@@ -104,7 +105,6 @@ type Tenant struct {
 
 type User struct {
 	ID           uuid.UUID
-	TenantID     uuid.UUID
 	Email        string
 	DisplayName  *string
 	PasswordHash *string

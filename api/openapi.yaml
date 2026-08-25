@@ -516,7 +516,11 @@ paths:
   /api/v1/tenants/{tenantId}/users:
     get:
       operationId: listUsers
-      summary: Every user in one tenant
+      summary: Users granted into one tenant
+      description: |
+        Granted into, not owned by. A user belongs to no tenant, so the only
+        sense in which one is "a tenant's user" is that a grant of theirs
+        reaches it — which is also the more useful question.
       tags: [tenancy]
       x-mcpdoll-surfaces:
         cli: mcpdoll users list
@@ -535,26 +539,39 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/NoDatabase" }
 
+  /api/v1/users:
+    get:
+      operationId: listAllUsers
+      summary: Every user
+      tags: [tenancy]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll users all
+        ui: /users
+      responses:
+        "200":
+          description: The users
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "503": { $ref: "#/components/responses/NoDatabase" }
+
     post:
       operationId: createUser
-      summary: Add a user to a tenant
+      summary: Create a user
       description: |
-        The password is optional: a user who signs in through an identity
-        provider has none, and a service identity that only ever holds API keys
-        does not need one.
+        No tenant. A user is a person; which tenants they reach is what their
+        grants say. A new one holds nothing and reaches nothing, which is what
+        makes creating one safe wherever the caller can manage users at all —
+        the operation that grants access is the grant, checked at the scope of
+        each grant issued.
 
-        A new user holds no grants. That is the correct starting state rather
-        than an omission — an account that could see tools the moment it existed
-        would make onboarding the thing that grants access.
+        The password is optional: a user who signs in through an identity
+        provider has none, and a service identity that only holds API keys does
+        not need one.
       tags: [tenancy]
       x-mcpdoll-surfaces:
         cli: mcpdoll users create
-        ui: /tenants/:tenantId/users/new
-      parameters:
-        - name: tenantId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
+        ui: /users/new
       requestBody:
         required: true
         content:
@@ -1469,13 +1486,11 @@ components:
 
     LoginRequest:
       type: object
-      required: [tenant, email, password]
+      description: |
+        Email and password. No tenant: an email identifies one person across the
+        install, and which tenants they reach is what their grants say.
+      required: [email, password]
       properties:
-        tenant:
-          type: string
-          description: |
-            Part of the identity, not a lookup hint: the same email in two
-            tenants is two different people.
         email: { type: string }
         password: { type: string, format: password }
 
@@ -1620,15 +1635,13 @@ components:
 
     User:
       type: object
-      required: [id, tenant_id, tenant, email, status, has_password, created_at]
+      description: |
+        A person. Not a person in a tenant — which tenants they reach is what
+        their grants say, and which tenant an agent session resolves to is what
+        the key says.
+      required: [id, email, status, has_password, created_at]
       properties:
         id: { type: string, format: uuid }
-        tenant_id: { type: string, format: uuid }
-        tenant:
-          type: string
-          description: |
-            The slug, carried alongside the id because every scope string this
-            user appears in is written with the slug, not the uuid.
         email: { type: string }
         display_name: { type: string }
         status:
@@ -1643,9 +1656,13 @@ components:
 
     UserList:
       type: object
-      required: [tenant, users]
+      required: [users]
       properties:
-        tenant: { type: string }
+        tenant:
+          type: string
+          description: |
+            Set when the listing was scoped to one tenant — those are the users
+            *granted into* it. Absent for the global listing.
         users:
           type: array
           items: { $ref: "#/components/schemas/User" }
@@ -1707,10 +1724,16 @@ components:
 
     APIKey:
       type: object
-      required: [id, user_id, name, prefix, declared_grants, active, created_at]
+      required: [id, user_id, tenant, name, prefix, declared_grants, active, created_at]
       properties:
         id: { type: string, format: uuid }
         user_id: { type: string, format: uuid }
+        tenant:
+          type: string
+          description: |
+            The tenant this key acts in. On the key rather than on its owner:
+            an MCP session must resolve to exactly one tenant or tool names
+            collide, while a person may legitimately reach several.
         name: { type: string }
         prefix:
           type: string
@@ -1744,8 +1767,13 @@ components:
 
     MintAPIKeyRequest:
       type: object
-      required: [name]
+      required: [tenant, name]
       properties:
+        tenant:
+          type: string
+          description: |
+            The tenant this key acts in. Must be one its owner holds a grant
+            reaching, or the key resolves to an empty catalog.
         name: { type: string }
         grants:
           type: array

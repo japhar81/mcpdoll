@@ -103,7 +103,7 @@ func TestGrantsSetSendsTheWholeSet(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, map[string]any{
 		"GET /api/v1/tenants": tenantsPayload(),
-		"GET /api/v1/tenants/11111111-1111-1111-1111-111111111111/users": usersPayload(),
+		"GET /api/v1/users":   usersPayload(),
 		"PUT /api/v1/users/22222222-2222-2222-2222-222222222222/grants": map[string]any{
 			"user_id": "22222222-2222-2222-2222-222222222222",
 			"grants": []map[string]string{
@@ -114,7 +114,6 @@ func TestGrantsSetSendsTheWholeSet(t *testing.T) {
 
 	_, err := runCLI(t, api,
 		"users", "grants", "set", "alice@example.com",
-		"--tenant", "acme",
 		"--grant", "tool_user@t/acme/ts/support",
 		"--output", "json")
 	require.NoError(t, err)
@@ -134,7 +133,7 @@ func TestGrantsSetWithNoGrantsRevokesEverything(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, map[string]any{
 		"GET /api/v1/tenants": tenantsPayload(),
-		"GET /api/v1/tenants/11111111-1111-1111-1111-111111111111/users": usersPayload(),
+		"GET /api/v1/users":   usersPayload(),
 		"PUT /api/v1/users/22222222-2222-2222-2222-222222222222/grants": map[string]any{
 			"user_id": "22222222-2222-2222-2222-222222222222", "grants": []any{},
 		},
@@ -144,7 +143,7 @@ func TestGrantsSetWithNoGrantsRevokesEverything(t *testing.T) {
 	// being deleted, and the empty array has to actually reach the server.
 	_, err := runCLI(t, api,
 		"users", "grants", "set", "alice@example.com",
-		"--tenant", "acme", "--output", "json")
+		"--output", "json")
 	require.NoError(t, err)
 
 	var put *recorded
@@ -161,12 +160,12 @@ func TestAMalformedGrantIsRejectedBeforeAnyRequest(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, map[string]any{
 		"GET /api/v1/tenants": tenantsPayload(),
-		"GET /api/v1/tenants/11111111-1111-1111-1111-111111111111/users": usersPayload(),
+		"GET /api/v1/users":   usersPayload(),
 	})
 
 	_, err := runCLI(t, api,
 		"users", "grants", "set", "alice@example.com",
-		"--tenant", "acme", "--grant", "tool_user")
+		"--grant", "tool_user")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "role@scope")
 
@@ -180,7 +179,7 @@ func TestAScopeContainingAnAtSignSplitsOnTheLastOne(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, map[string]any{
 		"GET /api/v1/tenants": tenantsPayload(),
-		"GET /api/v1/tenants/11111111-1111-1111-1111-111111111111/users": usersPayload(),
+		"GET /api/v1/users":   usersPayload(),
 		"PUT /api/v1/users/22222222-2222-2222-2222-222222222222/grants": map[string]any{
 			"user_id": "22222222-2222-2222-2222-222222222222", "grants": []any{},
 		},
@@ -188,7 +187,6 @@ func TestAScopeContainingAnAtSignSplitsOnTheLastOne(t *testing.T) {
 
 	_, err := runCLI(t, api,
 		"users", "grants", "set", "alice@example.com",
-		"--tenant", "acme",
 		"--grant", "tool_user@t/acme/ts/mail@corp")
 	require.NoError(t, err)
 
@@ -242,7 +240,7 @@ func TestTheMintedSecretIsPrintedExactlyOnce(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, map[string]any{
 		"GET /api/v1/tenants": tenantsPayload(),
-		"GET /api/v1/tenants/11111111-1111-1111-1111-111111111111/users": usersPayload(),
+		"GET /api/v1/users":   usersPayload(),
 		"POST /api/v1/users/22222222-2222-2222-2222-222222222222/keys": map[string]any{
 			"key": map[string]any{
 				"id":      "33333333-3333-3333-3333-333333333333",

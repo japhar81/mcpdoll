@@ -228,9 +228,18 @@ func (s *Server) routes() {
 		r.With(s.requireScoped("tenantId", authz.PermTenantManage, s.tenantScopeOf)).
 			Delete("/tenants/{tenantId}", s.handleDeleteTenant)
 
-		r.With(s.requireScoped("tenantId", authz.PermUserManage, s.tenantScopeOf)).Group(func(r chi.Router) {
-			r.Get("/tenants/{tenantId}/users", s.handleListUsers)
-			r.Post("/tenants/{tenantId}/users", s.handleCreateUser)
+		// Who is granted into a tenant. Tenant-scoped, because that is a
+		// question about the tenant.
+		r.With(s.requireScoped("tenantId", authz.PermUserManage, s.tenantScopeOf)).
+			Get("/tenants/{tenantId}/users", s.handleListUsers)
+
+		// People are global now, so managing one is a platform-level act on a
+		// platform-level object. Creating one authorizes nothing — a user with
+		// no grants reaches nothing — and the operation that does authorize is
+		// the grant, checked at the scope of each grant issued.
+		r.With(s.require(authz.PermUserManage, global)).Group(func(r chi.Router) {
+			r.Get("/users", s.handleListAllUsers)
+			r.Post("/users", s.handleCreateUser)
 		})
 
 		r.With(s.requireScoped("userId", authz.PermUserManage, s.userScopeOf)).Group(func(r chi.Router) {
@@ -242,12 +251,18 @@ func (s *Server) routes() {
 		// Deciding what a user may do is not the same as creating one, and
 		// role:manage is separate from user:manage for exactly that reason: an
 		// operator who can onboard without it cannot promote themselves.
-		r.With(s.requireScoped("userId", authz.PermRoleManage, s.userScopeOf)).Group(func(r chi.Router) {
+		// Anywhere, not at a fixed scope. A grant is authorized at the scope of
+		// the grant being issued, which the route cannot know — and gating on
+		// one scope would refuse a tenant admin before the check that actually
+		// decides could run. `handlePutGrants` does that check per grant.
+		r.With(s.requireAnywhere(authz.PermRoleManage)).Group(func(r chi.Router) {
 			r.Get("/users/{userId}/grants", s.handleListGrants)
 			r.Put("/users/{userId}/grants", s.handlePutGrants)
 		})
 
-		r.With(s.requireScoped("userId", authz.PermKeyManage, s.userScopeOf)).Group(func(r chi.Router) {
+		// Same shape: a key is authorized at the scope of the tenant it acts
+		// in, which `handleMintAPIKey` checks.
+		r.With(s.requireAnywhere(authz.PermKeyManage)).Group(func(r chi.Router) {
 			r.Get("/users/{userId}/keys", s.handleListAPIKeys)
 			r.Post("/users/{userId}/keys", s.handleMintAPIKey)
 		})

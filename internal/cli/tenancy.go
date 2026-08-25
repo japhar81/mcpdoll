@@ -179,6 +179,7 @@ func newUsersCmd(env *Env) *cobra.Command {
 	cmd.AddCommand(
 		newUsersListCmd(env),
 		newUsersCreateCmd(env),
+		newUsersAllCmd(env),
 		newUsersShowCmd(env),
 		newUsersUpdateCmd(env),
 		newUsersDeleteCmd(env),
@@ -191,28 +192,33 @@ func newUsersCmd(env *Env) *cobra.Command {
 func newUsersListCmd(env *Env) *cobra.Command {
 	var tenantSlug string
 	cmd := &cobra.Command{
-		Use:         "list",
-		Short:       "Every user in one tenant",
+		Use:   "list",
+		Short: "Users, optionally narrowed to those granted into one tenant",
+		Long: "Without --tenant, everybody. With it, the users whose grants reach that\n" +
+			"tenant — which is the only sense in which a user belongs to one.",
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{annotationOperation: "listUsers"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			tenant, err := resolveTenant(ctx, env, tenantSlug)
-			if err != nil {
-				return err
+			path := "/api/v1/users"
+			if tenantSlug != "" {
+				tenant, err := resolveTenant(ctx, env, tenantSlug)
+				if err != nil {
+					return err
+				}
+				path = "/api/v1/tenants/" + tenant.ID + "/users"
 			}
 			var out api.UserList
-			if err := apiCall(ctx, env, "GET",
-				"/api/v1/tenants/"+tenant.ID+"/users", nil, &out); err != nil {
+			if err := apiCall(ctx, env, "GET", path, nil, &out); err != nil {
 				return err
 			}
 			return env.Emit(userListReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
-	_ = cmd.MarkFlagRequired("tenant")
+	cmd.Flags().StringVar(&tenantSlug, "tenant", "",
+		"narrow to users granted into this tenant")
 	return cmd
 }
 
@@ -230,18 +236,18 @@ func (r userListReport) Table() Table {
 	return Table{
 		Columns: []string{"EMAIL", "NAME", "STATUS", "PASSWORD", "ID"},
 		Rows:    rows,
-		Notes:   []string{"tenant " + r.Tenant},
+		Notes:   []string{tenantNote(r.Tenant)},
 	}
 }
 
 func newUsersCreateCmd(env *Env) *cobra.Command {
-	var tenantSlug, displayName, password string
+	var displayName, password string
 	cmd := &cobra.Command{
 		Use:   "create <email>",
-		Short: "Add a user to a tenant",
-		Long: "A new user holds no grants and therefore sees no tools. That is the correct\n" +
-			"starting state: an account that could reach something the moment it existed\n" +
-			"would make onboarding the thing that grants access.\n\n" +
+		Short: "Add a user",
+		Long: "A user is a person, not a person in a tenant. Which tenants they reach is\n" +
+			"what their grants say, so a new account reaches nothing until you grant it\n" +
+			"something.\n\n" +
 			"--password is optional. A user who signs in through an identity provider has\n" +
 			"none, and a service identity that only holds API keys does not need one.",
 		Args:        cobra.ExactArgs(1),
@@ -250,10 +256,6 @@ func newUsersCreateCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			tenant, err := resolveTenant(ctx, env, tenantSlug)
-			if err != nil {
-				return err
-			}
 			body := map[string]string{"email": args[0]}
 			if displayName != "" {
 				body["display_name"] = displayName
@@ -262,19 +264,16 @@ func newUsersCreateCmd(env *Env) *cobra.Command {
 				body["password"] = password
 			}
 			var out api.User
-			if err := apiCall(ctx, env, "POST",
-				"/api/v1/tenants/"+tenant.ID+"/users", body, &out); err != nil {
+			if err := apiCall(ctx, env, "POST", "/api/v1/users", body, &out); err != nil {
 				return err
 			}
-			env.Printf("user %s created in %s; grant something with "+
-				"`mcpdoll users grants set`\n", out.Email, out.Tenant)
+			env.Printf("user %s created; they reach nothing until granted — "+
+				"`mcpdoll users grants set`\n", out.Email)
 			return env.Emit(userReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringVar(&displayName, "name", "", "display name")
 	cmd.Flags().StringVar(&password, "password", "", "local password; omit for SSO or key-only identities")
-	_ = cmd.MarkFlagRequired("tenant")
 	return cmd
 }
 
@@ -286,13 +285,12 @@ func (r userReport) Table() Table {
 		password = "yes"
 	}
 	return Table{
-		Columns: []string{"EMAIL", "TENANT", "NAME", "STATUS", "PASSWORD", "ID"},
-		Rows:    [][]string{{r.Email, r.Tenant, r.DisplayName, r.Status, password, r.ID}},
+		Columns: []string{"EMAIL", "NAME", "STATUS", "PASSWORD", "ID"},
+		Rows:    [][]string{{r.Email, r.DisplayName, r.Status, password, r.ID}},
 	}
 }
 
 func newUsersShowCmd(env *Env) *cobra.Command {
-	var tenantSlug string
 	cmd := &cobra.Command{
 		Use:         "show <email>",
 		Short:       "One user",
@@ -302,7 +300,7 @@ func newUsersShowCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -313,13 +311,11 @@ func newUsersShowCmd(env *Env) *cobra.Command {
 			return env.Emit(userReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
-	_ = cmd.MarkFlagRequired("tenant")
 	return cmd
 }
 
 func newUsersUpdateCmd(env *Env) *cobra.Command {
-	var tenantSlug, displayName, status string
+	var displayName, status string
 	cmd := &cobra.Command{
 		Use:   "update <email>",
 		Short: "Change a user's display name or status",
@@ -332,7 +328,7 @@ func newUsersUpdateCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -359,7 +355,6 @@ func newUsersUpdateCmd(env *Env) *cobra.Command {
 			return env.Emit(userReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringVar(&displayName, "name", "", "display name")
 	cmd.Flags().StringVar(&status, "status", "", "active or disabled")
 	_ = cmd.MarkFlagRequired("tenant")
@@ -367,7 +362,6 @@ func newUsersUpdateCmd(env *Env) *cobra.Command {
 }
 
 func newUsersDeleteCmd(env *Env) *cobra.Command {
-	var tenantSlug string
 	var confirm bool
 	cmd := &cobra.Command{
 		Use:   "delete <email>",
@@ -383,7 +377,7 @@ func newUsersDeleteCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -400,16 +394,35 @@ func newUsersDeleteCmd(env *Env) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().BoolVar(&confirm, "yes", false, "confirm the deletion")
 	_ = cmd.MarkFlagRequired("tenant")
 	return cmd
 }
 
+func newUsersAllCmd(env *Env) *cobra.Command {
+	return &cobra.Command{
+		Use:   "all",
+		Short: "Every user, across every tenant",
+		Long: "A user is a person and belongs to no tenant, so this is the whole list.\n" +
+			"`users list --tenant X` narrows it to those granted into one.",
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annotationOperation: "listAllUsers"},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := apiContext(cmd.Context())
+			defer cancel()
+
+			var out api.UserList
+			if err := apiCall(ctx, env, "GET", "/api/v1/users", nil, &out); err != nil {
+				return err
+			}
+			return env.Emit(userListReport(out))
+		},
+	}
+}
+
 // ------------------------------------------------------------------- grants --
 
 func newUsersGrantsCmd(env *Env) *cobra.Command {
-	var tenantSlug string
 	cmd := &cobra.Command{
 		Use:   "grants <email>",
 		Short: "What a user holds directly",
@@ -422,7 +435,7 @@ func newUsersGrantsCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -434,8 +447,6 @@ func newUsersGrantsCmd(env *Env) *cobra.Command {
 			return env.Emit(grantListReport{GrantList: out, Email: user.Email})
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
-	_ = cmd.MarkFlagRequired("tenant")
 	cmd.AddCommand(newUsersGrantsSetCmd(env))
 	return cmd
 }
@@ -460,7 +471,6 @@ func (r grantListReport) Table() Table {
 }
 
 func newUsersGrantsSetCmd(env *Env) *cobra.Command {
-	var tenantSlug string
 	var grants []string
 	cmd := &cobra.Command{
 		Use:   "set <email>",
@@ -486,7 +496,7 @@ func newUsersGrantsSetCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -504,7 +514,6 @@ func newUsersGrantsSetCmd(env *Env) *cobra.Command {
 			return env.Emit(grantListReport{GrantList: out, Email: user.Email})
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringArrayVar(&grants, "grant", nil, "role@scope; repeatable")
 	_ = cmd.MarkFlagRequired("tenant")
 	return cmd
@@ -532,7 +541,6 @@ func parseGrants(raw []string) ([]api.Grant, error) {
 // ----------------------------------------------------------------- api keys --
 
 func newUsersKeysCmd(env *Env) *cobra.Command {
-	var tenantSlug string
 	cmd := &cobra.Command{
 		Use:   "keys <email>",
 		Short: "Every API key a user holds, revoked ones included",
@@ -545,7 +553,7 @@ func newUsersKeysCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -557,8 +565,6 @@ func newUsersKeysCmd(env *Env) *cobra.Command {
 			return env.Emit(apiKeyListReport{APIKeyList: out, Email: user.Email})
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
-	_ = cmd.MarkFlagRequired("tenant")
 	cmd.AddCommand(newUsersKeysMintCmd(env), newUsersKeysRevokeCmd(env))
 	return cmd
 }
@@ -598,12 +604,12 @@ func (r apiKeyListReport) Table() Table {
 }
 
 func newUsersKeysMintCmd(env *Env) *cobra.Command {
-	var tenantSlug, name, expires string
+	var tenantSlug, keyTenant, name, expires string
 	var grants []string
 	cmd := &cobra.Command{
 		Use:   "mint <email>",
 		Short: "Mint an API key",
-		Long: "Prints the secret exactly once. It is stored only as an Argon2id hash, so a\n" +
+		Long: "Prints the secret exactly once. Only its SHA-256 digest is stored, so a\n" +
 			"caller who does not capture it has to mint another key — which is what makes\n" +
 			"a leaked log harmless.\n\n" +
 			"--grant narrows the key below its owner. Declaring more than the owner holds\n" +
@@ -616,7 +622,7 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -624,7 +630,10 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"name": name, "grants": parsed}
+			if keyTenant == "" {
+				keyTenant = tenantSlug
+			}
+			body := map[string]any{"name": name, "grants": parsed, "tenant": keyTenant}
 			if expires != "" {
 				body["expires_at"] = expires
 			}
@@ -637,7 +646,9 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 			return env.Emit(mintedKeyReport(out))
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
+	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant to resolve the user in (required)")
+	cmd.Flags().StringVar(&keyTenant, "acts-in", "",
+		"tenant this key acts in; defaults to --tenant. An MCP session resolves to exactly one")
 	cmd.Flags().StringVar(&name, "name", "", "what this key is for (required)")
 	cmd.Flags().StringArrayVar(&grants, "grant", nil, "role@scope to narrow the key to; repeatable")
 	cmd.Flags().StringVar(&expires, "expires", "", "RFC 3339 expiry; omit for a key that does not expire")
@@ -660,7 +671,7 @@ func (r mintedKeyReport) Table() Table {
 }
 
 func newUsersKeysRevokeCmd(env *Env) *cobra.Command {
-	var tenantSlug, name string
+	var name string
 	cmd := &cobra.Command{
 		Use:   "revoke <email>",
 		Short: "Revoke an API key",
@@ -672,7 +683,7 @@ func newUsersKeysRevokeCmd(env *Env) *cobra.Command {
 			ctx, cancel := apiContext(cmd.Context())
 			defer cancel()
 
-			user, err := resolveUser(ctx, env, tenantSlug, args[0])
+			user, err := resolveUser(ctx, env, args[0])
 			if err != nil {
 				return err
 			}
@@ -702,7 +713,6 @@ func newUsersKeysRevokeCmd(env *Env) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant slug (required)")
 	cmd.Flags().StringVar(&name, "key", "", "key name or prefix (required)")
 	_ = cmd.MarkFlagRequired("tenant")
 	_ = cmd.MarkFlagRequired("key")
@@ -778,14 +788,13 @@ func resolveTenant(ctx context.Context, env *Env, slug string) (api.TenantSummar
 }
 
 // resolveUser turns a tenant slug and an email into the user carrying their id.
-func resolveUser(ctx context.Context, env *Env, tenantSlug, email string) (api.User, error) {
-	tenant, err := resolveTenant(ctx, env, tenantSlug)
-	if err != nil {
-		return api.User{}, err
-	}
+// resolveUser turns an email into the user carrying their id.
+//
+// No tenant, because a user has none: an email identifies one person across the
+// install.
+func resolveUser(ctx context.Context, env *Env, email string) (api.User, error) {
 	var list api.UserList
-	if err := apiCall(ctx, env, "GET",
-		"/api/v1/tenants/"+tenant.ID+"/users", nil, &list); err != nil {
+	if err := apiCall(ctx, env, "GET", "/api/v1/users", nil, &list); err != nil {
 		return api.User{}, err
 	}
 	for _, u := range list.Users {
@@ -793,6 +802,13 @@ func resolveUser(ctx context.Context, env *Env, tenantSlug, email string) (api.U
 			return u, nil
 		}
 	}
-	return api.User{}, notFoundError(fmt.Errorf(
-		"tenant %s has no user %q", tenantSlug, email))
+	return api.User{}, notFoundError(fmt.Errorf("no user %q", email))
+}
+
+// tenantNote labels a user listing with its scope.
+func tenantNote(tenant string) string {
+	if tenant == "" {
+		return "every user; --tenant narrows to those granted into one"
+	}
+	return "granted into " + tenant
 }

@@ -42,7 +42,6 @@ export interface AuthContextValue {
   session: SessionInfo | null;
   /** Sign in as a person. Returns the reason on failure. */
   signInWithPassword: (
-    tenant: string,
     email: string,
     password: string,
   ) => Promise<"ok" | "unauthorized" | "unreachable">;
@@ -136,9 +135,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [adopt]);
 
   const signInWithPassword = useCallback(
-    async (tenant: string, email: string, password: string) => {
+    async (email: string, password: string) => {
       try {
-        const result = await login(tenant, email, password);
+        const result = await login(email, password);
         localStorage.setItem(TOKEN_KEY, result.token);
         adopt(result.token, "authenticated");
         await loadSession();

@@ -84,6 +84,19 @@ func (q *Queries) CreateGrant(ctx context.Context, arg CreateGrantParams) (Grant
 	return i, err
 }
 
+const deleteGrantsInTenant = `-- name: DeleteGrantsInTenant :exec
+DELETE FROM grants WHERE scope = $1 OR scope LIKE $1 || '/%'
+`
+
+// Grants name a scope as text, not a tenant by foreign key, so nothing cascades
+// when a tenant is deleted. Left behind they are dormant *and* dangerous: a
+// tenant recreated with the same slug would silently re-authorize everyone who
+// was granted into the old one.
+func (q *Queries) DeleteGrantsInTenant(ctx context.Context, scope string) error {
+	_, err := q.db.Exec(ctx, deleteGrantsInTenant, scope)
+	return err
+}
+
 const deleteRole = `-- name: DeleteRole :exec
 DELETE FROM role_permissions WHERE role = $1
 `
@@ -156,14 +169,15 @@ func (q *Queries) ListAllGrants(ctx context.Context) ([]Grant, error) {
 }
 
 const listGrantsByTenant = `-- name: ListGrantsByTenant :many
-SELECT g.id, g.user_id, g.role, g.scope, g.granted_by, g.created_at FROM grants g
-JOIN users u ON u.id = g.user_id
-WHERE u.tenant_id = $1
-ORDER BY g.user_id, g.scope, g.role
+SELECT id, user_id, role, scope, granted_by, created_at FROM grants
+WHERE scope = $1 OR scope LIKE $1 || '/%'
+ORDER BY user_id, scope, role
 `
 
-func (q *Queries) ListGrantsByTenant(ctx context.Context, tenantID uuid.UUID) ([]Grant, error) {
-	rows, err := q.db.Query(ctx, listGrantsByTenant, tenantID)
+// Grants *within* a tenant's scope, which is now the only sense in which a
+// grant belongs to a tenant.
+func (q *Queries) ListGrantsByTenant(ctx context.Context, scope string) ([]Grant, error) {
+	rows, err := q.db.Query(ctx, listGrantsByTenant, scope)
 	if err != nil {
 		return nil, err
 	}

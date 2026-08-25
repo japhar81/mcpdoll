@@ -43,7 +43,7 @@ export function UserScreen() {
     mutationFn: () => deleteUser(userId),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["users"] });
-      navigate(user ? `/tenants/${user.tenant_id}/users` : "/tenants");
+      navigate("/users");
     },
   });
 
@@ -67,8 +67,8 @@ export function UserScreen() {
       actions={
         user && (
           <>
-            <Link className="link" to={`/tenants/${user.tenant_id}/users`}>
-              ← {user.tenant}
+            <Link className="link" to="/users">
+              ← users
             </Link>
             {" · "}
             <Link className="link" to={`/users/${userId}/grants`}>
@@ -97,7 +97,6 @@ export function UserScreen() {
       {user && (
         <Stats
           items={[
-            { k: "Tenant", v: <code>{user.tenant}</code>, small: true },
             {
               k: "Status",
               v:

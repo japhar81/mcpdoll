@@ -12,9 +12,13 @@ import (
 )
 
 const countUsersByTenant = `-- name: CountUsersByTenant :many
-SELECT tenant_id, count(*)::bigint AS users
-FROM users
-GROUP BY tenant_id
+SELECT t.id AS tenant_id, count(DISTINCT g.user_id)::bigint AS users
+FROM tenants t
+LEFT JOIN grants g
+  ON g.scope = 't/' || t.slug
+  OR g.scope LIKE 't/' || t.slug || '/%'
+  OR g.scope = '*'
+GROUP BY t.id
 `
 
 type CountUsersByTenantRow struct {
@@ -25,6 +29,8 @@ type CountUsersByTenantRow struct {
 // CountUsersByTenant answers the tenant list in one query rather than one per
 // tenant. A tenant list is the first screen an operator opens, and N+1 there is
 // N+1 forever.
+// Counted from grants, since a user no longer belongs to a tenant. A grant at
+// global scope reaches every tenant and is counted for each.
 func (q *Queries) CountUsersByTenant(ctx context.Context) ([]CountUsersByTenantRow, error) {
 	rows, err := q.db.Query(ctx, countUsersByTenant)
 	if err != nil {
@@ -46,29 +52,25 @@ func (q *Queries) CountUsersByTenant(ctx context.Context) ([]CountUsersByTenantR
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (tenant_id, email, display_name, password_hash)
-VALUES ($1, $2, $3, $4)
-RETURNING id, tenant_id, email, display_name, password_hash, status, created_at, updated_at
+INSERT INTO users (email, display_name, password_hash)
+VALUES ($1, $2, $3)
+RETURNING id, email, display_name, password_hash, status, created_at, updated_at
 `
 
 type CreateUserParams struct {
-	TenantID     uuid.UUID
 	Email        string
 	DisplayName  *string
 	PasswordHash *string
 }
 
+// No tenant: a user is a person, and which tenants they reach is what their
+// grants say (ADR 0014, amended). A user with no grants is inert, which is why
+// creating one is safe at any scope.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, createUser,
-		arg.TenantID,
-		arg.Email,
-		arg.DisplayName,
-		arg.PasswordHash,
-	)
+	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.DisplayName, arg.PasswordHash)
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
 		&i.Email,
 		&i.DisplayName,
 		&i.PasswordHash,
@@ -89,7 +91,7 @@ func (q *Queries) DeleteUser(ctx context.Context, id uuid.UUID) error {
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, tenant_id, email, display_name, password_hash, status, created_at, updated_at FROM users WHERE id = $1
+SELECT id, email, display_name, password_hash, status, created_at, updated_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
@@ -97,7 +99,6 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
 		&i.Email,
 		&i.DisplayName,
 		&i.PasswordHash,
@@ -109,20 +110,16 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, tenant_id, email, display_name, password_hash, status, created_at, updated_at FROM users WHERE tenant_id = $1 AND email = $2
+SELECT id, email, display_name, password_hash, status, created_at, updated_at FROM users WHERE email = $1
 `
 
-type GetUserByEmailParams struct {
-	TenantID uuid.UUID
-	Email    string
-}
-
-func (q *Queries) GetUserByEmail(ctx context.Context, arg GetUserByEmailParams) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByEmail, arg.TenantID, arg.Email)
+// Globally unique, so signing in needs an email and a password and nothing
+// else.
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
 		&i.Email,
 		&i.DisplayName,
 		&i.PasswordHash,
@@ -134,7 +131,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, arg GetUserByEmailParams) 
 }
 
 const getUserByIdentity = `-- name: GetUserByIdentity :one
-SELECT u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.status, u.created_at, u.updated_at FROM users u
+SELECT u.id, u.email, u.display_name, u.password_hash, u.status, u.created_at, u.updated_at FROM users u
 JOIN user_identities i ON i.user_id = u.id
 WHERE i.provider = $1 AND i.subject = $2
 `
@@ -149,7 +146,6 @@ func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityPa
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
 		&i.Email,
 		&i.DisplayName,
 		&i.PasswordHash,
@@ -193,7 +189,7 @@ func (q *Queries) LinkIdentity(ctx context.Context, arg LinkIdentityParams) (Use
 }
 
 const listAllUsers = `-- name: ListAllUsers :many
-SELECT id, tenant_id, email, display_name, password_hash, status, created_at, updated_at FROM users ORDER BY tenant_id, email
+SELECT id, email, display_name, password_hash, status, created_at, updated_at FROM users ORDER BY email
 `
 
 func (q *Queries) ListAllUsers(ctx context.Context) ([]User, error) {
@@ -207,7 +203,6 @@ func (q *Queries) ListAllUsers(ctx context.Context) ([]User, error) {
 		var i User
 		if err := rows.Scan(
 			&i.ID,
-			&i.TenantID,
 			&i.Email,
 			&i.DisplayName,
 			&i.PasswordHash,
@@ -256,12 +251,18 @@ func (q *Queries) ListIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([
 	return items, nil
 }
 
-const listUsersByTenant = `-- name: ListUsersByTenant :many
-SELECT id, tenant_id, email, display_name, password_hash, status, created_at, updated_at FROM users WHERE tenant_id = $1 ORDER BY email
+const listUsersInTenant = `-- name: ListUsersInTenant :many
+SELECT DISTINCT u.id, u.email, u.display_name, u.password_hash, u.status, u.created_at, u.updated_at FROM users u
+JOIN grants g ON g.user_id = u.id
+WHERE g.scope = $1 OR g.scope LIKE $1 || '/%' OR g.scope = '*'
+ORDER BY u.email
 `
 
-func (q *Queries) ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]User, error) {
-	rows, err := q.db.Query(ctx, listUsersByTenant, tenantID)
+// Users *granted into* a tenant rather than owned by one. A more useful
+// listing than ownership was: it answers "who can reach this tenant", which is
+// the question an administrator is actually asking.
+func (q *Queries) ListUsersInTenant(ctx context.Context, scope string) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsersInTenant, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +272,6 @@ func (q *Queries) ListUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]
 		var i User
 		if err := rows.Scan(
 			&i.ID,
-			&i.TenantID,
 			&i.Email,
 			&i.DisplayName,
 			&i.PasswordHash,
@@ -316,7 +316,7 @@ const updateUser = `-- name: UpdateUser :one
 UPDATE users
 SET display_name = $2, status = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, tenant_id, email, display_name, password_hash, status, created_at, updated_at
+RETURNING id, email, display_name, password_hash, status, created_at, updated_at
 `
 
 type UpdateUserParams struct {
@@ -330,7 +330,6 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
 		&i.Email,
 		&i.DisplayName,
 		&i.PasswordHash,

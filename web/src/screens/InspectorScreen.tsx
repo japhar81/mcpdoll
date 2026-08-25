@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { mintAPIKey } from "../lib/api.ts";
 import { useAuth } from "../lib/auth.tsx";
 import { ErrorBlock, Screen } from "../components/Screen.tsx";
+import { TenantPicker, useMintableTenants } from "../lib/tenants.tsx";
 
 /** Where the bundled Inspector is served. */
 const INSPECTOR_URL = "http://localhost:6274/";
@@ -25,11 +26,14 @@ export function InspectorScreen() {
   const auth = useAuth();
   const [copied, setCopied] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
+  const [tenant, setTenant] = useState("");
+  const { slugs } = useMintableTenants();
 
   const mint = useMutation({
     mutationFn: async () => {
       const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       const result = await mintAPIKey(auth.session!.user_id!, {
+        tenant,
         name: `inspector ${new Date().toISOString().slice(0, 19)}Z`,
         expires_at: expires,
       });
@@ -77,10 +81,11 @@ export function InspectorScreen() {
           shows is then what you would be served, not what an operator&apos;s
           shared token would be.
         </p>
+        <TenantPicker value={tenant} onChange={setTenant} slugs={slugs} />
         <div className="row">
           <button
             className="primary"
-            disabled={mint.isPending}
+            disabled={mint.isPending || !tenant}
             onClick={() => mint.mutate()}
           >
             {mint.isPending ? "Minting…" : "Mint a key and copy it"}

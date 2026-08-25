@@ -4,7 +4,11 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth.tsx";
 
 /**
- * Sign in to the control plane. Email and password, nothing else.
+ * Sign in. Email and password, and nothing else on the page.
+ *
+ * It carried two explanatory paragraphs. Nobody reads a login screen — they
+ * type a password — and what those paragraphs explained was a design that no
+ * longer exists: the tenant field they justified is gone.
  *
  * This used to offer the deployment token as a second form. That was
  * scaffolding I kept: before sessions existed the console *had* to hold that
@@ -19,7 +23,6 @@ export function LoginScreen() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [tenant, setTenant] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,14 +42,14 @@ export function LoginScreen() {
     setBusy(true);
     setPasswordError(null);
 
-    const result = await auth.signInWithPassword(tenant.trim(), email.trim(), password);
+    const result = await auth.signInWithPassword(email.trim(), password);
     if (result === "ok") {
       navigate(from, { replace: true });
       return;
     }
     setPasswordError(
       result === "unauthorized"
-        ? "The tenant, email, or password is wrong."
+        ? "The email or password is wrong."
         : "The control plane could not be reached. Is it running on :3001?",
     );
     setBusy(false);
@@ -64,20 +67,11 @@ export function LoginScreen() {
 
         <form className="login-form" onSubmit={submitPassword}>
           <label>
-            Tenant
-            <input
-              autoFocus
-              spellCheck={false}
-              placeholder="acme"
-              value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
-            />
-          </label>
-          <label>
             Email
             <input
               type="email"
               autoComplete="username"
+              autoFocus
               spellCheck={false}
               placeholder="you@example.com"
               value={email}
@@ -99,23 +93,11 @@ export function LoginScreen() {
           <button
             className="primary login-submit"
             type="submit"
-            disabled={busy || !tenant.trim() || !email.trim()}
+            disabled={busy || !email.trim()}
           >
             {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
-
-        <div className="login-note">
-          <p>
-            The same email in two tenants is two different people, so the tenant is
-            part of who you are.
-          </p>
-          <p>
-            What you can do here is decided by your grants — the same ones that
-            decide what an agent sees through the gateway.
-          </p>
-        </div>
-
       </div>
     </div>
   );
