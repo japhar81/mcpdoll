@@ -170,6 +170,7 @@ func run() int {
 		KeyDir:          cfg.ControlPlane.KeyDir,
 		RevocationsPath: cfg.ControlPlane.RevocationsPath,
 		PrincipalsPath:  cfg.ControlPlane.PrincipalsPath,
+		RebuildInterval: cfg.ControlPlane.RebuildInterval,
 		Token:           token,
 		AllowAnonymous:  *allowAnonymous,
 		AllowedOrigins:  cfg.ControlPlane.AllowedOrigins,
@@ -217,6 +218,10 @@ func run() int {
 	go server.RunRevocationHeartbeat(ctx)
 	// Same reasoning, for who exists rather than who is refused.
 	go server.RunPrincipalHeartbeat(ctx)
+	// And the catalog itself, which nobody publishes any more (ADR 0025). The
+	// registry says what should be served and the backends say what they have;
+	// combining them was never a decision that needed a person.
+	go server.RunSnapshotRebuild(ctx)
 
 	select {
 	case err := <-errs:

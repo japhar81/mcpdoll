@@ -333,6 +333,13 @@ export interface BuildReport {
   warnings?: string[];
   output?: string;
   dry_run: boolean;
+  /**
+   * The build produced the catalog already being served, so nothing was
+   * published. Distinct from dry_run: this one did all the work and
+   * found no reason to publish, which is the ordinary outcome of a
+   * rebuild on a timer.
+   */
+  unchanged?: boolean;
 }
 
 /**
@@ -404,6 +411,19 @@ export interface GatewayStatus {
    */
   revocations_age_seconds?: number;
   revoked_principals?: number;
+  /**
+   * How long ago the catalog was last rebuilt from the backends — not
+   * how long ago it last changed. A version only moves on change, so on
+   * its own it cannot tell a quiet deployment from a rebuild loop that
+   * has died. This grows in exactly one case (ADR 0025).
+   */
+  catalog_age_seconds?: number;
+  /**
+   * The last rebuild failure, absent when the last one succeeded.
+   * Reported rather than only logged: a rebuild failing for an hour is
+   * invisible in a log nobody is tailing.
+   */
+  catalog_error?: string;
 }
 
 export interface TenantList extends GatewayStatus {

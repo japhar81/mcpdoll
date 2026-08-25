@@ -47,6 +47,11 @@ controlplane:
   # data plane from the same shared volume.
   revocations_path: /srv/state/revocations.pb
   principals_path: /srv/state/principals.pb
+  # How often the catalog is rebuilt from the backends (ADR 0025). Nobody
+  # publishes a snapshot any more — 15s here rather than the 60s default
+  # because this stack exists to be watched, and a minute is a long time to
+  # wonder whether a change took.
+  rebuild_interval: 15s
   # The console's origin. Named explicitly — this API mints signing keys, so no
   # wildcard is acceptable even in development.
   allowed_origins:

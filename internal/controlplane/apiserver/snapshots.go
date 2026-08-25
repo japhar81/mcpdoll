@@ -3,6 +3,7 @@
 package apiserver
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -248,35 +249,68 @@ type BuildSnapshotRequest struct {
 	Version int64 `json:"version,omitempty"`
 }
 
-func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req BuildSnapshotRequest
-	if !decodeBody(w, r, s.log, &req) {
-		return
-	}
+// buildFailure is a build that did not happen, carrying enough to answer over
+// HTTP and little enough to just log.
+//
+// The build path has two callers now — a request and a timer (ADR 0025) — and
+// they need different things from a failure. Returning one of these rather than
+// writing to a ResponseWriter is what lets the timer call the same code.
+type buildFailure struct {
+	status  int
+	code    string
+	message string
+	// Set when the failure is a list of problems with the registry or the
+	// discovered backends rather than a single fault. Rendered differently.
+	problems error
+}
+
+func (b *buildFailure) Error() string { return b.message }
+
+// buildAndPublish resolves the registry, builds a snapshot, and — unless this
+// is a dry run or nothing changed — signs and writes it.
+//
+// Callable without a ResponseWriter on purpose: the rebuild loop runs this on a
+// timer, and a build that only a request could trigger is the thing ADR 0025
+// removes.
+func (s *Server) buildAndPublish(
+	ctx context.Context, req BuildSnapshotRequest,
+) (api.BuildReport, *buildFailure) {
 	if s.cfg.SigningKeyPath == "" {
-		writeError(w, s.log, http.StatusNotFound, CodeNotFound,
-			"this control plane holds no signing key, so it cannot build a snapshot; "+
-				"build with `mcpdoll snapshot build` where the key lives")
-		return
+		return api.BuildReport{}, &buildFailure{
+			status: http.StatusNotFound, code: CodeNotFound,
+			message: "this control plane holds no signing key, so it cannot build a snapshot; " +
+				"build with `mcpdoll snapshot build` where the key lives",
+		}
 	}
 
-	spec, ok := s.loadRegistry(w)
-	if !ok {
-		return
+	spec, err := registry.Load(s.cfg.RegistryPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return api.BuildReport{}, &buildFailure{
+				status: http.StatusNotFound, code: CodeNotFound,
+				message: fmt.Sprintf("no registry document at %s", s.cfg.RegistryPath),
+			}
+		}
+		return api.BuildReport{}, &buildFailure{
+			message:  fmt.Sprintf("%s is not a valid registry document", s.cfg.RegistryPath),
+			problems: err,
+		}
 	}
 
 	priv, err := snapshot.LoadPrivateKey(s.cfg.SigningKeyPath)
 	if err != nil {
 		s.log.Error("loading signing key failed", "error", err.Error())
-		writeError(w, s.log, http.StatusInternalServerError, CodeInternal,
-			"the configured signing key could not be loaded")
-		return
+		return api.BuildReport{}, &buildFailure{
+			status: http.StatusInternalServerError, code: CodeInternal,
+			message: "the configured signing key could not be loaded",
+		}
 	}
 	signer, err := snapshot.NewSigner(s.cfg.SigningKeyID, priv)
 	if err != nil {
-		writeError(w, s.log, http.StatusInternalServerError, CodeInternal,
-			"the configured signing key is unusable: "+err.Error())
-		return
+		return api.BuildReport{}, &buildFailure{
+			status: http.StatusInternalServerError, code: CodeInternal,
+			message: "the configured signing key is unusable: " + err.Error(),
+		}
 	}
 
 	opts := snapshotter.Options{
@@ -297,10 +331,12 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 	// pruning it would silently un-revoke a credential.
 	readAt := time.Now()
 	if s.cfg.Store != nil {
-		state, err := s.cfg.Store.SnapshotState(r.Context())
+		state, err := s.cfg.Store.SnapshotState(ctx)
 		if err != nil {
-			s.writeStoreError(w, err)
-			return
+			return api.BuildReport{}, &buildFailure{
+				status: http.StatusInternalServerError, code: CodeInternal,
+				message: "the tenancy state could not be read: " + err.Error(),
+			}
 		}
 		opts.Tenants = state.Tenants
 	}
@@ -308,10 +344,11 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 		opts.DiscoverTimeout = time.Duration(req.DiscoverTimeoutMs) * time.Millisecond
 	}
 
-	result, err := snapshotter.Build(r.Context(), opts)
+	result, err := snapshotter.Build(ctx, opts)
 	if err != nil {
-		writeProblems(w, s.log, "the snapshot could not be built", err)
-		return
+		return api.BuildReport{}, &buildFailure{
+			message: "the snapshot could not be built", problems: err,
+		}
 	}
 
 	report := api.BuildReport{
@@ -330,39 +367,76 @@ func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
 		DryRun:         req.DryRun,
 	}
 
-	if !req.DryRun {
-		if s.cfg.SnapshotPath == "" {
-			writeError(w, s.log, http.StatusConflict, CodeInvalidRequest,
-				"this control plane has no snapshot path configured; "+
-					"pass dry_run to build without writing")
-			return
-		}
-		if err := snapshot.WriteSignedSnapshot(s.cfg.SnapshotPath, result.Signed); err != nil {
-			s.log.Error("writing snapshot failed", "error", err.Error())
-			writeError(w, s.log, http.StatusInternalServerError, CodeInternal,
-				"the snapshot was built but could not be written")
-			return
-		}
-		report.Output = s.cfg.SnapshotPath
-
-		// A revocation is redundant once a snapshot built after it is serving,
-		// because that snapshot already omits the credential. Pruning here is
-		// what stops the signed list growing forever.
-		//
-		// Only after the file is written: pruning against a snapshot that never
-		// reached disk would drop denials nothing else carries.
-		if s.cfg.Store != nil {
-			if _, err := s.cfg.Store.PruneRevocations(
-				r.Context(), result.Snapshot.Version, readAt); err != nil {
-				// Not fatal. The snapshot is published and correct; the list is
-				// merely larger than it needs to be, which costs bytes rather
-				// than safety.
-				s.log.Warn("pruning revocations failed", "error", err)
-			} else if problem := s.publishRevocations(r.Context()); problem != "" {
-				report.Warnings = append(report.Warnings, problem)
-			}
+	if req.DryRun {
+		return report, nil
+	}
+	if s.cfg.SnapshotPath == "" {
+		return api.BuildReport{}, &buildFailure{
+			status: http.StatusConflict, code: CodeInvalidRequest,
+			message: "this control plane has no snapshot path configured; " +
+				"pass dry_run to build without writing",
 		}
 	}
+
+	// Publishing an identical snapshot is not free: the data plane recomposes
+	// every principal's view on a version change, so a timer that republished
+	// every minute would churn that cache all day to deliver nothing.
+	//
+	// This is why `last_built_at` is reported separately from the version — see
+	// [Server.RebuildState]. A version that only moves on change cannot, on its
+	// own, distinguish a quiet deployment from a rebuild loop that has died.
+	if same, err := publishedIsIdentical(s.cfg.SnapshotPath, result.Snapshot); err != nil {
+		s.log.Warn("comparing against the published snapshot failed", "error", err)
+	} else if same {
+		report.Unchanged = true
+		report.Output = s.cfg.SnapshotPath
+		return report, nil
+	}
+
+	if err := snapshot.WriteSignedSnapshot(s.cfg.SnapshotPath, result.Signed); err != nil {
+		s.log.Error("writing snapshot failed", "error", err.Error())
+		return api.BuildReport{}, &buildFailure{
+			status: http.StatusInternalServerError, code: CodeInternal,
+			message: "the snapshot was built but could not be written",
+		}
+	}
+	report.Output = s.cfg.SnapshotPath
+
+	// A revocation is redundant once a snapshot built after it is serving,
+	// because that snapshot already omits the credential. Pruning here is
+	// what stops the signed list growing forever.
+	//
+	// Only after the file is written: pruning against a snapshot that never
+	// reached disk would drop denials nothing else carries.
+	if s.cfg.Store != nil {
+		if _, err := s.cfg.Store.PruneRevocations(
+			ctx, result.Snapshot.Version, readAt); err != nil {
+			// Not fatal. The snapshot is published and correct; the list is
+			// merely larger than it needs to be, which costs bytes rather
+			// than safety.
+			s.log.Warn("pruning revocations failed", "error", err)
+		} else if problem := s.publishRevocations(ctx); problem != "" {
+			report.Warnings = append(report.Warnings, problem)
+		}
+	}
+	return report, nil
+}
+
+func (s *Server) handleBuildSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req BuildSnapshotRequest
+	if !decodeBody(w, r, s.log, &req) {
+		return
+	}
+	report, fail := s.buildAndPublish(r.Context(), req)
+	if fail != nil {
+		if fail.problems != nil {
+			writeProblems(w, s.log, fail.message, fail.problems)
+			return
+		}
+		writeError(w, s.log, fail.status, fail.code, fail.message)
+		return
+	}
+	s.noteRebuild(report, nil)
 	writeJSON(w, s.log, http.StatusOK, report)
 }
 

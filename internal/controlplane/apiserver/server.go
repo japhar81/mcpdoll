@@ -30,6 +30,10 @@ type Config struct {
 	RegistryPath string
 	// SnapshotPath is the file the local data plane serves.
 	SnapshotPath string
+
+	// RebuildInterval is how often the catalog is rebuilt from the backends.
+	// Zero means [DefaultRebuildInterval].
+	RebuildInterval time.Duration
 	// GatewayURL is the data plane the gateway operations inspect.
 	GatewayURL string
 	// AdminURL is the data plane's admin listener, where backend health lives.
@@ -82,6 +86,10 @@ type Server struct {
 	cfg Config
 	log *slog.Logger
 	mux *chi.Mux
+
+	// What the rebuild loop has been doing. Reported rather than only logged —
+	// see [RebuildState].
+	rebuilds rebuildTracker
 }
 
 // New builds a server, or refuses to.
@@ -451,6 +459,11 @@ func bearerOf(r *http.Request) string {
 
 func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := s.inspectorClient(r).Status(r.Context())
+	// Merged in whether or not the gateway answered. Catalog freshness is the
+	// control plane's own knowledge — it is this process that rebuilds — and a
+	// gateway that is down is exactly when somebody wants to know whether the
+	// catalog behind it is still being rebuilt.
+	s.mergeRebuildState(&status)
 	if err != nil {
 		// The populated status travels with the error, so a not-ready gateway
 		// renders as a state rather than as a blank page.
@@ -462,6 +475,15 @@ func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.log, http.StatusOK, status)
+}
+
+// mergeRebuildState stamps catalog freshness onto a gateway status.
+func (s *Server) mergeRebuildState(status *api.GatewayStatus) {
+	state := s.RebuildState()
+	status.CatalogError = state.LastError
+	if !state.LastBuiltAt.IsZero() {
+		status.CatalogAgeSeconds = time.Since(state.LastBuiltAt).Seconds()
+	}
 }
 
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {

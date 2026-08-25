@@ -59,7 +59,7 @@ export interface RouteDef {
     | "Overview"
     | "Tenancy"
     | "Registry"
-    | "Snapshots"
+    | "Catalog"
     | "Data plane"
     | "Control plane";
 }
@@ -128,40 +128,46 @@ export const ROUTES: RouteDef[] = [
     section: "Registry",
   },
 
+  // "Catalog", not "Snapshots" (ADR 0025). The catalog rebuilds itself, so a
+  // snapshot is an implementation detail of how it gets there — signed,
+  // versioned, and not something anyone has to hold in their head to use this.
   {
     path: "/snapshots",
     operation: "getCurrentSnapshot",
     component: SnapshotScreen,
-    nav: "Current",
-    section: "Snapshots",
+    nav: "What is serving",
+    section: "Catalog",
   },
   {
     path: "/snapshots/build",
     operation: "buildSnapshot",
     component: SnapshotBuildScreen,
-    nav: "Build",
-    section: "Snapshots",
+    nav: "Rebuild now",
+    section: "Catalog",
   },
+  // File tools, and that is where they belong. These read a snapshot file
+  // somebody hands them — they are how you answer "what is in this artifact",
+  // not part of running the gateway.
   {
     path: "/snapshots/inspect",
     operation: "inspectSnapshot",
     component: SnapshotInspectScreen,
-    nav: "Inspect",
-    section: "Snapshots",
+    nav: "Inspect a file",
+    section: "Control plane",
   },
   {
     path: "/snapshots/verify",
     operation: "verifySnapshot",
     component: SnapshotVerifyScreen,
-    nav: "Verify",
-    section: "Snapshots",
+    nav: "Verify a file",
+    section: "Control plane",
   },
   {
     path: "/snapshots/keys",
     operation: "generateSigningKey",
     component: KeysScreen,
     nav: "Signing keys",
-    section: "Snapshots",
+    section: "Control plane",
   },
 
   {
@@ -311,7 +317,7 @@ export const SECTIONS = [
   "Overview",
   "Tenancy",
   "Registry",
-  "Snapshots",
+  "Catalog",
   "Data plane",
   "Control plane",
 ] as const;

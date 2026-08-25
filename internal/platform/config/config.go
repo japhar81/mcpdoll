@@ -134,6 +134,15 @@ type ControlPlane struct {
 	// plane to read (ADR 0024). It must be the same file
 	// `dataplane.principals_path` points at.
 	PrincipalsPath string `yaml:"principals_path"`
+	// RebuildInterval is how often the catalog is rebuilt from the backends
+	// (ADR 0025). Zero uses the default.
+	//
+	// A rebuild is a discovery sweep of every backend behind the gateway, so
+	// this is the knob that trades how quickly a new tool appears against how
+	// much traffic the gateway generates asking. Lowering it on a deployment
+	// with many backends is how you build a thundering herd against your own
+	// upstreams.
+	RebuildInterval time.Duration `yaml:"rebuild_interval"`
 }
 
 type SnapshotConfig struct {

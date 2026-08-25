@@ -23,26 +23,23 @@ export function SnapshotBuildScreen() {
 
   return (
     <Screen
-      title="Build a snapshot"
+      title="Rebuild now"
       actions={
         <button
           className="primary"
           disabled={m.isPending}
           onClick={() => m.mutate()}
         >
-          {m.isPending
-            ? "Discovering…"
-            : dryRun
-              ? "Dry run"
-              : "Build and publish"}
+          {m.isPending ? "Discovering…" : dryRun ? "Dry run" : "Rebuild now"}
         </button>
       }
     >
       <p className="muted">
-        Discovers every backend the registry names, canonicalizes what they
-        publish, resolves toolsets and per-tenant bindings, and signs the result.
-        Any problem fails the build rather than producing a snapshot some
-        instances would refuse.
+        This happens on a timer already — the catalog does not wait for anyone.
+        Use this when you have just changed something and would rather not wait
+        out the interval. It discovers every backend the registry names,
+        resolves toolsets and per-tenant bindings, and signs the result; any
+        problem fails the rebuild rather than serving a half-resolved catalog.
       </p>
 
       <div className="card">
@@ -68,12 +65,7 @@ export function SnapshotBuildScreen() {
             a decommissioned backend, not for one that is briefly down.
           </div>
         )}
-        {!dryRun && (
-          <div className="note warn">
-            <strong>This publishes.</strong> The data plane picks the new
-            snapshot up within a few seconds, with no restart.
-          </div>
-        )}
+
       </div>
 
       {m.error != null && <ErrorBlock error={m.error} />}
@@ -84,7 +76,9 @@ export function SnapshotBuildScreen() {
             <strong>
               {m.data.dry_run
                 ? "Built (not written)."
-                : `Published version ${m.data.version}.`}
+                : m.data.unchanged
+                  ? "Nothing changed — the catalog already matched."
+                  : `Now serving version ${m.data.version}.`}
             </strong>{" "}
             {m.data.output && (
               <>

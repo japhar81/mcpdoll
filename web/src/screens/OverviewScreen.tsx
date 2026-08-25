@@ -171,13 +171,14 @@ export function OverviewScreen() {
       </ol>
 
       <div className="note">
-        <strong>Publishing is the other loop, and it is separate.</strong> Edit
-        the registry, build a snapshot from{" "}
-        <Link className="link" to="/snapshots/build">
-          Snapshots → Build
+        <strong>The catalog keeps itself current.</strong> Backends are
+        re-read on a timer, and a change — a new tool, an edited registry, a
+        new tenant — reaches the gateway on its own with no restart and nothing
+        to publish. What is serving right now is on{" "}
+        <Link className="link" to="/snapshots">
+          Catalog
         </Link>
-        , and the data plane picks it up within seconds with no restart. Nothing
-        done here interrupts a request in flight.
+        . Nothing here interrupts a request in flight.
       </div>
     </Screen>
   );

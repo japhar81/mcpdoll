@@ -296,7 +296,21 @@ type GatewayStatus struct {
 	// surface already reads rather than only in a metric.
 	RevocationsVersion    int64   `json:"revocations_version" yaml:"revocations_version"`
 	RevocationsAgeSeconds float64 `json:"revocations_age_seconds" yaml:"revocations_age_seconds"`
-	RevokedPrincipals     int     `json:"revoked_principals" yaml:"revoked_principals"`
+
+	// CatalogAgeSeconds is how long ago the catalog was last rebuilt from the
+	// backends — not how long ago it last changed.
+	//
+	// The distinction is the point, and it is the same one ADR 0023 drew for
+	// revocations. A version only moves when something changes, so on its own
+	// it cannot tell a deployment where nothing has changed from one whose
+	// rebuild loop has died. This can: it grows in exactly one case.
+	CatalogAgeSeconds float64 `json:"catalog_age_seconds,omitempty" yaml:"catalog_age_seconds,omitempty"`
+	// CatalogError is the last rebuild failure, empty when the last one worked.
+	// Reported rather than only logged: a rebuild that has been failing for an
+	// hour is invisible in a log nobody is tailing, and the catalog quietly
+	// goes stale while every version number still looks fine.
+	CatalogError      string `json:"catalog_error,omitempty" yaml:"catalog_error,omitempty"`
+	RevokedPrincipals int    `json:"revoked_principals" yaml:"revoked_principals"`
 }
 
 // TenantList is the listTenants response for the gateway.
@@ -621,6 +635,11 @@ type BuildReport struct {
 	Warnings []string        `json:"warnings,omitempty" yaml:"warnings,omitempty"`
 	Output   string          `json:"output,omitempty" yaml:"output,omitempty"`
 	DryRun   bool            `json:"dry_run" yaml:"dry_run"`
+	// Unchanged reports a build that produced the catalog already being served,
+	// so nothing was published. Distinct from DryRun: this one did all the
+	// work and found no reason to publish, which is the ordinary outcome of a
+	// rebuild on a timer.
+	Unchanged bool `json:"unchanged,omitempty" yaml:"unchanged,omitempty"`
 }
 
 // BackendReport is what discovery found at one backend.
