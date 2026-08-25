@@ -80,6 +80,22 @@ type RolePermission struct {
 	Permission string
 }
 
+type Schedule struct {
+	ID             uuid.UUID
+	JobType        string
+	Name           string
+	Kind           string
+	Spec           string
+	Enabled        bool
+	System         bool
+	NextRunAt      pgtype.Timestamptz
+	LastRunAt      pgtype.Timestamptz
+	LastError      *string
+	LastDurationMs *int32
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type Session struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID

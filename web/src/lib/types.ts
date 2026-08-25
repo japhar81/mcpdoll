@@ -342,6 +342,42 @@ export interface BuildReport {
   unchanged?: boolean;
 }
 
+export interface Schedule {
+  /** Dispatch key and stable identity; a retuned cadence hangs off it. */
+  job_type: string;
+  name: string;
+  /**
+   * Only `interval` today. Cron's finest granularity is a minute and the
+   * revocation heartbeat runs every thirty seconds, so the cadence that
+   * matters most here is one cron cannot express.
+   */
+  kind: "interval";
+  /** A Go duration for an interval schedule — "30s", "1m". */
+  spec: string;
+  enabled: boolean;
+  /**
+   * Cannot be deleted, because nothing would recreate it. Still
+   * retunable and still possible to switch off.
+   */
+  system: boolean;
+  next_run_at?: string;
+  last_run_at?: string;
+  /** Why the last run failed, absent when it succeeded. */
+  last_error?: string;
+  last_duration_ms?: number;
+}
+
+export interface ScheduleList {
+  schedules: Schedule[];
+}
+
+export interface UpdateScheduleRequest {
+  /** New cadence as a Go duration. Omitted leaves it alone. */
+  spec?: string;
+  /** Omitted leaves it alone, so either can change without the other. */
+  enabled?: boolean;
+}
+
 /**
  * What discovery found at one backend. There is no `reachable` field and
  * no error field: a backend that could not be reached fails the build

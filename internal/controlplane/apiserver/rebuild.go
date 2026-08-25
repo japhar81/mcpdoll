@@ -3,7 +3,6 @@
 package apiserver
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -49,7 +48,6 @@ type RebuildState struct {
 	// a rebuild that has been failing for an hour is invisible in a log nobody
 	// is tailing, and the catalog silently goes stale.
 	LastError string `json:"last_error,omitempty"`
-	Interval  string `json:"interval,omitempty"`
 }
 
 type rebuildTracker struct {
@@ -93,75 +91,21 @@ func (s *Server) noteRebuild(report api.BuildReport, err error) {
 }
 
 // RebuildState reports what the rebuild loop has been doing.
-func (s *Server) RebuildState() RebuildState {
-	state := s.rebuilds.snapshot()
-	state.Interval = s.rebuildInterval().String()
-	return state
-}
+//
+// Not how often it runs. That used to be here and became a lie the moment
+// cadences moved into rows (ADR 0026): this would have gone on reporting the
+// configured default while the schedule an operator retuned ran at something
+// else. The cadence has one home now, and it is the schedule.
+func (s *Server) RebuildState() RebuildState { return s.rebuilds.snapshot() }
 
+// rebuildInterval is the cadence a *new* deployment's catalog schedule is
+// created with. Once the row exists it wins, so this is a seed rather than a
+// setting — see [Store.RegisterSchedule].
 func (s *Server) rebuildInterval() time.Duration {
 	if s.cfg.RebuildInterval > 0 {
 		return s.cfg.RebuildInterval
 	}
 	return DefaultRebuildInterval
-}
-
-// RunSnapshotRebuild rebuilds the catalog until ctx is cancelled.
-//
-// Failures are logged and recorded, never fatal. A backend that cannot be
-// reached must not stop the loop: the previously published snapshot keeps
-// serving, which is the behaviour ADR 0002 exists to provide, and the next
-// tick tries again.
-func (s *Server) RunSnapshotRebuild(ctx context.Context) {
-	if s.cfg.SigningKeyPath == "" || s.cfg.SnapshotPath == "" {
-		// Nothing to publish or nothing to sign with. A control plane in this
-		// shape is a read-only one — `mcpdoll snapshot build` is run where the
-		// key lives — and a loop that failed every minute would say so once a
-		// minute forever.
-		return
-	}
-
-	s.rebuildOnce(ctx)
-
-	ticker := time.NewTicker(s.rebuildInterval())
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.rebuildOnce(ctx)
-		}
-	}
-}
-
-func (s *Server) rebuildOnce(ctx context.Context) {
-	report, fail := s.buildAndPublish(ctx, BuildSnapshotRequest{})
-	if fail != nil {
-		s.rebuilds.note(time.Now(), false, fail)
-		s.log.Warn("rebuilding the catalog failed",
-			"problem", fail.message, "detail", problemDetail(fail.problems))
-		return
-	}
-	s.noteRebuild(report, nil)
-	if report.Unchanged {
-		return
-	}
-	// Only on change. A line a minute saying nothing happened is how a log
-	// stops being read.
-	// `snapshot_version`, not `version`: the logger already carries a base
-	// field named `version` for the build, and a JSON object with the key twice
-	// is one a collector resolves however it likes.
-	s.log.Info("catalog rebuilt",
-		"snapshot_version", report.Version,
-		"tools", report.Tools, "servers", report.Servers)
-}
-
-func problemDetail(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // publishedIsIdentical reports whether the snapshot already on disk carries the

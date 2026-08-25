@@ -27,6 +27,7 @@ import { SnapshotScreen } from "./screens/SnapshotScreen.tsx";
 import { SnapshotInspectScreen } from "./screens/SnapshotInspectScreen.tsx";
 import { SnapshotBuildScreen } from "./screens/SnapshotBuildScreen.tsx";
 import { SnapshotVerifyScreen } from "./screens/SnapshotVerifyScreen.tsx";
+import { SchedulesScreen, ScheduleScreen } from "./screens/SchedulesScreen.tsx";
 import { KeysScreen } from "./screens/KeysScreen.tsx";
 import { GatewayScreen } from "./screens/GatewayScreen.tsx";
 import { BackendsScreen } from "./screens/BackendsScreen.tsx";
@@ -148,6 +149,31 @@ export const ROUTES: RouteDef[] = [
   // File tools, and that is where they belong. These read a snapshot file
   // somebody hands them — they are how you answer "what is in this artifact",
   // not part of running the gateway.
+  // Timed work (ADR 0026). Under Control plane because that is the process
+  // that runs it — the data plane's own timers stay in its config, or it would
+  // need this database to keep serving through a control-plane outage.
+  {
+    path: "/schedules",
+    operation: "listSchedules",
+    component: SchedulesScreen,
+    nav: "Schedules",
+    section: "Control plane",
+  },
+  {
+    path: "/schedules/:jobType",
+    operation: "getSchedule",
+    component: ScheduleScreen,
+  },
+  {
+    path: "/schedules/:jobType/edit",
+    operation: "updateSchedule",
+    component: ScheduleScreen,
+  },
+  {
+    path: "/schedules/:jobType/run",
+    operation: "runScheduleNow",
+    component: ScheduleScreen,
+  },
   {
     path: "/snapshots/inspect",
     operation: "inspectSnapshot",

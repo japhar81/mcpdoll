@@ -5,7 +5,6 @@ package apiserver
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/mcpdoll/mcpdoll/internal/dataplane/snapshot"
 )
@@ -23,7 +22,6 @@ import (
 // the gateway holds" grows forever in a healthy system and there is nothing to
 // alert on. With it, a growing age means the data plane has stopped receiving
 // the artifact.
-const PrincipalHeartbeat = 30 * time.Second
 
 // publishPrincipals rebuilds, signs, and writes the set.
 //
@@ -75,29 +73,6 @@ func (s *Server) publishPrincipals(ctx context.Context) string {
 	s.log.Info("published principal set",
 		"version", set.Version, "principals", len(set.Principals))
 	return ""
-}
-
-// RunPrincipalHeartbeat republishes the set until ctx is cancelled.
-func (s *Server) RunPrincipalHeartbeat(ctx context.Context) {
-	if s.cfg.Store == nil || s.cfg.PrincipalsPath == "" {
-		return
-	}
-	if problem := s.publishPrincipals(ctx); problem != "" {
-		s.log.Warn("initial principal publish failed", "problem", problem)
-	}
-
-	ticker := time.NewTicker(PrincipalHeartbeat)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if problem := s.publishPrincipals(ctx); problem != "" {
-				s.log.Warn("principal heartbeat failed", "problem", problem)
-			}
-		}
-	}
 }
 
 // warnPrincipals stamps a publish problem on a response that otherwise

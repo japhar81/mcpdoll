@@ -381,3 +381,14 @@ as a containerized control-plane→snapshot→data-plane→backend path.
 - **Snapshot distribution is full-artifact, not delta.** A few hundred kilobytes
   per publish at 20 backends. The version field already makes deltas expressible
   if it becomes a problem.
+- **Schedules are intervals, not cron.** No calendar cadences: "every hour at
+  :05" and "daily at 03:00 UTC" cannot be expressed. Nothing MCPDoll schedules
+  today wants one — the three jobs are maintenance loops, and the shortest is a
+  30-second heartbeat cron cannot express at all. The `schedules.kind` column is
+  a discriminator so an evaluator is additive when a job needs one, without
+  rewriting the table. See ADR 0026.
+- **A schedule keeps only its last outcome, not a history.** `last_run_at`,
+  `last_error`, and `last_duration_ms` are overwritten on each run, so "has this
+  been flapping?" has no answer here. A runs table would answer it and would
+  grow forever to schedule three things; the logs carry the history until
+  something needs it structured (ADR 0026).

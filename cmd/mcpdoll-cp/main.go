@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/apiserver"
+	"github.com/mcpdoll/mcpdoll/internal/controlplane/scheduler"
 	"github.com/mcpdoll/mcpdoll/internal/controlplane/store"
 	"github.com/mcpdoll/mcpdoll/internal/observability"
 	"github.com/mcpdoll/mcpdoll/internal/platform/config"
@@ -210,18 +211,13 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Republishing the revocation list on a timer is what makes its age
-	// meaningful: without it, "how old is the list the gateway holds" grows
-	// forever in a healthy deployment and there is nothing to alert on. With
-	// it, a growing age means the data plane has stopped receiving the
-	// artifact — which is the only failure that matters here (ADR 0023).
-	go server.RunRevocationHeartbeat(ctx)
-	// Same reasoning, for who exists rather than who is refused.
-	go server.RunPrincipalHeartbeat(ctx)
-	// And the catalog itself, which nobody publishes any more (ADR 0025). The
-	// registry says what should be served and the backends say what they have;
-	// combining them was never a decision that needed a person.
-	go server.RunSnapshotRebuild(ctx)
+	// Everything this control plane does on its own, from rows rather than
+	// from three goroutines with hardcoded tickers (ADR 0026). The cadences
+	// live in the database, so retuning one is an edit rather than a deploy,
+	// and a job that has been failing since Tuesday says so on its own row.
+	if db != nil {
+		go scheduler.New(db, log, server.ScheduledJobs()...).Run(ctx)
+	}
 
 	select {
 	case err := <-errs:

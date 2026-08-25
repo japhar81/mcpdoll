@@ -615,6 +615,28 @@ type ToolSummary struct {
 }
 
 // BuildReport is the outcome of resolving a registry into a snapshot.
+// Schedule is one piece of timed work (ADR 0026).
+type Schedule struct {
+	JobType string `json:"job_type" yaml:"job_type"`
+	Name    string `json:"name" yaml:"name"`
+	Kind    string `json:"kind" yaml:"kind"`
+	// Spec is a Go duration for an interval schedule: "30s", "1m".
+	Spec    string `json:"spec" yaml:"spec"`
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	// System schedules cannot be deleted — nothing would recreate them. Their
+	// cadence is still editable and they can still be switched off.
+	System         bool   `json:"system" yaml:"system"`
+	NextRunAt      string `json:"next_run_at,omitempty" yaml:"next_run_at,omitempty"`
+	LastRunAt      string `json:"last_run_at,omitempty" yaml:"last_run_at,omitempty"`
+	LastError      string `json:"last_error,omitempty" yaml:"last_error,omitempty"`
+	LastDurationMs int32  `json:"last_duration_ms,omitempty" yaml:"last_duration_ms,omitempty"`
+}
+
+// ScheduleList is everything the platform does on its own.
+type ScheduleList struct {
+	Schedules []Schedule `json:"schedules" yaml:"schedules"`
+}
+
 type BuildReport struct {
 	Version        int64  `json:"version" yaml:"version"`
 	SnapshotID     string `json:"snapshot_id" yaml:"snapshot_id"`

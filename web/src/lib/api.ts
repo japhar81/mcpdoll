@@ -19,6 +19,9 @@ import type {
   SessionInfo,
   Tenant,
   TenantList,
+  Schedule,
+  ScheduleList,
+  UpdateScheduleRequest,
   User,
   UserList,
   BackendHealthReport,
@@ -245,6 +248,31 @@ export const listBackends = () =>
   request<BackendHealthReport>("GET", "/api/v1/gateway/backends");
 
 export const listTenants = () => request<TenantList>("GET", "/api/v1/tenants");
+
+// Timed work (ADR 0026). The job type is the identity, and it is a plain
+// token — encoded anyway, because a path segment interpolated raw is how a
+// name with a slash in it silently becomes a different route.
+export const listSchedules = () =>
+  request<ScheduleList>("GET", "/api/v1/schedules");
+
+export const getSchedule = (jobType: string) =>
+  request<Schedule>("GET", `/api/v1/schedules/${encodeURIComponent(jobType)}`);
+
+export const updateSchedule = (
+  jobType: string,
+  body: UpdateScheduleRequest,
+) =>
+  request<Schedule>(
+    "PATCH",
+    `/api/v1/schedules/${encodeURIComponent(jobType)}`,
+    body,
+  );
+
+export const runScheduleNow = (jobType: string) =>
+  request<Schedule>(
+    "POST",
+    `/api/v1/schedules/${encodeURIComponent(jobType)}:run`,
+  );
 
 /**
  * What one credential can see.

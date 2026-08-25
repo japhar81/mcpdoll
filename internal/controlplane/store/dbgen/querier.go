@@ -20,6 +20,15 @@ type Querier interface {
 	BumpPrincipalVersion(ctx context.Context) (RevocationState, error)
 	// Monotonic, and the version the data plane compares against what it holds.
 	BumpRevocationVersion(ctx context.Context) (RevocationState, error)
+	// Atomically take one due schedule and push its next run out.
+	//
+	// The `next_run_at <= now()` in the WHERE clause is what makes this safe with
+	// more than one control-plane replica: the row lock serializes the update, and
+	// the loser's WHERE no longer matches, so it claims nothing. Ragdoll's
+	// scheduler documented the opposite — listDue then markRun, unfenced, with a
+	// note that two instances double-fire and would need leader election. Claiming
+	// in the UPDATE costs nothing and removes that whole class of problem.
+	ClaimDueSchedule(ctx context.Context, arg ClaimDueScheduleParams) (Schedule, error)
 	// CountUsersByTenant answers the tenant list in one query rather than one per
 	// tenant. A tenant list is the first screen an operator opens, and N+1 there is
 	// N+1 forever.
@@ -50,6 +59,11 @@ type Querier interface {
 	// string, so renaming a tenant would orphan every grant naming it.
 	DeleteTenant(ctx context.Context, id uuid.UUID) error
 	DeleteUser(ctx context.Context, id uuid.UUID) error
+	// Bring a schedule forward so the next tick takes it. "Run now" without a
+	// second execution path: the same loop, the same claim, the same outcome
+	// recording. A separate synchronous run would be a second way for a job to
+	// happen, and the two would drift.
+	DueNow(ctx context.Context, jobType string) error
 	GetAPIKey(ctx context.Context, id uuid.UUID) (ApiKey, error)
 	// The authentication path. Looks up by the public prefix; the caller then
 	// verifies the secret against `hash`. Revoked and expired keys are returned
@@ -59,6 +73,7 @@ type Querier interface {
 	GetAuthSettings(ctx context.Context) (AuthSetting, error)
 	GetIdentityProviderBySlug(ctx context.Context, slug string) (IdentityProvider, error)
 	GetRevocationState(ctx context.Context) (RevocationState, error)
+	GetScheduleByJobType(ctx context.Context, jobType string) (Schedule, error)
 	// The authentication path. Looks up by the public prefix; the caller verifies
 	// the secret against `hash`. Revoked and expired rows are returned rather than
 	// filtered, so the caller can tell "expired" from "no such session" — the two
@@ -102,12 +117,14 @@ type Querier interface {
 	ListIdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
 	ListIdentityProviders(ctx context.Context) ([]IdentityProvider, error)
 	ListRolePermissions(ctx context.Context) ([]RolePermission, error)
+	ListSchedules(ctx context.Context) ([]Schedule, error)
 	ListSessionsByUser(ctx context.Context, userID uuid.UUID) ([]Session, error)
 	ListTenants(ctx context.Context) ([]Tenant, error)
 	// Users *granted into* a tenant rather than owned by one. A more useful
 	// listing than ownership was: it answers "who can reach this tenant", which is
 	// the question an administrator is actually asking.
 	ListUsersInTenant(ctx context.Context, scope string) ([]User, error)
+	RecordScheduleOutcome(ctx context.Context, arg RecordScheduleOutcomeParams) error
 	RemoveRolePermission(ctx context.Context, arg RemoveRolePermissionParams) error
 	RevokeAPIKey(ctx context.Context, id uuid.UUID) error
 	RevokeGrant(ctx context.Context, arg RevokeGrantParams) error
@@ -127,8 +144,15 @@ type Querier interface {
 	UnlinkIdentity(ctx context.Context, id uuid.UUID) error
 	UpdateAuthSettings(ctx context.Context, arg UpdateAuthSettingsParams) (AuthSetting, error)
 	UpdateIdentityProvider(ctx context.Context, arg UpdateIdentityProviderParams) (IdentityProvider, error)
+	UpdateScheduleCadence(ctx context.Context, arg UpdateScheduleCadenceParams) (Schedule, error)
 	UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Tenant, error)
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
+	// Registration, run at startup for every job the binary knows how to do.
+	//
+	// The cadence is NOT overwritten on conflict. A schedule an operator has
+	// retuned or disabled must survive a restart — otherwise every deploy silently
+	// reverts their decision, which is worse than not letting them make it.
+	UpsertSystemSchedule(ctx context.Context, arg UpsertSystemScheduleParams) (Schedule, error)
 }
 
 var _ Querier = (*Queries)(nil)

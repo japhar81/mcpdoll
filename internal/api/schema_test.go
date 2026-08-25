@@ -38,6 +38,8 @@ import (
 // implements; a new Go type with no schema is an undocumented response.
 var schemas = map[string]any{
 	"Health":                api.Health{},
+	"Schedule":              api.Schedule{},
+	"ScheduleList":          api.ScheduleList{},
 	"HookList":              api.HookList{},
 	"Registry":              api.Registry{},
 	"RegistrySummary":       api.RegistrySummary{},
@@ -89,6 +91,7 @@ var schemas = map[string]any{
 	"VerifySnapshotRequest":     apiserver.VerifySnapshotRequest{},
 	"BuildSnapshotRequest":      apiserver.BuildSnapshotRequest{},
 	"GenerateSigningKeyRequest": apiserver.GenerateSigningKeyRequest{},
+	"UpdateScheduleRequest":     apiserver.UpdateScheduleRequest{},
 	"CallToolRequest":           apiserver.CallToolRequest{},
 	"CreateTenantRequest":       apiserver.CreateTenantRequest{},
 	"CreateUserRequest":         apiserver.CreateUserRequest{},

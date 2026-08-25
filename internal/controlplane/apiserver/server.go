@@ -217,6 +217,19 @@ func (s *Server) routes() {
 		r.With(s.require(authz.PermKeyGenerate, global)).
 			Post("/keys:generate", s.handleGenerateSigningKey)
 
+		// Reading what the platform does on its own is an inspection; changing
+		// it is platform surgery. Retuning the catalog rebuild changes how fast
+		// every tenant's tools update, and disabling the revocation heartbeat
+		// widens the exposure window for every leaked credential here.
+		r.With(s.require(authz.PermGatewayInspect, global)).Group(func(r chi.Router) {
+			r.Get("/schedules", s.handleListSchedules)
+			r.Get("/schedules/{jobType}", s.handleGetSchedule)
+		})
+		r.With(s.require(schedulePermission, global)).Group(func(r chi.Router) {
+			r.Patch("/schedules/{jobType}", s.handleUpdateSchedule)
+			r.Post("/schedules/{jobType}:run", s.handleRunScheduleNow)
+		})
+
 		r.With(s.require(authz.PermGatewayInspect, global)).Group(func(r chi.Router) {
 			r.Get("/gateway/status", s.handleGatewayStatus)
 			r.Get("/gateway/backends", s.handleListBackends)

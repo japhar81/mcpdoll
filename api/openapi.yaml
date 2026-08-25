@@ -162,6 +162,92 @@ paths:
               schema: { $ref: "#/components/schemas/Server" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/schedules:
+    get:
+      operationId: listSchedules
+      summary: Everything the platform does on its own
+      description: |
+        Timed work is a row rather than a hardcoded ticker (ADR 0026), so this
+        answers "what does this system do without being asked, how often, when
+        did it last run, and did it work".
+      tags: [schedules]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll schedules list
+        ui: /schedules
+      responses:
+        "200":
+          description: Every schedule, enabled or not
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleList" }
+
+  /api/v1/schedules/{jobType}:
+    get:
+      operationId: getSchedule
+      summary: Read one piece of timed work
+      tags: [schedules]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll schedules show
+        ui: /schedules/:jobType
+      parameters:
+        - { name: jobType, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateSchedule
+      summary: Retune or switch off one piece of timed work
+      description: |
+        Changing a cadence takes effect without a restart, and re-arms the next
+        run from now — otherwise lengthening an interval would appear not to
+        have taken until the old one elapsed.
+      tags: [schedules]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll schedules set
+        ui: /schedules/:jobType/edit
+      parameters:
+        - { name: jobType, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateScheduleRequest" }
+      responses:
+        "200":
+          description: The updated schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/schedules/{jobType}:run:
+    post:
+      operationId: runScheduleNow
+      summary: Bring a schedule forward so it runs on the next tick
+      description: |
+        Does not run the job inline. It moves the next run to now and the
+        scheduler picks it up, through the same claim and the same outcome
+        recording as any other run — a second execution path would be a second
+        way for the job to happen, and the two would drift.
+      tags: [schedules]
+      x-mcpdoll-surfaces:
+        cli: mcpdoll schedules run
+        ui: /schedules/:jobType/run
+      parameters:
+        - { name: jobType, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: The schedule, now due
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/snapshots/current:
     get:
       operationId: getCurrentSnapshot
@@ -1389,6 +1475,55 @@ components:
             published. Distinct from dry_run: this one did all the work and
             found no reason to publish, which is the ordinary outcome of a
             rebuild on a timer.
+
+    Schedule:
+      type: object
+      required: [job_type, name, kind, spec, enabled, system]
+      properties:
+        job_type:
+          type: string
+          description: Dispatch key and stable identity; a retuned cadence hangs off it.
+        name: { type: string }
+        kind:
+          type: string
+          enum: [interval]
+          description: |
+            Only `interval` today. Cron's finest granularity is a minute and the
+            revocation heartbeat runs every thirty seconds, so the cadence that
+            matters most here is one cron cannot express.
+        spec:
+          type: string
+          description: A Go duration for an interval schedule — "30s", "1m".
+        enabled: { type: boolean }
+        system:
+          type: boolean
+          description: |
+            Cannot be deleted, because nothing would recreate it. Still
+            retunable and still possible to switch off.
+        next_run_at: { type: string, format: date-time }
+        last_run_at: { type: string, format: date-time }
+        last_error:
+          type: string
+          description: Why the last run failed, absent when it succeeded.
+        last_duration_ms: { type: integer }
+
+    ScheduleList:
+      type: object
+      required: [schedules]
+      properties:
+        schedules:
+          type: array
+          items: { $ref: "#/components/schemas/Schedule" }
+
+    UpdateScheduleRequest:
+      type: object
+      properties:
+        spec:
+          type: string
+          description: New cadence as a Go duration. Omitted leaves it alone.
+        enabled:
+          type: boolean
+          description: Omitted leaves it alone, so either can change without the other.
 
     BackendReport:
       type: object
