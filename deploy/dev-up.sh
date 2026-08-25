@@ -370,6 +370,12 @@ echo
 
 # The console is optional: everything above is usable from the CLI, and a
 # missing node_modules should slow nobody down who is working on the Go side.
+#
+# Skipped rather than installed, deliberately. `npm ci` from a script somebody
+# ran to get a Go stack up is a surprising thirty seconds and a surprising write
+# to their tree. `make web-deps` is the one that installs, and the message below
+# names it — the failure this avoids is not the missing directory, it is the
+# `sh: vite: command not found` that names a binary instead of a cause.
 if [ -d web/node_modules ]; then
   info "starting the console on :5173"
   ( cd web && npm run dev -- --port 5173 ) > "${LOG_DIR}/console.log" 2>&1 &
@@ -379,7 +385,7 @@ if [ -d web/node_modules ]; then
     || warn "the console did not start; see ${LOG_DIR}/console.log"
   echo
 else
-  warn "web/node_modules is absent — skipping the console. Run 'cd web && npm install'."
+  warn "web/node_modules is absent — skipping the console. Run 'make web-deps'."
   CONSOLE_PID=""
 fi
 

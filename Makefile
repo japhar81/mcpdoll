@@ -57,8 +57,30 @@ test-conformance:
 test-all: test test-conformance test-web
 
 ## test-web: console typecheck and unit tests
-test-web:
+test-web: web-deps
 	cd web && npm run typecheck && npm test --silent
+
+# ------------------------------------------------------------ web deps ----
+
+# Every target below that runs `npm` depends on this.
+#
+# Without it the failure is `sh: vite: command not found`, which points at
+# nothing: the last person to hit it went looking for a misconfigured port in
+# vite.config.ts, because the error named a missing binary rather than a
+# missing install. The build system assumed a step it never performed and never
+# checked.
+#
+# The stamp file, not the directory, is the target: npm rewrites paths inside
+# node_modules without changing the directory's own mtime, so a directory
+# target would go stale silently and never reinstall.
+WEB_DEPS := web/node_modules/.mcpdoll-installed
+
+## web-deps: install the console's dependencies if the lockfile is newer
+web-deps: $(WEB_DEPS)
+
+$(WEB_DEPS): web/package.json web/package-lock.json
+	cd web && npm ci
+	@mkdir -p $(dir $@) && touch $@
 
 # ------------------------------------------------------------- generate ----
 
@@ -70,7 +92,7 @@ generate-go:
 
 # The console's route manifest is generated from its router, so it cannot
 # describe a route that does not exist. See tools/paritycheck.
-generate-ts:
+generate-ts: web-deps
 	$(GO) run ./tools/gents
 	cd web && npm run routes
 
@@ -85,7 +107,7 @@ verify-generated: generate
 # --------------------------------------------------------------- parity ----
 
 ## console: build the console into web/dist
-console:
+console: web-deps
 	cd web && npm run build
 
 ## parity: enforce the tri-surface law — every operation has a CLI cmd + UI route
@@ -101,7 +123,7 @@ parity: $(BIN)/mcpdoll generate-ts
 # ----------------------------------------------------------------- lint ----
 
 ## lint: vet + formatting check + console typecheck
-lint: fmt-check
+lint: fmt-check web-deps
 	$(GO) vet ./...
 	cd web && npm run typecheck
 
@@ -163,5 +185,5 @@ obs:
 
 .PHONY: help build clean test test-race test-cover test-conformance test-all \
         test-web test-e2e generate generate-go generate-ts verify-generated \
-        parity lint fmt fmt-check dev dev-down obs \
+        parity lint fmt fmt-check dev dev-down obs web-deps \
         up down down-hard ps logs restart
