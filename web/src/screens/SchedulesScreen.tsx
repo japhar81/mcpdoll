@@ -7,7 +7,7 @@ import {
   updateSchedule,
 } from "../lib/api.ts";
 import { ErrorBlock, Screen, Table } from "../components/Screen.tsx";
-import type { Schedule } from "../lib/types.ts";
+import type { Schedule, ScheduleList } from "../lib/types.ts";
 
 // Everything the platform does without being asked (ADR 0026).
 //
@@ -45,7 +45,57 @@ export function SchedulesScreen() {
           ])}
         />
       )}
+
+      {q.data && <DataPlaneTimers list={q.data} />}
     </Screen>
+  );
+}
+
+// The data plane's cadences, shown and not editable.
+//
+// Here because a page titled "Schedules" that listed only half the platform's
+// timed work would leave somebody concluding nothing else runs. Read-only
+// because these live in the data plane's own config: a probe cadence stored in
+// the control plane's database would stop the data plane noticing an unhealthy
+// backend during exactly the control-plane outage the split exists to survive.
+function DataPlaneTimers(props: { list: ScheduleList }) {
+  const { data_plane_timers, data_plane_source, data_plane_error } = props.list;
+
+  return (
+    <>
+      <h2>Data plane</h2>
+      {data_plane_error ? (
+        <div className="note warn">
+          Could not read the data plane&apos;s timers, so this list is only the
+          control plane&apos;s: {data_plane_error}
+        </div>
+      ) : (
+        <p className="muted">
+          The data plane runs these itself and they are not editable here.
+          They live in {data_plane_source ?? "its config file"} on purpose — a
+          probe cadence stored in the control plane&apos;s database would stop
+          the data plane noticing an unhealthy backend during exactly the
+          control-plane outage it is built to survive.
+        </p>
+      )}
+      {data_plane_timers && data_plane_timers.length > 0 && (
+        <Table
+          columns={["Timer", "Every"]}
+          rows={data_plane_timers.map((t) => [
+            <>
+              {t.name}
+              {t.description && (
+                <>
+                  <br />
+                  <span className="muted">{t.description}</span>
+                </>
+              )}
+            </>,
+            t.every,
+          ])}
+        />
+      )}
+    </>
   );
 }
 

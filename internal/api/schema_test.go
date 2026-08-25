@@ -39,6 +39,7 @@ import (
 var schemas = map[string]any{
 	"Health":                api.Health{},
 	"Schedule":              api.Schedule{},
+	"Timer":                 api.Timer{},
 	"ScheduleList":          api.ScheduleList{},
 	"HookList":              api.HookList{},
 	"Registry":              api.Registry{},

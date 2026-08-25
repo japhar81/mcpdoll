@@ -288,6 +288,10 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// tool has no business reading it. Bind it to an internal interface.
 	adminMux := http.NewServeMux()
 	adminMux.Handle("GET /admin/backends", prober.Registry().Handler(log))
+	// The data plane's own cadences, reported so the console can show them
+	// beside the control plane's schedules without owning them (ADR 0026).
+	adminMux.Handle("GET /admin/timers", health.TimersHandler(
+		log, cfg.Health.ProbeInterval, cfg.Health.DriftScanInterval, cfg.Health.GraceWindow))
 	adminMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

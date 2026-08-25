@@ -367,8 +367,30 @@ export interface Schedule {
   last_duration_ms?: number;
 }
 
+export interface Timer {
+  name: string;
+  /** A Go duration, such as 30s or 1m. */
+  every: string;
+  description?: string;
+}
+
 export interface ScheduleList {
   schedules: Schedule[];
+  /**
+   * The data plane's own cadences, read-only. They are configured in its
+   * config file rather than here: a probe cadence living in this
+   * database would stop the data plane noticing an unhealthy backend
+   * during exactly the control-plane outage the split exists to survive
+   * (ADR 0026).
+   */
+  data_plane_timers?: Timer[];
+  data_plane_source?: string;
+  /**
+   * Why the data plane's timers are missing. Reported rather than
+   * omitted silently — a list that dropped half the platform's timed
+   * work without saying so is the half-truth this avoids.
+   */
+  data_plane_error?: string;
 }
 
 export interface UpdateScheduleRequest {

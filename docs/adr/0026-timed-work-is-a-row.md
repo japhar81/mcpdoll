@@ -89,9 +89,12 @@ stop it from noticing an unhealthy backend, during precisely the outage ADR
 owns its cadence, unless it can afford to lose the database.** The control
 plane already cannot run without one. The data plane already must.
 
-That is also why the schedules screen sits under Control plane rather than
-being presented as the platform's list of everything timed. It is one process's
-list, honestly labelled.
+They are still *shown*, though. The data plane reports its cadences on its
+admin listener and the schedules surfaces list them read-only, because a page
+titled "Schedules" that quietly listed only half the platform's timed work
+would leave a reader concluding nothing else runs. Seen, not owned — and when
+the data plane cannot be reached, the list says so rather than silently
+shortening.
 
 ### Cadence lives in one place
 

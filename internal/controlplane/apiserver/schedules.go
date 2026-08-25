@@ -36,6 +36,21 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		out.Schedules = append(out.Schedules, scheduleOf(row))
 	}
+
+	// The data plane's own cadences, read-only. Included because a list of the
+	// platform's timed work that quietly omitted half of it would be worse than
+	// no list — somebody would read this and conclude nothing else is running.
+	//
+	// A failure here is reported, not fatal: the schedules this control plane
+	// owns are still the answer to the question that was asked.
+	timers, err := s.inspectorClient(r).Timers(r.Context())
+	switch {
+	case err != nil:
+		out.DataPlaneError = err.Error()
+	default:
+		out.DataPlaneTimers = timers.Timers
+		out.DataPlaneSource = timers.Source
+	}
 	writeJSON(w, s.log, http.StatusOK, out)
 }
 

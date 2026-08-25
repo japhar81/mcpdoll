@@ -1507,6 +1507,16 @@ components:
           description: Why the last run failed, absent when it succeeded.
         last_duration_ms: { type: integer }
 
+    Timer:
+      type: object
+      required: [name, every]
+      properties:
+        name: { type: string }
+        every:
+          type: string
+          description: A Go duration, such as 30s or 1m.
+        description: { type: string }
+
     ScheduleList:
       type: object
       required: [schedules]
@@ -1514,6 +1524,22 @@ components:
         schedules:
           type: array
           items: { $ref: "#/components/schemas/Schedule" }
+        data_plane_timers:
+          type: array
+          description: |
+            The data plane's own cadences, read-only. They are configured in its
+            config file rather than here: a probe cadence living in this
+            database would stop the data plane noticing an unhealthy backend
+            during exactly the control-plane outage the split exists to survive
+            (ADR 0026).
+          items: { $ref: "#/components/schemas/Timer" }
+        data_plane_source: { type: string }
+        data_plane_error:
+          type: string
+          description: |
+            Why the data plane's timers are missing. Reported rather than
+            omitted silently — a list that dropped half the platform's timed
+            work without saying so is the half-truth this avoids.
 
     UpdateScheduleRequest:
       type: object

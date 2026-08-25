@@ -632,9 +632,37 @@ type Schedule struct {
 	LastDurationMs int32  `json:"last_duration_ms,omitempty" yaml:"last_duration_ms,omitempty"`
 }
 
+// Timer is one cadence the data plane runs on its own.
+//
+// Not a Schedule, and the difference is the point. A schedule is a row this
+// control plane owns and can retune; a timer is configured in the data plane's
+// own file and is reported here only so the platform's timed work can be seen
+// in one place (ADR 0026).
+type Timer struct {
+	Name        string `json:"name" yaml:"name"`
+	Every       string `json:"every" yaml:"every"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// TimerReport is the data plane's cadences and where they are configured.
+type TimerReport struct {
+	Timers []Timer `json:"timers" yaml:"timers"`
+	// Source tells a reader where to change these, rather than leaving them
+	// looking like a control that does nothing.
+	Source string `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
 // ScheduleList is everything the platform does on its own.
 type ScheduleList struct {
 	Schedules []Schedule `json:"schedules" yaml:"schedules"`
+	// DataPlaneTimers are read-only and may be absent: the data plane can be
+	// unreachable, or this control plane may hold no admin URL for it. Absent
+	// means "could not ask", which is why the reason travels with it.
+	DataPlaneTimers []Timer `json:"data_plane_timers,omitempty" yaml:"data_plane_timers,omitempty"`
+	DataPlaneSource string  `json:"data_plane_source,omitempty" yaml:"data_plane_source,omitempty"`
+	// DataPlaneError says why the timers are missing. A list that silently
+	// omitted them would be the half-truth this whole endpoint exists to avoid.
+	DataPlaneError string `json:"data_plane_error,omitempty" yaml:"data_plane_error,omitempty"`
 }
 
 type BuildReport struct {

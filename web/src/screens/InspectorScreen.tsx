@@ -111,17 +111,21 @@ export function InspectorScreen() {
           <strong>2 — paste it into the Inspector</strong>
         </div>
         <p className="muted">
-          Open <em>Authentication</em> in the Inspector&apos;s connection pane,
-          set the header name to <code>Authorization</code> and the value to{" "}
+          Open the <code>mcpdoll</code> server below, then{" "}
+          <em>Authentication</em> in its connection pane. Set the header name to{" "}
+          <code>Authorization</code> and the value to{" "}
           <code>Bearer &lt;paste&gt;</code>, then Connect. The server URL is
-          already set.
+          already filled in.
         </p>
         <p className="muted">
           One Inspector serves everyone here, which is why it cannot be
           pre-authenticated: a credential baked in at launch would be handed to
-          whoever opens the page next. From your own machine,{" "}
-          <code>mcpdoll inspector</code> skips the paste — that process is
-          yours.
+          whoever opens the page next. For the same reason, a header saved here
+          is saved for everyone using this development Inspector until the
+          container is recreated — the keys minted above expire in an hour,
+          which is what keeps that bounded. From your own machine,{" "}
+          <code>mcpdoll inspector</code> skips the paste entirely, because that
+          process is yours.
         </p>
       </div>
 

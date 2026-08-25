@@ -166,12 +166,27 @@ func schedulePath(jobType string) string {
 type scheduleListReport api.ScheduleList
 
 func (r scheduleListReport) Table() Table {
-	rows := make([][]string, 0, len(r.Schedules))
+	rows := make([][]string, 0, len(r.Schedules)+len(r.DataPlaneTimers))
 	for _, s := range r.Schedules {
 		rows = append(rows, []string{
 			s.JobType, s.Name, s.Spec, scheduleState(s), lastRun(s),
 		})
 	}
+
+	// The data plane's own cadences, listed and marked read-only. A table that
+	// showed only the control plane's would leave a reader concluding nothing
+	// else runs on a timer, which is the half-truth this avoids.
+	for _, t := range r.DataPlaneTimers {
+		rows = append(rows, []string{
+			"(data plane)", t.Name, t.Every, "read-only", "—",
+		})
+	}
+	if r.DataPlaneError != "" {
+		rows = append(rows, []string{
+			"(data plane)", "could not be read: " + r.DataPlaneError, "—", "unknown", "—",
+		})
+	}
+
 	return Table{
 		Columns: []string{"JOB", "NAME", "EVERY", "STATE", "LAST RUN"},
 		Rows:    rows,

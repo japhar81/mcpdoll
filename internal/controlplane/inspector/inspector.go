@@ -523,3 +523,46 @@ func (c *Client) Backends(ctx context.Context) (api.BackendHealthReport, error) 
 	}
 	return out, nil
 }
+
+// Timers reports the data plane's own cadences (ADR 0026).
+//
+// Read rather than owned: these are configured in the data plane's own file,
+// because a probe cadence that lived in the control plane's database would stop
+// the data plane noticing an unhealthy backend during exactly the outage the
+// two-plane split exists to survive. This exists so the console can show them
+// beside the schedules instead of implying the control plane's list is the
+// whole story.
+func (c *Client) Timers(ctx context.Context) (api.TimerReport, error) {
+	var out api.TimerReport
+
+	if strings.TrimSpace(c.AdminURL) == "" {
+		return out, ErrNoAdminURL
+	}
+
+	url := strings.TrimRight(c.AdminURL, "/") + "/admin/timers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return out, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return out, fmt.Errorf("%w: cannot reach the data plane's admin listener at %s: %v",
+			ErrUnavailable, c.AdminURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("%w: %s returned %d", ErrUnavailable, url, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, fmt.Errorf("%w: %s returned an unreadable body: %v", ErrUnavailable, url, err)
+	}
+	if out.Timers == nil {
+		out.Timers = []api.Timer{}
+	}
+	return out, nil
+}

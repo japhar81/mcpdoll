@@ -47,4 +47,29 @@ if ! grep -q 'mcpdoll-theme' "${INDEX}"; then
   echo "inspector: client themed to match the console"
 fi
 
-exec mcp-inspector --web --transport http --server-url http://dataplane:8080/mcp
+# A writable catalog, not an ad-hoc server.
+#
+# Passing --transport/--server-url makes the Inspector treat the session as
+# ad-hoc and lock it read-only: the banner says "changes won't be saved" and the
+# connection pane cannot be edited — so there is nowhere to paste the
+# Authorization header, which is the one thing this page exists for.
+#
+# --catalog points at a writable file instead. Seeded here with the gateway so
+# the URL is still filled in, and only when absent so that anything edited
+# through the UI survives a restart of this process.
+CATALOG=/tmp/mcpdoll-catalog.json
+if [ ! -f "${CATALOG}" ]; then
+  cat > "${CATALOG}" <<'JSON'
+{
+  "mcpServers": {
+    "mcpdoll": {
+      "type": "http",
+      "url": "http://dataplane:8080/mcp"
+    }
+  }
+}
+JSON
+  echo "inspector: seeded a writable catalog at ${CATALOG}"
+fi
+
+exec mcp-inspector --web --catalog "${CATALOG}"
