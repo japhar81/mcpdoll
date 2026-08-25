@@ -5,6 +5,20 @@
  * The tokens are named here rather than repeated as literals, which RAGdoll
  * does not do — the values are identical, the indirection is not. */
 :root {
+  /* `only light`, not `light`. Plain `light` says what the page prefers, and a
+   * browser set to force dark on pages that lack a dark theme reads that as a
+   * preference it is free to override — which is exactly what it was doing.
+   * The `only` keyword is the opt-out: it forbids the override.
+   *
+   * Declared twice on purpose. A browser that does not parse `only` drops that
+   * whole declaration and keeps the first, which is still better than nothing.
+   *
+   * Also in a meta tag, which lands before this stylesheet does — the meta is
+   * what the browser reads first, and this is what survives if the document
+   * head is ever restructured. */
+  color-scheme: light;
+  color-scheme: only light;
+
   --ink: #111827;
   --ink-dim: #64748b;
   --line: #e5e7eb;
@@ -528,4 +542,12 @@ a.link:hover { text-decoration: underline; }
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
+  /* An embedder's colour scheme propagates into the document it embeds, so
+   * this is a second answer to the Inspector's `prefers-color-scheme` on top
+   * of the value planted in its storage by deploy/docker/inspector.sh. Two
+   * mechanisms because they fail differently: the injected script stops
+   * applying if a future Inspector moves its client, and this stops applying
+   * if the Inspector ever stores a scheme of its own. */
+  color-scheme: light;
+  color-scheme: only light;
 }

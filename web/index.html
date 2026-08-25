@@ -3,6 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Declared, and light on purpose. This console has one palette. A page
+         that declares nothing is a page the browser is free to force-darken
+         itself, which it does on a machine set to dark — and its guess is not
+         this palette. `only light` is the opt-out rather than a preference:
+         plain `light` is something a browser forcing dark will override. -->
+    <meta name="color-scheme" content="only light" />
     <title>MCPDoll</title>
   </head>
   <body>

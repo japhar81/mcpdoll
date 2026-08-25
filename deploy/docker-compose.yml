@@ -304,9 +304,10 @@ services:
     # user's credential into it would hand that credential to the next person to
     # open the page. The console mints a key for whoever is signed in and copies
     # it to their clipboard to paste here.
-    command: >
-      sh -c "npx -y @modelcontextprotocol/inspector --web
-             --transport http --server-url http://dataplane:8080/mcp"
+    # A script rather than an inline command: it pins the version, patches the
+    # client to boot in the console's theme, and fails loudly if the file it
+    # patches has moved. See deploy/docker/inspector.sh.
+    command: ["sh", "/opt/inspector.sh"]
     environment:
       # Its own UI auth, disabled: this is a dev stack behind localhost, and a
       # token the console cannot know would only be a second thing to paste.
@@ -314,6 +315,8 @@ services:
       HOST: "0.0.0.0"
       DANGEROUSLY_BIND_ALL_INTERFACES: "true"
       ALLOWED_ORIGINS: "http://localhost:6274,http://localhost:5173"
+    volumes:
+      - ./docker/inspector.sh:/opt/inspector.sh:ro
     ports:
       - "6274:6274"
     depends_on:
