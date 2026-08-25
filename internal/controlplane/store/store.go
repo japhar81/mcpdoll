@@ -113,10 +113,16 @@ type APIKey struct {
 	// rather than on its owner, because tool names collide across tenants and a
 	// session must resolve to exactly one — the same reason ragdoll scopes its
 	// keys to an environment.
-	TenantID uuid.UUID     `json:"tenant_id"`
-	Name     string        `json:"name"`
-	Prefix   string        `json:"prefix"`
-	Declared []authz.Grant `json:"declared_grants"`
+	//
+	// Nil when SpansTenants is set: such a key resolves to several, and which
+	// ones is decided by its grants.
+	TenantID *uuid.UUID `json:"tenant_id,omitempty"`
+	// SpansTenants makes the catalog cover every tenant the grants reach, with
+	// tool names qualified as <tenant>.<prefix>.<tool> (ADR 0027).
+	SpansTenants bool          `json:"spans_tenants,omitempty"`
+	Name         string        `json:"name"`
+	Prefix       string        `json:"prefix"`
+	Declared     []authz.Grant `json:"declared_grants"`
 
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -453,9 +459,14 @@ func (s *Store) GrantsForUser(ctx context.Context, userID uuid.UUID) ([]authz.Gr
 // can shrink after a key is minted, so the check has to happen at resolution
 // anyway — and doing it here as well would only make the *first* moment strict
 // while leaving every later one to the real check.
+// A nil tenantID mints a spanning key (ADR 0027): one whose catalog covers
+// every tenant its grants reach, with tenant-qualified tool names. Opt-in,
+// because an ordinary key cannot address another tenant at all and that
+// structural isolation is worth keeping as the default.
 func (s *Store) MintAPIKey(
 	ctx context.Context,
-	userID, tenantID uuid.UUID,
+	userID uuid.UUID,
+	tenantID *uuid.UUID,
 	name string,
 	declared []authz.Grant,
 	expiresAt *time.Time,
@@ -476,7 +487,7 @@ func (s *Store) MintAPIKey(
 
 	row, err := s.q.CreateAPIKey(ctx, dbgen.CreateAPIKeyParams{
 		UserID: userID, TenantID: tenantID, Name: name, Prefix: prefix, Hash: hash,
-		ExpiresAt: timestamptzPtr(expiresAt),
+		ExpiresAt: timestamptzPtr(expiresAt), SpansTenants: tenantID == nil,
 	})
 	if err != nil {
 		return APIKey{}, "", wrap(err, "creating key %q", name)
@@ -551,13 +562,21 @@ func (s *Store) ResolveAPIKey(ctx context.Context, presented string) (Resolved, 
 
 	// The key's tenant, not the owner's — the owner has none. This is what an
 	// MCP session resolves to, and it is why a key names a tenant at all.
-	tenantRow, err := s.q.GetTenant(ctx, key.TenantID)
-	if err != nil {
-		return Resolved{}, wrap(err, "reading the tenant")
-	}
-	tenant := tenantFrom(tenantRow)
-	if tenant.Status != "active" {
-		return Resolved{}, fmt.Errorf("%w: the tenant is %s", ErrInvalid, tenant.Status)
+	//
+	// A spanning key names none (ADR 0027). Its tenants come from its grants
+	// when the catalog is composed, and each of those is checked for status
+	// there against the snapshot that is actually serving — so there is nothing
+	// to resolve or refuse here.
+	var tenant Tenant
+	if key.TenantID != nil {
+		tenantRow, err := s.q.GetTenant(ctx, *key.TenantID)
+		if err != nil {
+			return Resolved{}, wrap(err, "reading the tenant")
+		}
+		tenant = tenantFrom(tenantRow)
+		if tenant.Status != "active" {
+			return Resolved{}, fmt.Errorf("%w: the tenant is %s", ErrInvalid, tenant.Status)
+		}
 	}
 
 	ownerGrants, err := s.GrantsForUser(ctx, user.ID)

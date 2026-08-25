@@ -89,7 +89,7 @@ type Querier interface {
 	LinkIdentity(ctx context.Context, arg LinkIdentityParams) (UserIdentity, error)
 	ListAPIKeyGrants(ctx context.Context, apiKeyID uuid.UUID) ([]ApiKeyGrant, error)
 	ListAPIKeyIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
-	ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ApiKey, error)
+	ListAPIKeysByTenant(ctx context.Context, tenantID *uuid.UUID) ([]ApiKey, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	// Every key that could authenticate right now, across every tenant. This is
 	// what a snapshot build reads: the data plane holds no database, so the keys

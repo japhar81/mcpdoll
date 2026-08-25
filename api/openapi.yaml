@@ -1906,7 +1906,7 @@ components:
 
     APIKey:
       type: object
-      required: [id, user_id, tenant, name, prefix, declared_grants, active, created_at]
+      required: [id, user_id, name, prefix, declared_grants, active, created_at]
       properties:
         id: { type: string, format: uuid }
         user_id: { type: string, format: uuid }
@@ -1915,7 +1915,13 @@ components:
           description: |
             The tenant this key acts in. On the key rather than on its owner:
             an MCP session must resolve to exactly one tenant or tool names
-            collide, while a person may legitimately reach several.
+            collide, while a person may legitimately reach several. Absent for
+            a spanning key, which reaches several at once.
+        spans_tenants:
+          type: boolean
+          description: |
+            The catalog covers every tenant this key's grants reach, and tool
+            names are qualified as `<tenant>.<prefix>.<tool>` (ADR 0027).
         name: { type: string }
         prefix:
           type: string
@@ -1949,13 +1955,21 @@ components:
 
     MintAPIKeyRequest:
       type: object
-      required: [tenant, name]
+      required: [name]
       properties:
         tenant:
           type: string
           description: |
             The tenant this key acts in. Must be one its owner holds a grant
-            reaching, or the key resolves to an empty catalog.
+            reaching, or the key resolves to an empty catalog. Required unless
+            `spans_tenants` is set, and mutually exclusive with it.
+        spans_tenants:
+          type: boolean
+          description: |
+            Mint a key whose catalog covers every tenant its grants reach,
+            with tool names qualified as `<tenant>.<prefix>.<tool>` (ADR 0027).
+            Takes `key:manage` at the global scope, because such a key belongs
+            to no single tenant. Mutually exclusive with `tenant`.
         name: { type: string }
         grants:
           type: array

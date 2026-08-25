@@ -1944,8 +1944,19 @@ type Principal struct {
 	// must not become one: that runs on the request path.
 	KeyPrefix       string `protobuf:"bytes,5,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
 	KeySecretSha256 string `protobuf:"bytes,6,opt,name=key_secret_sha256,json=keySecretSha256,proto3" json:"key_secret_sha256,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Whether this credential's catalog spans tenants (ADR 0027).
+	//
+	// False — the default and the safe one — means `tenant_id` names the single
+	// tenant this session resolves to, and tool names are `<prefix>.<tool>`.
+	//
+	// True means `tenant_id` is unset and the catalog covers every tenant the
+	// grants above reach, with names qualified as `<tenant>.<prefix>.<tool>`.
+	// There is no separate list of tenants on purpose: the grants already name
+	// them, and a second source of truth about which tenants a key reaches is a
+	// second thing that can disagree.
+	SpansTenants  bool `protobuf:"varint,7,opt,name=spans_tenants,json=spansTenants,proto3" json:"spans_tenants,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Principal) Reset() {
@@ -2018,6 +2029,13 @@ func (x *Principal) GetKeySecretSha256() string {
 		return x.KeySecretSha256
 	}
 	return ""
+}
+
+func (x *Principal) GetSpansTenants() bool {
+	if x != nil {
+		return x.SpansTenants
+	}
+	return false
 }
 
 // Grant is a Casbin `g` policy: a role held within a scope.
@@ -2600,7 +2618,7 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x1e\n" +
 	"\n" +
 	"permission\x18\x02 \x01(\tR\n" +
-	"permission\"\xd1\x01\n" +
+	"permission\"\xf6\x01\n" +
 	"\tPrincipal\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x18\n" +
@@ -2608,7 +2626,8 @@ const file_mcpdoll_snapshot_v1_snapshot_proto_rawDesc = "" +
 	"\x06grants\x18\x04 \x03(\v2\x1a.mcpdoll.snapshot.v1.GrantR\x06grants\x12\x1d\n" +
 	"\n" +
 	"key_prefix\x18\x05 \x01(\tR\tkeyPrefix\x12*\n" +
-	"\x11key_secret_sha256\x18\x06 \x01(\tR\x0fkeySecretSha256\"1\n" +
+	"\x11key_secret_sha256\x18\x06 \x01(\tR\x0fkeySecretSha256\x12#\n" +
+	"\rspans_tenants\x18\a \x01(\bR\fspansTenants\"1\n" +
 	"\x05Grant\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\"\x7f\n" +

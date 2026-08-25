@@ -606,6 +606,7 @@ func (r apiKeyListReport) Table() Table {
 func newUsersKeysMintCmd(env *Env) *cobra.Command {
 	var tenantSlug, keyTenant, name, expires string
 	var grants []string
+	var allTenants bool
 	cmd := &cobra.Command{
 		Use:   "mint <email>",
 		Short: "Mint an API key",
@@ -615,7 +616,15 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 			"--grant narrows the key below its owner. Declaring more than the owner holds\n" +
 			"is not an error and has no effect: the intersection happens at every\n" +
 			"resolution, so a key can never widen access. Passing none means the key\n" +
-			"carries whatever its owner holds.",
+			"carries whatever its owner holds.\n\n" +
+			"--all-tenants mints a key whose catalog covers every tenant its grants\n" +
+			"reach, with tool names qualified as <tenant>.<prefix>.<tool> — for asking\n" +
+			"one model to compare the same tool across, say, test and live. Narrow it\n" +
+			"with --grant to choose which tenants: the grants decide, so there is no\n" +
+			"second list that could disagree with them.\n\n" +
+			"Without it a key acts in exactly one tenant and cannot address another at\n" +
+			"all. That isolation is structural rather than filtered, which is why it is\n" +
+			"the default and why spanning takes key:manage at the global scope.",
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{annotationOperation: "mintAPIKey"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -630,10 +639,26 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if keyTenant == "" {
-				keyTenant = tenantSlug
+			body := map[string]any{"name": name, "grants": parsed}
+			switch {
+			case allTenants:
+				if keyTenant != "" {
+					return fmt.Errorf(
+						"--all-tenants and --acts-in contradict each other: a spanning " +
+							"key names no tenant, its grants decide which it reaches")
+				}
+				body["spans_tenants"] = true
+			default:
+				if keyTenant == "" {
+					keyTenant = tenantSlug
+				}
+				if keyTenant == "" {
+					return fmt.Errorf(
+						"--tenant is required: a key acts in exactly one tenant. " +
+							"Pass --all-tenants for a key covering every tenant its grants reach")
+				}
+				body["tenant"] = keyTenant
 			}
-			body := map[string]any{"name": name, "grants": parsed, "tenant": keyTenant}
 			if expires != "" {
 				body["expires_at"] = expires
 			}
@@ -649,10 +674,16 @@ func newUsersKeysMintCmd(env *Env) *cobra.Command {
 	cmd.Flags().StringVar(&tenantSlug, "tenant", "", "tenant to resolve the user in (required)")
 	cmd.Flags().StringVar(&keyTenant, "acts-in", "",
 		"tenant this key acts in; defaults to --tenant. An MCP session resolves to exactly one")
+	cmd.Flags().BoolVar(&allTenants, "all-tenants", false,
+		"span every tenant the grants reach, with tenant-qualified tool names")
 	cmd.Flags().StringVar(&name, "name", "", "what this key is for (required)")
 	cmd.Flags().StringArrayVar(&grants, "grant", nil, "role@scope to narrow the key to; repeatable")
 	cmd.Flags().StringVar(&expires, "expires", "", "RFC 3339 expiry; omit for a key that does not expire")
-	_ = cmd.MarkFlagRequired("tenant")
+	// --tenant is required unless the key spans, which is checked in RunE
+	// rather than declared here: cobra's MarkFlagRequired cannot express
+	// "required unless another flag is set", and marking it required outright
+	// would make --all-tenants unusable.
+	cmd.MarkFlagsMutuallyExclusive("tenant", "all-tenants")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }

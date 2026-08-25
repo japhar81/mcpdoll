@@ -202,21 +202,17 @@ func (s *Store) PrincipalView(ctx context.Context, id string) (*PrincipalView, e
 		return nil, fmt.Errorf(
 			"snapshot: no principal %q in principal set %d", id, principals.Version)
 	}
-	tenant := view.TenantByID(principal.TenantId)
-	if tenant == nil {
-		// The two artifacts disagree: this principal belongs to a tenant the
-		// serving snapshot does not carry. Refused rather than served an empty
-		// catalog, because the two states need different fixes.
-		return nil, fmt.Errorf(
-			"snapshot: principal %q belongs to tenant %q, which snapshot %d does not carry",
-			principal.Subject, principal.TenantId, view.Version)
+	tenants, err := view.tenantsFor(principal)
+	if err != nil {
+		return nil, err
 	}
 
 	decide, err := principals.decider(ctx, principal)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: compiling grants for %q: %w", principal.Subject, err)
 	}
-	composed := view.composePrincipal(principal, tenant, decide)
+	composed := view.composePrincipal(
+		principal, tenants, principal.GetSpansTenants(), decide)
 
 	s.composedMu.Lock()
 	// Re-check: two connections for one principal can race here, and the second

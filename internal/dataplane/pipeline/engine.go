@@ -169,7 +169,9 @@ func (e *Engine) Run(ctx context.Context, req *HookRequest) (*HookResult, error)
 	ctx, span := e.opts.Telemetry.Tracer.Start(ctx, "pipeline."+hookName(req.Hook),
 		trace.WithAttributes(
 			observability.AttrHook.String(hookName(req.Hook)),
-			observability.AttrTenant.String(req.PrincipalView.Tenant.Slug),
+			// The label, not `.Tenant.Slug`: a spanning credential's view has
+			// no single tenant and that field is nil (ADR 0027).
+			observability.AttrTenant.String(req.PrincipalView.TenantLabel()),
 		))
 	defer span.End()
 

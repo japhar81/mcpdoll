@@ -361,8 +361,12 @@ export const listAPIKeys = (userId: string) =>
   request<APIKeyList>("GET", `/api/v1/users/${encodeURIComponent(userId)}/keys`);
 
 export interface MintAPIKeyInput {
-  /** The tenant this key acts in — an MCP session resolves to exactly one. */
-  tenant: string;
+  /** The tenant this key acts in — an MCP session resolves to exactly one.
+   *  Omitted when the key spans, which is mutually exclusive with this. */
+  tenant?: string;
+  /** Cover every tenant the grants reach, with tool names qualified as
+   *  <tenant>.<prefix>.<tool> (ADR 0027). */
+  spans_tenants?: boolean;
   name: string;
   grants?: Grant[];
   /** RFC 3339. Absent means the key does not expire. */

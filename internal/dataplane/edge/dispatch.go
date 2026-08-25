@@ -43,7 +43,7 @@ func (e *Edge) toolHandler(
 			observability.AttrToolDigest.String(tool.Def.Digest),
 			observability.AttrNamespace.String(tool.Namespace.Prefix),
 			observability.AttrBackend.String(tool.Server.Name),
-			observability.AttrTenant.String(av.Tenant.Slug),
+			observability.AttrTenant.String(tool.Tenant.Slug),
 			observability.AttrEffectClass.String(tool.Def.EffectClass.String()),
 			observability.AttrSnapshot.Int64(view.Version),
 		)
@@ -53,7 +53,7 @@ func (e *Edge) toolHandler(
 		defer func() {
 			e.opts.Metrics.ToolCalls.Add(ctx, 1, metricAttrs(
 				observability.AttrToolName.String(tool.Def.QualifiedName),
-				observability.AttrTenant.String(av.Tenant.Slug),
+				observability.AttrTenant.String(tool.Tenant.Slug),
 				observability.AttrOutcome.String(outcome),
 			))
 			e.opts.Metrics.ToolLatency.Record(ctx, float64(time.Since(start).Microseconds())/1000.0,
@@ -70,7 +70,11 @@ func (e *Edge) toolHandler(
 			return nil, fmt.Errorf("edge: %w", err)
 		}
 		span.SetAttributes(observability.AttrPrincipal.String(principal.Subject))
-		principal.Tenant = av.Tenant.Slug
+		// The tool's tenant, which is what this call acts in. For a spanning
+		// credential (ADR 0027) the view has no single tenant, and even for an
+		// ordinary one this is the more direct answer: the tenant a call
+		// belongs to is a property of the tool being called.
+		principal.Tenant = tool.Tenant.Slug
 
 		// ---- drift block -------------------------------------------------
 		// A strict backend whose definition has changed since admission must
@@ -109,7 +113,7 @@ func (e *Edge) toolHandler(
 		var retry Retry
 		if req.Params.RequestState != "" {
 			retry, err = e.UnwrapForRetry(
-				tool, principal.Subject, av.Tenant.Slug, arguments, req.Params.RequestState)
+				tool, principal.Subject, tool.Tenant.Slug, arguments, req.Params.RequestState)
 			if err != nil {
 				outcome = "invalid_request_state"
 				recordSpanError(span, err)
@@ -152,7 +156,7 @@ func (e *Edge) toolHandler(
 				// specific action by a specific person, so an unwrapped state
 				// would be forgeable *and* replayable against another target.
 				token, err := e.IssuePluginDeferral(
-					tool, principal.Subject, av.Tenant.Slug, arguments, decision.RequestState)
+					tool, principal.Subject, tool.Tenant.Slug, arguments, decision.RequestState)
 				if err != nil {
 					outcome = "mrtr_wrap_error"
 					recordSpanError(span, err)
@@ -224,7 +228,7 @@ func (e *Edge) toolHandler(
 		// client — see requeststate.go for why an unwrapped one is unsafe.
 		if res.NeedsInput() {
 			wrapped, err := e.wrapBackendInputRequest(
-				tool, principal.Subject, av.Tenant.Slug, arguments, res)
+				tool, principal.Subject, tool.Tenant.Slug, arguments, res)
 			if err != nil {
 				outcome = "mrtr_wrap_error"
 				recordSpanError(span, err)
@@ -399,7 +403,7 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 
 			ctx, span := e.startSpan(ctx, "mcp.tools/list",
 				observability.AttrMethod.String("tools/list"),
-				observability.AttrTenant.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.TenantLabel()),
 				observability.AttrSnapshot.Int64(view.Version),
 			)
 			defer span.End()
@@ -409,7 +413,11 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 				recordSpanError(span, perr)
 				return nil, perr
 			}
-			principal.Tenant = av.Tenant.Slug
+			// A catalog is not a call and has no single tenant to act in: a
+			// spanning credential lists several at once (ADR 0027). The label
+			// names them all rather than picking one and inviting the reader
+			// to assume it is the only one.
+			principal.Tenant = av.TenantLabel()
 
 			// Always identity-filtered now: the catalog *is* the principal's
 			// grants (ADR 0016), so there is no unfiltered case left. Kept as a
@@ -448,14 +456,14 @@ func (e *Edge) catalogMiddleware(view *snapshot.View, av *snapshot.PrincipalView
 				attribute.String("mcpdoll.catalog.cache_scope", list.CacheScope),
 			)
 			e.opts.Metrics.CatalogLists.Add(ctx, 1, metricAttrs(
-				observability.AttrTenant.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.TenantLabel()),
 				observability.AttrCacheResult.String(list.CacheScope),
 			))
 			e.opts.Metrics.CatalogSize.Record(ctx, int64(len(list.Tools)), metricAttrs(
-				observability.AttrTenant.String(av.Tenant.Slug),
+				observability.AttrTenant.String(av.TenantLabel()),
 			))
 			e.log.DebugContext(ctx, "served catalog",
-				logging.FieldTenant, av.Tenant.Slug,
+				logging.FieldTenant, av.TenantLabel(),
 				logging.FieldPrincipal, principal.Subject,
 				"tools", len(list.Tools),
 				"cache_scope", list.CacheScope,

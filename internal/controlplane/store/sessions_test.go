@@ -150,9 +150,9 @@ func TestRevokingAUserCoversEveryCredentialTheyHold(t *testing.T) {
 	email := uniqueSlug(t) + "-alice@example.com"
 	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	keyOne, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "one", nil, nil)
+	keyOne, _, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "one", nil, nil)
 	require.NoError(t, err)
-	keyTwo, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "two", nil, nil)
+	keyTwo, _, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "two", nil, nil)
 	require.NoError(t, err)
 	_, _, _, err = s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestRevokingTwiceIsIdempotentAndStillAdvancesTheVersion(t *testing.T) {
 	email := uniqueSlug(t) + "-alice@example.com"
 	user, err := s.CreateUser(ctx, email, "", "")
 	require.NoError(t, err)
-	key, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "one", nil, nil)
+	key, _, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "one", nil, nil)
 	require.NoError(t, err)
 
 	first, err := s.Revoke(ctx, key.ID, "api_key", &user.ID, "leaked")
@@ -221,7 +221,7 @@ func TestPruningDropsWhatASnapshotAlreadyReflects(t *testing.T) {
 	email := uniqueSlug(t) + "-alice@example.com"
 	user, err := s.CreateUser(ctx, email, "", "")
 	require.NoError(t, err)
-	old, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "old", nil, nil)
+	old, _, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "old", nil, nil)
 	require.NoError(t, err)
 	_, err = s.Revoke(ctx, old.ID, "api_key", &user.ID, "before the build")
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestPruningDropsWhatASnapshotAlreadyReflects(t *testing.T) {
 	// that read is already absent from the snapshot.
 	readAt := timeNow(t, s, ctx)
 
-	recent, _, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "recent", nil, nil)
+	recent, _, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "recent", nil, nil)
 	require.NoError(t, err)
 	_, err = s.Revoke(ctx, recent.ID, "api_key", &user.ID, "after the build")
 	require.NoError(t, err)
@@ -284,7 +284,7 @@ func TestRevokingAKeyLeavesTheConsoleAlone(t *testing.T) {
 	email := uniqueSlug(t) + "-alice@example.com"
 	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	key, secret, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
+	key, secret, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
 	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)
@@ -307,7 +307,7 @@ func TestDisablingAUserKillsBothAxes(t *testing.T) {
 	email := uniqueSlug(t) + "-alice@example.com"
 	user, err := s.CreateUser(ctx, email, "", "hunter2")
 	require.NoError(t, err)
-	_, secret, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
+	_, secret, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
 	_, token, _, err := s.SignIn(ctx, email, "hunter2", "", "")
 	require.NoError(t, err)

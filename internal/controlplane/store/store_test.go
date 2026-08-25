@@ -219,7 +219,7 @@ func TestDeletingATenantTakesItsGrantsAndKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.Grant(ctx, user.ID,
 		authz.Grant{Role: authz.RoleViewer, Scope: authz.TenantScope(tenant.Slug)}, nil))
-	_, _, err = s.MintAPIKey(ctx, user.ID, tenant.ID, "k", nil, nil)
+	_, _, err = s.MintAPIKey(ctx, user.ID, &tenant.ID, "k", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeleteTenant(ctx, tenant.ID))
@@ -251,7 +251,7 @@ func TestAPIKeyPlaintextIsShownOnceAndNeverStored(t *testing.T) {
 	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-frank@example.com", "Frank", "")
 	require.NoError(t, err)
 
-	key, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "agent", nil, nil)
+	key, plaintext, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "agent", nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, plaintext)
 
@@ -289,7 +289,7 @@ func TestResolvingAKeyIntersectsWithItsOwner(t *testing.T) {
 	}, nil))
 
 	// The key declares one tool inside it, and one toolset outside it.
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", []authz.Grant{
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "bot", []authz.Grant{
 		{Role: authz.RoleToolUser, Scope: authz.ToolScope(tenant.Slug, "crm", "lookup")},
 		{Role: authz.RoleToolUser, Scope: authz.ToolsetScope(tenant.Slug, "billing")},
 	}, nil)
@@ -320,7 +320,7 @@ func TestRevokingTheUsersGrantKillsTheKeyWithoutTouchingIt(t *testing.T) {
 	}
 	require.NoError(t, s.Grant(ctx, user.ID, ownerGrant, nil))
 
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", []authz.Grant{
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "bot", []authz.Grant{
 		{Role: authz.RoleToolUser, Scope: authz.ToolScope(tenant.Slug, "crm", "lookup")},
 	}, nil)
 	require.NoError(t, err)
@@ -347,7 +347,7 @@ func TestRevokedAndExpiredKeysDoNotResolve(t *testing.T) {
 	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-ivan@example.com", "Ivan", "")
 	require.NoError(t, err)
 
-	revoked, plaintextRevoked, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "revoked", nil, nil)
+	revoked, plaintextRevoked, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "revoked", nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, s.RevokeAPIKey(ctx, revoked.ID))
 
@@ -355,7 +355,7 @@ func TestRevokedAndExpiredKeysDoNotResolve(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrInvalid)
 
 	past := time.Now().Add(-time.Hour)
-	_, plaintextExpired, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "expired", nil, &past)
+	_, plaintextExpired, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "expired", nil, &past)
 	require.NoError(t, err)
 
 	_, err = s.ResolveAPIKey(ctx, plaintextExpired)
@@ -371,7 +371,7 @@ func TestAKeyForADisabledUserDoesNotResolve(t *testing.T) {
 	user, err := s.CreateUser(ctx, uniqueSlug(t)+"-judy@example.com", "Judy", "")
 	require.NoError(t, err)
 
-	_, plaintext, err := s.MintAPIKey(ctx, user.ID, tenant.ID, "bot", nil, nil)
+	_, plaintext, err := s.MintAPIKey(ctx, user.ID, &tenant.ID, "bot", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.SetUserStatus(ctx, user.ID, "disabled"))

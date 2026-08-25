@@ -108,7 +108,11 @@ func (s *Store) PrincipalSetState(ctx context.Context) (*snapshotpb.PrincipalSet
 	}
 	for _, row := range keys {
 		owner, known := usersByID[row.UserID]
-		if !known || owner.Status != "active" || !knownTenant[row.TenantID] {
+		// A spanning key names no tenant, so there is none to check here: which
+		// tenants it reaches is decided by its grants when the catalog is
+		// composed, against the snapshot that is actually serving.
+		tenantKnown := row.SpansTenants || (row.TenantID != nil && knownTenant[*row.TenantID])
+		if !known || owner.Status != "active" || !tenantKnown {
 			// A key whose owner is gone or disabled authenticates nothing.
 			// Omitted rather than published-and-denied: the snapshot should not
 			// carry a credential the system has already decided against.
@@ -125,16 +129,21 @@ func (s *Store) PrincipalSetState(ctx context.Context) (*snapshotpb.PrincipalSet
 			effective = authz.Intersect(declared, ownerGrants[owner.ID])
 		}
 
-		principals = append(principals, &snapshotpb.Principal{
-			Id: row.ID.String(),
-			// The key's tenant. An MCP session resolves to exactly one, and
-			// this is where that comes from.
-			TenantId:        row.TenantID.String(),
+		principal := &snapshotpb.Principal{
+			Id:              row.ID.String(),
 			Subject:         owner.Email,
 			Grants:          grantsToProto(effective),
 			KeyPrefix:       row.Prefix,
 			KeySecretSha256: row.Hash,
-		})
+			SpansTenants:    row.SpansTenants,
+		}
+		// The key's tenant. An ordinary MCP session resolves to exactly one and
+		// this is where that comes from; a spanning one carries none, because
+		// its grants decide (ADR 0027).
+		if row.TenantID != nil {
+			principal.TenantId = row.TenantID.String()
+		}
+		principals = append(principals, principal)
 	}
 
 	sort.Slice(principals, func(i, j int) bool { return principals[i].Id < principals[j].Id })

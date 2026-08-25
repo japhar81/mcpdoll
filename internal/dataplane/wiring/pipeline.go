@@ -49,7 +49,9 @@ var _ edge.Pipeline = (*EdgePipeline)(nil)
 // OnCatalog runs the catalog hook.
 func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) (*edge.CatalogDecision, error) {
 	payload := catalogPayload{
-		Tenant:    req.PrincipalView.Tenant.Slug,
+		// A catalog spans whatever the credential does, so this names them all
+		// rather than picking one (ADR 0027).
+		Tenant:    req.PrincipalView.TenantLabel(),
 		Principal: principalOf(req.Principal),
 		Catalog:   make([]toolPayload, 0, len(req.Tools)),
 	}
@@ -62,7 +64,7 @@ func (p *EdgePipeline) OnCatalog(ctx context.Context, req *edge.CatalogRequest) 
 		return nil, fmt.Errorf("wiring: encoding the catalog: %w", err)
 	}
 
-	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, "")
+	trace := newTrace(req.PrincipalView.TenantLabel(), req.Principal.Subject, "")
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID:     trace.RequestID,
 		PrincipalView: req.PrincipalView,
@@ -126,7 +128,11 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 	}
 
 	payload := callPayload{
-		Tenant:         req.PrincipalView.Tenant.Slug,
+		// The tool's tenant, which is the tenant this call acts in. Plugins
+		// make policy decisions on this field, so a spanning credential
+		// reporting its session's tenant would have them evaluate the wrong
+		// tenant's rules (ADR 0027).
+		Tenant:         req.Tool.Tenant.Slug,
 		Principal:      principalOf(req.Principal),
 		Tool:           toolPayloadFromSnapshot(req.Tool),
 		Arguments:      arguments,
@@ -138,7 +144,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 		return nil, fmt.Errorf("wiring: encoding the call: %w", err)
 	}
 
-	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.Tool.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	result, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID:     trace.RequestID,
 		PrincipalView: req.PrincipalView,
@@ -180,7 +186,7 @@ func (p *EdgePipeline) OnToolCall(ctx context.Context, req *edge.ToolCallRequest
 // OnToolResult runs the post-dispatch hook.
 func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultRequest) (*edge.ToolResultDecision, error) {
 	payload := resultPayload{
-		Tenant:    req.PrincipalView.Tenant.Slug,
+		Tenant:    req.Tool.Tenant.Slug,
 		Principal: principalOf(req.Principal),
 		Tool:      toolPayloadFromSnapshot(req.Tool),
 		Result:    resultOf(req.Result),
@@ -190,7 +196,7 @@ func (p *EdgePipeline) OnToolResult(ctx context.Context, req *edge.ToolResultReq
 		return nil, fmt.Errorf("wiring: encoding the result: %w", err)
 	}
 
-	trace := newTrace(req.PrincipalView.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
+	trace := newTrace(req.Tool.Tenant.Slug, req.Principal.Subject, req.Tool.Def.QualifiedName)
 	hookResult, err := p.engine.Run(ctx, &pipeline.HookRequest{
 		RequestID:     trace.RequestID,
 		PrincipalView: req.PrincipalView,

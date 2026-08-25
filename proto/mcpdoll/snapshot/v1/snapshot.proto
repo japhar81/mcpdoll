@@ -425,6 +425,18 @@ message Principal {
   // must not become one: that runs on the request path.
   string key_prefix = 5;
   string key_secret_sha256 = 6;
+
+  // Whether this credential's catalog spans tenants (ADR 0027).
+  //
+  // False — the default and the safe one — means `tenant_id` names the single
+  // tenant this session resolves to, and tool names are `<prefix>.<tool>`.
+  //
+  // True means `tenant_id` is unset and the catalog covers every tenant the
+  // grants above reach, with names qualified as `<tenant>.<prefix>.<tool>`.
+  // There is no separate list of tenants on purpose: the grants already name
+  // them, and a second source of truth about which tenants a key reaches is a
+  // second thing that can disagree.
+  bool spans_tenants = 7;
 }
 
 // Grant is a Casbin `g` policy: a role held within a scope.

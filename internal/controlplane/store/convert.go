@@ -101,7 +101,9 @@ func userFrom(row dbgen.User) User {
 
 func apiKeyFrom(row dbgen.ApiKey) APIKey {
 	return APIKey{
-		ID: row.ID, UserID: row.UserID, TenantID: row.TenantID, Name: row.Name, Prefix: row.Prefix,
+		ID: row.ID, UserID: row.UserID, TenantID: row.TenantID,
+		SpansTenants: row.SpansTenants,
+		Name:         row.Name, Prefix: row.Prefix,
 		CreatedAt:  row.CreatedAt.Time,
 		LastUsedAt: timePtr(row.LastUsedAt),
 		ExpiresAt:  timePtr(row.ExpiresAt),

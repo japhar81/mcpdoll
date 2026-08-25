@@ -202,9 +202,21 @@ func (r *APIKeyIdentityResolver) Resolve(header http.Header) (backends.Principal
 		return backends.Principal{}, ErrUnauthenticated
 	}
 
-	tenant := view.TenantByID(principal.TenantId)
-	if tenant == nil {
-		return backends.Principal{}, ErrUnauthenticated
+	// A spanning key names no tenant (ADR 0027), so there is none to resolve
+	// here and its absence is not a reason to refuse. Which tenants it reaches
+	// is decided when the catalog is composed, from its grants — and the tenant
+	// a *call* acts in comes from the tool being called.
+	//
+	// The tenant is left empty rather than filled with a label: this field is
+	// read by policy, and a value that is not a real tenant slug would be a
+	// value some rule could match on by accident.
+	var slug string
+	if !principal.GetSpansTenants() {
+		tenant := view.TenantByID(principal.TenantId)
+		if tenant == nil {
+			return backends.Principal{}, ErrUnauthenticated
+		}
+		slug = tenant.Slug
 	}
 
 	// No groups and no claims. They come from an identity provider, and an API
@@ -213,7 +225,7 @@ func (r *APIKeyIdentityResolver) Resolve(header http.Header) (backends.Principal
 	return backends.Principal{
 		ID:      principal.Id,
 		Subject: principal.Subject,
-		Tenant:  tenant.Slug,
+		Tenant:  slug,
 	}, nil
 }
 

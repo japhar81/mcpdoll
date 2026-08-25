@@ -3,6 +3,7 @@
 package apiserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -700,16 +701,29 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	// The slugs, because a key names its tenant by id and a person reading a
+	// list of keys cannot do anything with a uuid. Resolved once for the whole
+	// list rather than per key.
+	slugs, err := s.tenantSlugsByID(r.Context(), st)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+
 	out := api.APIKeyList{UserID: id.String(), Keys: []api.APIKey{}}
 	now := time.Now()
 	for _, k := range keys {
-		out.Keys = append(out.Keys, apiKeyOf(k, now))
+		out.Keys = append(out.Keys, apiKeyOf(k, now, slugs))
 	}
 	writeJSON(w, s.log, http.StatusOK, out)
 }
 
 // MintAPIKeyRequest is mintAPIKey's body.
 type MintAPIKeyRequest struct {
+	// SpansTenants mints a key whose catalog covers every tenant its grants
+	// reach, with tool names qualified as <tenant>.<prefix>.<tool> (ADR 0027).
+	// Mutually exclusive with Tenant.
+	SpansTenants bool `json:"spans_tenants,omitempty"`
 	// Tenant this key acts in. On the key rather than on its owner, because an
 	// MCP session must resolve to exactly one tenant — tool names would collide
 	// across tenants in a single catalog — while a person may legitimately
@@ -756,10 +770,51 @@ func (s *Server) handleMintAPIKey(w http.ResponseWriter, r *http.Request) {
 		declared = append(declared, authz.Grant{Role: g.Role, Scope: g.Scope})
 	}
 
+	reach, err := st.GrantsForUser(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+
+	// A spanning key (ADR 0027): no tenant, a catalog covering every tenant the
+	// grants reach, and tool names qualified as <tenant>.<prefix>.<tool>.
+	if req.SpansTenants {
+		if req.Tenant != "" {
+			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
+				"a spanning key names no tenant: which tenants it reaches is decided "+
+					"by its grants. Pass either tenant or spans_tenants, not both")
+			return
+		}
+		if len(reachedTenants(reach)) == 0 && !holdsGlobal(reach) {
+			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
+				"this user holds no grant reaching any tenant, so a spanning key "+
+					"would resolve to an empty catalog. Grant them something first")
+			return
+		}
+		// Global, because the key is not any one tenant's. Requiring authority
+		// over every tenant it might reach would be stricter, and it would also
+		// mean the answer changed whenever somebody edited the owner's grants —
+		// a permission check that moves under you is worse than a blunt one.
+		if !CallerFrom(r.Context()).Can(authz.PermKeyManage, authz.GlobalScope) {
+			writeError(w, s.log, http.StatusForbidden, CodeForbidden,
+				"minting a key that spans tenants takes key:manage at "+authz.GlobalScope)
+			return
+		}
+
+		key, secret, err := st.MintAPIKey(r.Context(), id, nil, req.Name, declared, expires)
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		s.finishMint(w, r, key, secret)
+		return
+	}
+
 	if req.Tenant == "" {
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
 			"tenant is required: a key acts in exactly one, and the gateway picks a "+
-				"backend binding with it")
+				"backend binding with it. Pass spans_tenants for a key that covers "+
+				"every tenant its grants reach")
 		return
 	}
 	tenant, err := st.GetTenantBySlug(r.Context(), req.Tenant)
@@ -773,11 +828,6 @@ func (s *Server) handleMintAPIKey(w http.ResponseWriter, r *http.Request) {
 	//
 	// Reaching, not covering: a grant on `t/acme/ts/support` reaches acme
 	// without being as wide as it.
-	reach, err := st.GrantsForUser(r.Context(), id)
-	if err != nil {
-		s.writeStoreError(w, err)
-		return
-	}
 	if !authz.AnyReaches(reach, tenant.Slug) {
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest,
 			"this user holds no grant reaching tenant "+tenant.Slug+
@@ -794,20 +844,61 @@ func (s *Server) handleMintAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, secret, err := st.MintAPIKey(r.Context(), id, tenant.ID, req.Name, declared, expires)
+	key, secret, err := st.MintAPIKey(r.Context(), id, &tenant.ID, req.Name, declared, expires)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	// The one response that carries a secret. It is stored only as an Argon2id
-	// hash, so a caller who does not capture it has to mint another key —
+	s.finishMint(w, r, key, secret)
+}
+
+// finishMint publishes the new principal and answers with the secret.
+//
+// Shared by both mint paths so a spanning key cannot end up on a shorter one —
+// in particular so it cannot skip the publish and be handed to a caller before
+// the data plane would accept it.
+func (s *Server) finishMint(
+	w http.ResponseWriter, r *http.Request, key store.APIKey, secret string,
+) {
+	slugs, err := s.tenantSlugsByID(r.Context(), s.cfg.Store)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	// The one response that carries a secret. Only its SHA-256 digest is
+	// stored, so a caller who does not capture it has to mint another key —
 	// which is the property that makes a leaked log harmless.
 	// Published before answering, so the key in this response works by the time
 	// the caller reads it.
 	warnPrincipals(w, s.publishPrincipals(r.Context()))
 	writeJSON(w, s.log, http.StatusCreated, api.MintedAPIKey{
-		Key: apiKeyOf(key, time.Now()), Secret: secret,
+		Key: apiKeyOf(key, time.Now(), slugs), Secret: secret,
 	})
+}
+
+// reachedTenants is every tenant slug a set of grants names.
+func reachedTenants(grants []authz.Grant) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, g := range grants {
+		if slug := authz.TenantOf(g.Scope); slug != "" {
+			if _, dup := seen[slug]; !dup {
+				seen[slug] = struct{}{}
+				out = append(out, slug)
+			}
+		}
+	}
+	return out
+}
+
+// holdsGlobal reports a grant at the global scope, which reaches every tenant.
+func holdsGlobal(grants []authz.Grant) bool {
+	for _, g := range grants {
+		if parsed, ok := authz.ParseScope(g.Scope); ok && parsed.Global {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -883,15 +974,36 @@ func grantListOf(userID uuid.UUID, grants []authz.Grant) api.GrantList {
 	return out
 }
 
-func apiKeyOf(k store.APIKey, now time.Time) api.APIKey {
+// tenantSlugsByID maps tenant ids to slugs, so a key can report the tenant it
+// acts in as something a person can read.
+func (s *Server) tenantSlugsByID(
+	ctx context.Context, st *store.Store,
+) (map[uuid.UUID]string, error) {
+	tenants, err := st.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]string, len(tenants))
+	for _, t := range tenants {
+		out[t.ID] = t.Slug
+	}
+	return out, nil
+}
+
+func apiKeyOf(k store.APIKey, now time.Time, slugs map[uuid.UUID]string) api.APIKey {
 	out := api.APIKey{
-		ID:        k.ID.String(),
-		UserID:    k.UserID.String(),
-		Name:      k.Name,
-		Prefix:    k.Prefix,
-		Declared:  []api.Grant{},
-		Active:    k.Active(now),
-		CreatedAt: k.CreatedAt.UTC().Format(time.RFC3339),
+		ID:           k.ID.String(),
+		UserID:       k.UserID.String(),
+		SpansTenants: k.SpansTenants,
+		Name:         k.Name,
+		Prefix:       k.Prefix,
+		Declared:     []api.Grant{},
+		Active:       k.Active(now),
+		CreatedAt:    k.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	// Absent for a spanning key, which acts in several (ADR 0027).
+	if k.TenantID != nil {
+		out.Tenant = slugs[*k.TenantID]
 	}
 	for _, g := range k.Declared {
 		out.Declared = append(out.Declared, api.Grant{Role: g.Role, Scope: g.Scope})

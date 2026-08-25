@@ -10,16 +10,17 @@ import (
 )
 
 type ApiKey struct {
-	ID         uuid.UUID
-	UserID     uuid.UUID
-	Name       string
-	Prefix     string
-	Hash       string
-	CreatedAt  pgtype.Timestamptz
-	LastUsedAt pgtype.Timestamptz
-	ExpiresAt  pgtype.Timestamptz
-	RevokedAt  pgtype.Timestamptz
-	TenantID   uuid.UUID
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Name         string
+	Prefix       string
+	Hash         string
+	CreatedAt    pgtype.Timestamptz
+	LastUsedAt   pgtype.Timestamptz
+	ExpiresAt    pgtype.Timestamptz
+	RevokedAt    pgtype.Timestamptz
+	TenantID     *uuid.UUID
+	SpansTenants bool
 }
 
 type ApiKeyGrant struct {

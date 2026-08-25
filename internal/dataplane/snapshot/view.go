@@ -59,12 +59,26 @@ type View struct {
 // PrincipalView is one principal's catalog, composed from its grants.
 type PrincipalView struct {
 	Principal *snapshotpb.Principal
-	Tenant    *snapshotpb.Tenant
+
+	// Tenant is the single tenant this session resolves to, and is nil when
+	// the credential spans (ADR 0027). Read it through [PrincipalView.Spanning]
+	// rather than assuming it is set.
+	Tenant *snapshotpb.Tenant
+
+	// Tenants is every tenant contributing to this catalog: one element for an
+	// ordinary credential, several for a spanning one.
+	Tenants []*snapshotpb.Tenant
 
 	// Tools in the stable total order the client sees. See [sortTools].
 	Tools []*Tool
 
-	// byQualifiedName resolves a tools/call target in one lookup.
+	// names parallels Tools: the name this principal sees for each, which is
+	// the tool's own qualified name ordinarily and a tenant-qualified one when
+	// the credential spans (ADR 0027).
+	names []string
+
+	// byQualifiedName resolves a tools/call target in one lookup, keyed by the
+	// name this principal sees.
 	byQualifiedName map[string]*Tool
 
 	// callable is the subset this principal may invoke, which is not always
@@ -316,7 +330,8 @@ func BuildWithEngine(snap *snapshotpb.Snapshot, engine authz.Engine) (*View, err
 // would serve a stale catalog after the other moved.
 func (v *View) composePrincipal(
 	principal *snapshotpb.Principal,
-	tenant *snapshotpb.Tenant,
+	tenants []*snapshotpb.Tenant,
+	spanning bool,
 	decide authz.Decider,
 ) *PrincipalView {
 	defaults := v.pb.Catalog
@@ -327,31 +342,44 @@ func (v *View) composePrincipal(
 
 	out := &PrincipalView{
 		Principal:       principal,
-		Tenant:          tenant,
+		Tenants:         tenants,
 		byQualifiedName: map[string]*Tool{},
 		callable:        map[string]bool{},
 		pluginsByHook:   map[snapshotpb.Hook][]*snapshotpb.PluginManifest{},
 		TTLMs:           ttl,
 	}
 
+	if !spanning && len(tenants) == 1 {
+		out.Tenant = tenants[0]
+	}
+
 	contributing := map[string]*snapshotpb.Toolset{}
 
-	// The tenant's tools are already sorted, and filtering preserves order.
-	for _, tool := range v.toolsByTenant[tenant.Id] {
-		scope := tool.Scope()
-		if !decide(authz.PermToolList, scope) {
-			continue
-		}
-		out.Tools = append(out.Tools, tool)
-		out.byQualifiedName[tool.Def.QualifiedName] = tool
-		out.TokenEstimate += int(tool.Def.TokenEstimate)
-		contributing[tool.Toolset.Id] = tool.Toolset
+	// Each tenant's tools are already sorted, and filtering preserves order.
+	//
+	// Across tenants the concatenation is ordered by the tenant list, which the
+	// caller sorts by slug — so a spanning catalog has a stable total order for
+	// the same reason a single-tenant one does, and a client's prompt cache is
+	// not invalidated by map iteration order.
+	for _, tenant := range tenants {
+		for _, tool := range v.toolsByTenant[tenant.Id] {
+			scope := tool.Scope()
+			if !decide(authz.PermToolList, scope) {
+				continue
+			}
+			name := displayName(tool, spanning)
+			out.Tools = append(out.Tools, tool)
+			out.names = append(out.names, name)
+			out.byQualifiedName[name] = tool
+			out.TokenEstimate += int(tool.Def.TokenEstimate)
+			contributing[tool.Toolset.Id] = tool.Toolset
 
-		// Listing and calling are separate permissions. A principal that may
-		// see a tool without invoking it is a legitimate role; the reverse is
-		// refused at admission (ADR 0015).
-		if decide(authz.PermToolCall, scope) {
-			out.callable[tool.Def.QualifiedName] = true
+			// Listing and calling are separate permissions. A principal that
+			// may see a tool without invoking it is a legitimate role; the
+			// reverse is refused at admission (ADR 0015).
+			if decide(authz.PermToolCall, scope) {
+				out.callable[name] = true
+			}
 		}
 	}
 
@@ -461,6 +489,45 @@ func pluginAppliesTo(p *snapshotpb.PluginManifest, contributing map[string]*snap
 // Tenant returns a tenant by slug, or nil.
 func (v *View) Tenant(slug string) *snapshotpb.Tenant { return v.tenantsBySlug[slug] }
 
+// displayName is what a principal sees a tool called.
+//
+// Every tool in a spanning catalog is qualified, never only the ambiguous
+// ones. Qualifying on collision would mean a tool's name depends on what else
+// is in the catalog — so granting access to a second tenant would silently
+// rename tools in the first, and every agent prompt naming one would break for
+// a reason nobody could see. A name has to be a property of the tool.
+func displayName(t *Tool, spanning bool) string {
+	if !spanning {
+		return t.Def.QualifiedName
+	}
+	return t.Tenant.Slug + "." + t.Def.QualifiedName
+}
+
+// Spanning reports whether this catalog covers more than one tenant, and so
+// whether its tool names carry a tenant prefix.
+func (p *PrincipalView) Spanning() bool { return p.Principal.GetSpansTenants() }
+
+// Name returns what this principal sees the i-th tool called.
+func (p *PrincipalView) Name(i int) string { return p.names[i] }
+
+// TenantLabel names who this principal is acting as, for logs and instructions.
+//
+// A spanning credential has no single tenant, so it says so rather than
+// reporting one of them and inviting the reader to assume it is the only one.
+func (p *PrincipalView) TenantLabel() string {
+	if p.Tenant != nil {
+		return p.Tenant.Slug
+	}
+	slugs := make([]string, 0, len(p.Tenants))
+	for _, t := range p.Tenants {
+		slugs = append(slugs, t.Slug)
+	}
+	if len(slugs) == 0 {
+		return "(none)"
+	}
+	return strings.Join(slugs, ", ")
+}
+
 // TenantByID returns a tenant by its id, or nil.
 func (v *View) TenantByID(id string) *snapshotpb.Tenant { return v.tenants[id] }
 
@@ -542,3 +609,66 @@ func (p *PrincipalView) PluginsFor(hook snapshotpb.Hook) []*snapshotpb.PluginMan
 // and one place where a future public case would have to be argued for. This is
 // the only expression in the codebase that decides a catalog's cache scope.
 func (p *PrincipalView) CacheScope() string { return "private" }
+
+// tenantsFor resolves which tenants a principal's catalog draws from.
+//
+// One for an ordinary credential. For a spanning one (ADR 0027) it is every
+// tenant the principal's grants reach — derived from the grants rather than
+// from a second list on the principal, because two sources of truth about
+// which tenants a key reaches is one more than can be kept in agreement.
+func (v *View) tenantsFor(principal *snapshotpb.Principal) ([]*snapshotpb.Tenant, error) {
+	if !principal.GetSpansTenants() {
+		tenant := v.TenantByID(principal.TenantId)
+		if tenant == nil {
+			// The two artifacts disagree: this principal belongs to a tenant
+			// the serving snapshot does not carry. Refused rather than served
+			// an empty catalog, because the two states need different fixes.
+			return nil, fmt.Errorf(
+				"snapshot: principal %q belongs to tenant %q, which snapshot %d does not carry",
+				principal.Subject, principal.TenantId, v.Version)
+		}
+		return []*snapshotpb.Tenant{tenant}, nil
+	}
+
+	reached := map[string]*snapshotpb.Tenant{}
+	global := false
+	for _, grant := range principal.Grants {
+		parsed, ok := authz.ParseScope(grant.Scope)
+		if !ok {
+			// Refused, not skipped. A scope that does not parse is a grant
+			// nobody can reason about, and silently dropping it would produce a
+			// smaller catalog than the operator wrote with nothing to say why.
+			return nil, fmt.Errorf(
+				"snapshot: principal %q holds unparseable scope %q",
+				principal.Subject, grant.Scope)
+		}
+		if parsed.Global {
+			global = true
+			continue
+		}
+		if tenant := v.tenantsBySlug[parsed.Tenant]; tenant != nil {
+			reached[tenant.Id] = tenant
+		}
+	}
+
+	// A global grant reaches every tenant the snapshot carries. Expanded here
+	// rather than left implicit, so the catalog a `*` holder sees is the same
+	// shape as everyone else's and needs no special case downstream.
+	if global {
+		for id, tenant := range v.tenants {
+			reached[id] = tenant
+		}
+	}
+
+	out := make([]*snapshotpb.Tenant, 0, len(reached))
+	for _, tenant := range reached {
+		out = append(out, tenant)
+	}
+	// By slug, so the concatenated catalog has a stable total order. Map
+	// iteration order would reshuffle tool order between processes serving the
+	// same snapshot, invalidating client prompt caches for no reason.
+	slices.SortFunc(out, func(a, b *snapshotpb.Tenant) int {
+		return cmp.Compare(a.Slug, b.Slug)
+	})
+	return out, nil
+}

@@ -38,18 +38,19 @@ func (q *Queries) AddAPIKeyGrant(ctx context.Context, arg AddAPIKeyGrantParams) 
 }
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (user_id, tenant_id, name, prefix, hash, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id
+INSERT INTO api_keys (user_id, tenant_id, name, prefix, hash, expires_at, spans_tenants)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants
 `
 
 type CreateAPIKeyParams struct {
-	UserID    uuid.UUID
-	TenantID  uuid.UUID
-	Name      string
-	Prefix    string
-	Hash      string
-	ExpiresAt pgtype.Timestamptz
+	UserID       uuid.UUID
+	TenantID     *uuid.UUID
+	Name         string
+	Prefix       string
+	Hash         string
+	ExpiresAt    pgtype.Timestamptz
+	SpansTenants bool
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
@@ -60,6 +61,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		arg.Prefix,
 		arg.Hash,
 		arg.ExpiresAt,
+		arg.SpansTenants,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -73,6 +75,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		&i.ExpiresAt,
 		&i.RevokedAt,
 		&i.TenantID,
+		&i.SpansTenants,
 	)
 	return i, err
 }
@@ -87,7 +90,7 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
 }
 
 const getAPIKey = `-- name: GetAPIKey :one
-SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id FROM api_keys WHERE id = $1
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants FROM api_keys WHERE id = $1
 `
 
 func (q *Queries) GetAPIKey(ctx context.Context, id uuid.UUID) (ApiKey, error) {
@@ -104,12 +107,13 @@ func (q *Queries) GetAPIKey(ctx context.Context, id uuid.UUID) (ApiKey, error) {
 		&i.ExpiresAt,
 		&i.RevokedAt,
 		&i.TenantID,
+		&i.SpansTenants,
 	)
 	return i, err
 }
 
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
-SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id FROM api_keys WHERE prefix = $1
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants FROM api_keys WHERE prefix = $1
 `
 
 // The authentication path. Looks up by the public prefix; the caller then
@@ -130,6 +134,7 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 		&i.ExpiresAt,
 		&i.RevokedAt,
 		&i.TenantID,
+		&i.SpansTenants,
 	)
 	return i, err
 }
@@ -188,10 +193,10 @@ func (q *Queries) ListAPIKeyIDsByUser(ctx context.Context, userID uuid.UUID) ([]
 }
 
 const listAPIKeysByTenant = `-- name: ListAPIKeysByTenant :many
-SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ApiKey, error) {
+func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID *uuid.UUID) ([]ApiKey, error) {
 	rows, err := q.db.Query(ctx, listAPIKeysByTenant, tenantID)
 	if err != nil {
 		return nil, err
@@ -211,6 +216,7 @@ func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) (
 			&i.ExpiresAt,
 			&i.RevokedAt,
 			&i.TenantID,
+			&i.SpansTenants,
 		); err != nil {
 			return nil, err
 		}
@@ -223,7 +229,7 @@ func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) (
 }
 
 const listAPIKeysByUser = `-- name: ListAPIKeysByUser :many
-SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error) {
@@ -246,6 +252,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 			&i.ExpiresAt,
 			&i.RevokedAt,
 			&i.TenantID,
+			&i.SpansTenants,
 		); err != nil {
 			return nil, err
 		}
@@ -258,7 +265,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 }
 
 const listActiveAPIKeys = `-- name: ListActiveAPIKeys :many
-SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id FROM api_keys
+SELECT id, user_id, name, prefix, hash, created_at, last_used_at, expires_at, revoked_at, tenant_id, spans_tenants FROM api_keys
 WHERE revoked_at IS NULL
   AND (expires_at IS NULL OR expires_at > now())
 ORDER BY created_at
@@ -290,6 +297,7 @@ func (q *Queries) ListActiveAPIKeys(ctx context.Context) ([]ApiKey, error) {
 			&i.ExpiresAt,
 			&i.RevokedAt,
 			&i.TenantID,
+			&i.SpansTenants,
 		); err != nil {
 			return nil, err
 		}

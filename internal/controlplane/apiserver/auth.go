@@ -505,9 +505,19 @@ func (s *Server) keyScopeOf(r *http.Request, id uuid.UUID) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	// A spanning key belongs to no single tenant (ADR 0027), so managing it is
+	// a global act. The honest tension: a tenant admin cannot revoke a spanning
+	// key that reaches their tenant, even though they can revoke any ordinary
+	// key there. Scoping it to any one of its tenants would be worse — it would
+	// let an admin of the least sensitive tenant a key touches revoke its
+	// access to all the others.
+	if key.SpansTenants || key.TenantID == nil {
+		return authz.GlobalScope, true
+	}
+
 	// The key's own tenant. A key is the one object here that genuinely belongs
 	// to one, so revoking it is a tenant-scoped act.
-	tenant, err := s.cfg.Store.GetTenant(r.Context(), key.TenantID)
+	tenant, err := s.cfg.Store.GetTenant(r.Context(), *key.TenantID)
 	if err != nil {
 		return "", false
 	}

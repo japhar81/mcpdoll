@@ -673,9 +673,15 @@ export interface APIKey {
   /**
    * The tenant this key acts in. On the key rather than on its owner:
    * an MCP session must resolve to exactly one tenant or tool names
-   * collide, while a person may legitimately reach several.
+   * collide, while a person may legitimately reach several. Absent for
+   * a spanning key, which reaches several at once.
    */
-  tenant: string;
+  tenant?: string;
+  /**
+   * The catalog covers every tenant this key's grants reach, and tool
+   * names are qualified as `<tenant>.<prefix>.<tool>` (ADR 0027).
+   */
+  spans_tenants?: boolean;
   name: string;
   /**
    * The lookup half of the key, public by construction: it identifies
@@ -706,9 +712,17 @@ export interface APIKeyList {
 export interface MintAPIKeyRequest {
   /**
    * The tenant this key acts in. Must be one its owner holds a grant
-   * reaching, or the key resolves to an empty catalog.
+   * reaching, or the key resolves to an empty catalog. Required unless
+   * `spans_tenants` is set, and mutually exclusive with it.
    */
-  tenant: string;
+  tenant?: string;
+  /**
+   * Mint a key whose catalog covers every tenant its grants reach,
+   * with tool names qualified as `<tenant>.<prefix>.<tool>` (ADR 0027).
+   * Takes `key:manage` at the global scope, because such a key belongs
+   * to no single tenant. Mutually exclusive with `tenant`.
+   */
+  spans_tenants?: boolean;
   name: string;
   grants?: Grant[];
   /** Absent means the key does not expire. */

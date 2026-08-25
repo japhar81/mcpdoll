@@ -10,7 +10,11 @@ import {
   revokeAPIKey,
 } from "../lib/api.ts";
 import { ErrorBlock, Screen, Table } from "../components/Screen.tsx";
-import { TenantPicker, useMintableTenants } from "../lib/tenants.tsx";
+import {
+  TenantPicker,
+  mintTenantBody,
+  useMintableTenants,
+} from "../lib/tenants.tsx";
 import { Republish } from "../components/Republish.tsx";
 import type { Grant, MintedAPIKey } from "../lib/types.ts";
 
@@ -56,7 +60,7 @@ export function APIKeysScreen() {
   const mint = useMutation({
     mutationFn: () =>
       mintAPIKey(userId, {
-        tenant,
+        ...mintTenantBody(tenant),
         name: name.trim(),
         grants: narrow.length ? narrow : undefined,
         expires_at: expires ? new Date(expires).toISOString() : undefined,
@@ -126,7 +130,12 @@ export function APIKeysScreen() {
           <div className="card-head">
             <strong>Mint a key</strong>
           </div>
-          <TenantPicker value={tenant} onChange={setTenant} slugs={slugs} />
+          <TenantPicker
+            value={tenant}
+            onChange={setTenant}
+            slugs={slugs}
+            allowSpanning
+          />
           <label className="field">
             Name
             <input

@@ -399,9 +399,12 @@ type APIKey struct {
 	ID     string `json:"id" yaml:"id"`
 	UserID string `json:"user_id" yaml:"user_id"`
 	// Tenant this key acts in. An MCP session resolves to exactly one, and this
-	// is where that comes from.
-	Tenant string `json:"tenant" yaml:"tenant"`
-	Name   string `json:"name" yaml:"name"`
+	// is where that comes from. Empty for a spanning key, which reaches several.
+	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
+	// SpansTenants means the catalog covers every tenant this key's grants
+	// reach, with names qualified as <tenant>.<prefix>.<tool> (ADR 0027).
+	SpansTenants bool   `json:"spans_tenants,omitempty" yaml:"spans_tenants,omitempty"`
+	Name         string `json:"name" yaml:"name"`
 	// Prefix is the lookup half of the key. Public by construction: it is what
 	// identifies the row before anything is verified.
 	Prefix string `json:"prefix" yaml:"prefix"`
