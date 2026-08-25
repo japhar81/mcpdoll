@@ -292,6 +292,33 @@ services:
       fixture-websearch: { condition: service_healthy }
       fixture-deploy: { condition: service_healthy }
 
+  # ---------------------------------------------------------- inspector ----
+
+  inspector:
+    image: node:22-alpine
+    container_name: mcpdoll-inspector
+    restart: unless-stopped
+    networks: [mcpdoll]
+    # The reference MCP Inspector (MIT), pointed at our gateway. It is not
+    # pre-authenticated: one process serves every console user, and baking one
+    # user's credential into it would hand that credential to the next person to
+    # open the page. The console mints a key for whoever is signed in and copies
+    # it to their clipboard to paste here.
+    command: >
+      sh -c "npx -y @modelcontextprotocol/inspector --web
+             --transport http --server-url http://dataplane:8080/mcp"
+    environment:
+      # Its own UI auth, disabled: this is a dev stack behind localhost, and a
+      # token the console cannot know would only be a second thing to paste.
+      DANGEROUSLY_OMIT_AUTH: "true"
+      HOST: "0.0.0.0"
+      DANGEROUSLY_BIND_ALL_INTERFACES: "true"
+      ALLOWED_ORIGINS: "http://localhost:6274,http://localhost:5173"
+    ports:
+      - "6274:6274"
+    depends_on:
+      dataplane: { condition: service_healthy }
+
   # ------------------------------------------------------------ console ----
 
   console:

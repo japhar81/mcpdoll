@@ -73,6 +73,7 @@ and an LGTM observability stack.
 | Console | http://localhost:5173 — start at `/overview` |
 | Data plane | http://localhost:8080/mcp — one endpoint; the key names the tenant |
 | Control plane | http://localhost:3001 |
+| Inspector | http://localhost:6274 — the reference MCP Inspector, pointed here |
 | Grafana | http://localhost:3300 — folder `MCPDoll` |
 
 ### Signing in
@@ -101,10 +102,9 @@ password printed once to the control plane's stderr. That is the production
 path; the seeded admin above exists because a dev container gets recreated and
 that line scrolls away.
 
-The login screen's second form takes the deployment token
-(`dev-token-not-a-secret`) or any API key. The token holds every permission and
-exists so CI can build a snapshot before a user does — it is not the way to use
-the console.
+The deployment token (`dev-token-not-a-secret`) is an API and CLI credential —
+it is not a way to sign in to the console, and the login screen no longer offers
+it. It exists so CI can build a snapshot before any user does.
 
 ### Agent credentials
 

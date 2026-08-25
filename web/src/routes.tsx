@@ -38,6 +38,7 @@ import { APIKeysScreen } from "./screens/APIKeysScreen.tsx";
 import { RolesScreen } from "./screens/RolesScreen.tsx";
 import { SessionScreen } from "./screens/SessionScreen.tsx";
 import { RevocationsScreen } from "./screens/RevocationsScreen.tsx";
+import { InspectorScreen } from "./screens/InspectorScreen.tsx";
 import { CatalogScreen } from "./screens/CatalogScreen.tsx";
 import { PlaygroundScreen } from "./screens/PlaygroundScreen.tsx";
 
@@ -186,6 +187,12 @@ export const ROUTES: RouteDef[] = [
     component: SessionScreen,
     nav: "Your credential",
     section: "Tenancy",
+  },
+  {
+    path: "/gateway/inspector",
+    component: InspectorScreen,
+    nav: "Inspector",
+    section: "Data plane",
   },
   {
     path: "/gateway/revocations",

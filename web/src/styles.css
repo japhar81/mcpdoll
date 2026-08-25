@@ -518,3 +518,14 @@ a.link:hover { text-decoration: underline; }
   font-weight: 600;
   cursor: help;
 }
+
+/* The embedded MCP Inspector. Tall, because it is a whole application and a
+   short frame turns it into a scrolling peephole. */
+.inspector-frame {
+  width: 100%;
+  height: 72vh;
+  min-height: 520px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
