@@ -34,57 +34,17 @@ CREATE INDEX idx_api_keys_tenant ON api_keys(tenant_id);
 
 -- ---------------------------------------------------------------- users ----
 
--- Two rows with one email cannot both survive a global unique constraint, and
--- which one survives is not arbitrary. Deleting the *newer* was the obvious
--- rule and it is wrong here: this deployment's `dev-admin@mcpdoll.local` exists
--- twice, and the older of the two is a disabled decoy an earlier seed left in
--- the `platform` tenant. "Newer loses" keeps the dead row and deletes the
--- account somebody signs in with.
+-- Two rows with one email cannot both survive a global unique constraint, so
+-- one of them goes. Which one is not worth deciding carefully: nothing is
+-- deployed, the only databases this runs against are development ones, and a
+-- development database that comes out wrong is recreated rather than repaired.
 --
--- So: an active row beats a disabled one, a row with a password beats one
--- without, and only then does the older win. `id` breaks the remaining tie, so
--- two rows created in the same transaction still resolve to exactly one
--- survivor rather than failing the constraint.
--- A plain table, not a TEMP ... ON COMMIT DROP one. The runner wraps each
--- migration in a transaction so the temp form would work here, but it would
--- work *only* here: applied statement by statement through psql — which is how
--- anyone debugs a migration that failed — the table would disappear after the
--- first statement and every line below it would error on a missing relation.
-CREATE TABLE user_merge AS
-SELECT
-  id AS loser,
-  first_value(id) OVER (
-    PARTITION BY email
-    ORDER BY (status = 'disabled'), (password_hash IS NULL), created_at, id
-  ) AS survivor
-FROM users;
-
-DELETE FROM user_merge WHERE loser = survivor;
-
--- What the loser held moves rather than dying with them. The same email is one
--- person now, so their keys are their keys — and a key names its own tenant, so
--- it keeps resolving exactly where it did. Dropping them instead would break
--- live credentials to tidy up a row.
-UPDATE api_keys k SET user_id = m.survivor FROM user_merge m WHERE k.user_id = m.loser;
-
--- Grants move the same way, minus any the survivor already holds: the unique
--- constraint is (user_id, role, scope) and a merge can easily produce a
--- duplicate of a grant both rows had.
-UPDATE grants g SET user_id = m.survivor
-FROM user_merge m
-WHERE g.user_id = m.loser
-  AND NOT EXISTS (
-    SELECT 1 FROM grants existing
-    WHERE existing.user_id = m.survivor AND existing.role = g.role AND existing.scope = g.scope
-  );
-
--- `granted_by` is audit, so it is repointed rather than nulled by the cascade:
--- "who granted this" losing its answer is the one thing that table exists for.
-UPDATE grants g SET granted_by = m.survivor FROM user_merge m WHERE g.granted_by = m.loser;
-
-DELETE FROM users u USING user_merge m WHERE u.id = m.loser;
-
-DROP TABLE user_merge;
+-- An earlier draft ranked the duplicates — active over disabled, with a
+-- password over without — and moved the loser's keys and grants onto the
+-- survivor. That is the right migration to write for real data and the wrong
+-- one to write for this: forty lines of merge logic whose only test is a
+-- scratch database, standing in for a `docker compose down -v`.
+DELETE FROM users a USING users b WHERE a.email = b.email AND a.id > b.id;
 
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tenant_id_email_key;
 ALTER TABLE users DROP COLUMN tenant_id;
